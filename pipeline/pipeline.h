@@ -346,7 +346,13 @@ struct WaySpec {
     const osm::Way* way = nullptr;
     osm::HighwayClass cls = osm::HW_Residential;
     RoadProfile profile;
-    std::vector<Vec2d> points;       // world space, resampled
+    std::vector<Vec2d> points;       // world space, resampled (mesh chain)
+    // Navigation chain: `points` plus a vertex at every at-grade crossing with
+    // another road, inserted by detail::planarizeCrossings.  Empty when the road
+    // crosses nothing, in which case the navigation graph uses `points`.  Kept
+    // apart from `points` so that a junction node — a topology fact — does not
+    // cost the ribbon mesh an extra cross-section.
+    std::vector<Vec2d> navPoints;
     bool bridge = false, tunnel = false;
     std::string name;
     SurfaceMaterial surface = SurfaceMaterial::AsphaltPatched;

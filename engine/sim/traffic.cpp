@@ -103,10 +103,18 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
         // edge it governs without re-deriving topology.
         std::vector<u32> localToGlobal(graph.header->edgeCount, kNoSignal);
 
+        // Nodes are jointed on world position, and the two kinds of joint are
+        // counted apart: a repeat inside one file is a duplicate the producer
+        // left, a joint onto a node another file created is the chunk seam.
+        const u32 nodesBefore = static_cast<u32>(m_nodes.size());
         for (u32 i = 0; i < nodeCount; ++i) {
             const Vec2d p{ox + nodes[i].x, oz + nodes[i].z};
-            nodeMap[(cellKey << 32) | i] = static_cast<u32>(m_nodes.size());
-            m_nodes.push_back(SimNode{p, {}});
+            bool created = false;
+            const u32 gi = nodeAt(p, &created);
+            nodeMap[(cellKey << 32) | i] = gi;
+            if (created) continue;
+            if (gi < nodesBefore) ++m_nodesMergedAcrossChunks;
+            else ++m_nodesMerged;
         }
         for (u32 i = 0; i < nodeCount; ++i) {
             const NavNode& n = nodes[i];
@@ -131,14 +139,36 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
                 se.dir = d.normalized();
                 se.normal = Vec2d{-se.dir.y, se.dir.x};
                 se.laneVehicles.assign(se.lanes, {});
-                localToGlobal[n.firstEdge + k] = static_cast<u32>(m_edges.size());
-                m_nodes[se.from].out.push_back(static_cast<u32>(m_edges.size()));
+                const u32 fwd = static_cast<u32>(m_edges.size());
+                const bool bothWays = e2.direction != 1;
+                localToGlobal[n.firstEdge + k] = fwd;
+                se.reverse = bothWays ? fwd + 1u : kNoEdge;
+                m_nodes[from].out.push_back(fwd);
                 m_edges.push_back(std::move(se));
+                if (bothWays) {
+                    // The opposing approach of a two-way segment: same surface,
+                    // same lanes, reversed geometry.
+                    SimEdge rv = m_edges[fwd];
+                    rv.from = m_edges[fwd].to;
+                    rv.to = from;
+                    rv.a = m_edges[fwd].b;
+                    rv.b = m_edges[fwd].a;
+                    rv.dir = Vec2d{-m_edges[fwd].dir.x, -m_edges[fwd].dir.y};
+                    rv.normal = Vec2d{-m_edges[fwd].normal.x, -m_edges[fwd].normal.y};
+                    rv.laneVehicles.assign(rv.lanes, {});
+                    rv.reverse = fwd;
+                    const u32 rev = static_cast<u32>(m_edges.size());
+                    m_nodes[rv.from].out.push_back(rev);
+                    m_edges.push_back(std::move(rv));
+                }
             }
         }
 
         // Signal phases: the world has carried a green window per edge since the
-        // format was defined.
+        // format was defined.  A phase governs the approach along its edge to the
+        // edge's far node; where the format could only name one direction of a
+        // two-way segment, the runtime completes the other approach afterwards
+        // (see deriveSignals).
         for (u32 s = 0; s < graph.header->signalCount; ++s) {
             const NavSignalPhase& sp = graph.signals[s];
             if (sp.edgeIndex >= graph.header->edgeCount) continue;
@@ -155,6 +185,7 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
 
     m_signalOfEdge.assign(m_edges.size(), kNoSignal);
     for (u32 s = 0; s < m_signals.size(); ++s) m_signalOfEdge[m_signals[s].edge] = s;
+    deriveSignals();
     m_edgeOrder.assign(m_edges.size(), {});
     m_buckets.assign(m_edges.size() * kBucketsPerEdge, {});
 
@@ -454,58 +485,71 @@ void Traffic::longitudinal(f64 dt) {
         veh.s += veh.v * dt;
     }
 
-    // 2. Lane discipline, exactly, front to back: a lane's leader is corrected
-    //    first, so the correction propagates down the queue in one pass.  This is
-    //    what makes contact impossible rather than merely unlikely.
-    for (const SimEdge& e : m_edges) {
+    // 2. One descending-s sweep per edge, front of the queue to back.  Each
+    //    vehicle's constraint is the tighter of its obstruction (a stop line, or
+    //    the body a two-wheeler is riding up behind) and the real rear of the
+    //    vehicle listed in front of it in the lane it is registered in.  Because
+    //    every leader is settled before the vehicle behind it is clamped, the
+    //    floor holds after ONE pass — two passes in sequence (lane discipline,
+    //    then obstruction) let the second undo the first: a motorcycle that was
+    //    pushed back by its own leader after the car behind it had already been
+    //    corrected left a 0.29 m gap where the floor asks for 0.5 m.
+    for (u32 ei = 0; ei < m_edges.size(); ++ei) {
+        const SimEdge& e = m_edges[ei];
         for (u16 l = 0; l < e.lanes; ++l) {
             const std::vector<u32>& list = e.laneVehicles[l];
-            for (size_t k = list.size(); k-- > 1;) {
-                Vehicle& veh = m_vehicles[list[k - 1]];
-                // Two-wheelers hold no lane: their constraint is the obstruction
-                // found in step 3, which knows they may be riding beside the
-                // vehicle whose lane list they appear in.
-                if (archetypeSpec(veh.kind).twoWheeler) continue;
-                const Vehicle& lead = m_vehicles[list[k]];
-                if (lead.s <= veh.s) continue;          // not actually ahead
-                if (std::fabs(lead.lateral - veh.lateral) >
-                    0.5 * (archetypeSpec(veh.kind).width + archetypeSpec(lead.kind).width))
-                    continue;                           // side by side, not in the way
-                const f64 target = lead.s - lead.length - kMinGap;
+            for (size_t k = list.size(); k-- > 0;) {
+                Vehicle& veh = m_vehicles[list[k]];
+                f64 constraint = veh.obstruction;
+                f64 leaderV = veh.leaderV;
+                if (k + 1 < list.size()) {
+                    const Vehicle& lead = m_vehicles[list[k + 1]];
+                    const f64 lateralClear = 0.5 * (archetypeSpec(veh.kind).width +
+                                                    archetypeSpec(lead.kind).width);
+                    if (std::fabs(lead.lateral - veh.lateral) <= lateralClear) {
+                        const f64 rear = lead.s - lead.length;
+                        if (rear < constraint) {
+                            constraint = rear;
+                            leaderV = lead.v;
+                        }
+                    }
+                }
+                if (constraint >= 1e17) continue;
+                const f64 target = constraint - kMinGap;
                 if (veh.s > target) {
-                    veh.s = std::max(0.0, target);
-                    veh.v = std::min(veh.v, lead.v);
+                    // A queue that runs out of edge spills BACK over the junction
+                    // behind it: s may go negative by up to the vehicle's own
+                    // length plus the tolerance, which is geometrically the tail of
+                    // the previous edge — what a Mumbai queue does at a blocked
+                    // junction.  Clamping at zero instead stacked bodies.
+                    veh.s = std::max(-(veh.length + kHangBehind), target);
+                    veh.v = std::min(veh.v, leaderV);
                     ++m_hardBrakes;
                 }
             }
         }
     }
 
-    // 3. Every obstruction — a stop line, or the body a two-wheeler is riding
-    //    up behind — checked in descending s so each correction is final before
-    //    the vehicle behind it is examined.  Two-wheelers need this because they
-    //    stand outside lane discipline entirely.
+    // 4. Report the honest number: the smallest longitudinal gap between two
+    //    bodies whose lateral footprints overlap, measured on the settled state.
+    //    A gap measured before the corrections is not the gap the world has, and
+    //    a pair riding abreast is not a pair following.
+    for (Vehicle& veh : m_vehicles) veh.gap = std::min(1e9, veh.obstruction - veh.s);
+    m_minGap = 1e9;
     for (const SimEdge& e : m_edges) {
-        const std::vector<u32>& order = m_edgeOrder[static_cast<u32>(&e - m_edges.data())];
-        for (size_t k = order.size(); k-- > 0;) {
-            Vehicle& veh = m_vehicles[order[k]];
-            if (veh.obstruction >= 1e17) continue;
-            const f64 target = veh.obstruction - kMinGap;
-            if (veh.s > target) {
-                veh.s = std::max(0.0, target);
-                veh.v = std::min(veh.v, veh.leaderV);
-                ++m_hardBrakes;
+        for (u16 l = 0; l < e.lanes; ++l) {
+            const std::vector<u32>& list = e.laneVehicles[l];
+            for (size_t k = 1; k < list.size(); ++k) {
+                const Vehicle& ahead = m_vehicles[list[k]];
+                const Vehicle& behind = m_vehicles[list[k - 1]];
+                const f64 lateralClear = 0.5 * (archetypeSpec(ahead.kind).width +
+                                                archetypeSpec(behind.kind).width);
+                if (std::fabs(ahead.lateral - behind.lateral) > lateralClear) continue;
+                m_minGap = std::min(m_minGap, ahead.s - ahead.length - behind.s);
             }
         }
     }
-
-    // 4. Report the honest number: the smallest gap anyone is actually running,
-    //    not the smallest gap the floor permits.
-    m_minGap = 1e9;
-    for (Vehicle& veh : m_vehicles) {
-        veh.gap = std::min(1e9, veh.obstruction - veh.s);
-        if (veh.obstruction < 1e17) m_minGap = std::min(m_minGap, veh.gap);
-    }
+    if (m_minGap > 1e8) m_minGap = 1e9;      // nobody is following anybody
 }
 
 // -----------------------------------------------------------------------------
@@ -762,12 +806,12 @@ void Traffic::advanceEdges() {
         const SimNode& node = m_nodes[from.to];
 
         if (node.out.empty()) {
-            // A dead end.  Hold at the end of the edge, unless the far end of the
-            // same edge is clear, in which case the arrival re-enters there: a
-            // closed corridor keeps circulating, which is a population device and
-            // is documented as one (the pipeline's nav graph is a set of chains
-            // until junction connectivity lands, so every chain end is a dead end
-            // today).
+            // A dead end: a cul-de-sac, or the end of a way whose continuation the
+            // source never joined to it.  Hold at the end of the edge, unless the
+            // far end of the same edge is clear, in which case the arrival
+            // re-enters there — the corridor keeps circulating instead of
+            // accumulating, which is a population device and is documented as one
+            // (see DOCS/D-029).  A held vehicle is a wall, and walls queue.
             bool clear = true;
             for (u32 other : src.laneVehicles[a.lane])
                 if (m_vehicles[other].s < veh.length + 3.0) { clear = false; break; }
@@ -810,7 +854,22 @@ void Traffic::advanceEdges() {
             }
         }
 
-        const u32 next = node.out[m_turn++ % node.out.size()];
+        // Junction choice: round-robin over the arms, refusing the reversal of
+        // the edge just travelled while any other arm exists — a U-turn in the
+        // middle of a block is not something Mumbai traffic does.  At a dead end
+        // the reversal is the only exit there is, and there it is taken.
+        const u32 rev = m_edges[a.edge].reverse;
+        const size_t outs = node.out.size();
+        u32 next = node.out[m_turn % outs];
+        for (size_t k = 0; k < outs; ++k) {
+            const u32 cand = node.out[(m_turn + k) % outs];
+            if (cand != rev || outs == 1) {
+                next = cand;
+                if (cand == rev) ++m_deadEndUTurns;
+                m_turn += k + 1;
+                break;
+            }
+        }
         SimEdge& ne = m_edges[next];
         const u16 lane = static_cast<u16>(std::min<u32>(a.lane, ne.lanes - 1));
         const f64 entry = std::max(0.0, veh.s - from.length);
@@ -832,6 +891,104 @@ void Traffic::advanceEdges() {
         }
         veh.s = entry;
         insertSorted(ne.laneVehicles[lane], a.idx);
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Nodes, jointed by position
+// -----------------------------------------------------------------------------
+// A junction whose arms lie in two neighbouring chunks is two nodes in two
+// files: the chunk format names nodes by an index local to the file, so no
+// record can point across a boundary.  Merging on world position closes that
+// seam — the crossing points are identical to well inside the millimetre the
+// local float coordinates can express at this extent — and the probe of the
+// neighbouring quanta absorbs a point that lands exactly on a quantum edge.
+u32 Traffic::nodeAt(const Vec2d& p, bool* created) {
+    if (created) *created = false;
+    constexpr f64 kQuantum = 0.10;      // m
+    const auto keyOf = [](i64 x, i64 z) {
+        return (static_cast<u64>(static_cast<u32>(static_cast<i32>(x))) << 32) |
+               static_cast<u32>(static_cast<i32>(z));
+    };
+    const i64 x = static_cast<i64>(std::llround(p.x / kQuantum));
+    const i64 z = static_cast<i64>(std::llround(p.y / kQuantum));
+    for (int dz = -1; dz <= 1; ++dz) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const auto it = m_nodeAt.find(keyOf(x + dx, z + dz));
+            if (it != m_nodeAt.end()) return it->second;
+        }
+    }
+    const u32 idx = static_cast<u32>(m_nodes.size());
+    m_nodes.push_back(SimNode{p, {}});
+    m_nodeAt.emplace(keyOf(x, z), idx);
+    if (created) *created = true;
+    return idx;
+}
+
+// -----------------------------------------------------------------------------
+//  Signals the chunk format could not express
+// -----------------------------------------------------------------------------
+// Two things are missing from a baked phase set, and neither is the pipeline's
+// fault: (1) the opposing approach of a two-way segment, which the format stores
+// as a direction flag rather than as a second record; (2) a junction whose arms
+// live in two chunks, which the pipeline sees as two separate nodes and therefore
+// never classifies as a junction at all.  This pass supplies both, using the same
+// warrant and the same plan constants the pipeline uses (engine/world/
+// signal_warrant.h), so the two cannot drift apart.
+void Traffic::addDerivedPhase(u32 edge, const Vec2d& axis) {
+    SignalPhase p;
+    p.edge = edge;
+    p.greenStart = navsignal::armRunsAlong(m_edges[edge].dir, axis)
+                       ? 0.0
+                       : 0.1 * static_cast<f64>(navsignal::kCrossOffsetDeciseconds);
+    p.greenSeconds = 0.1 * static_cast<f64>(navsignal::kGreenDeciseconds);
+    m_signals.push_back(p);
+    m_signalOfEdge[edge] = static_cast<u32>(m_signals.size() - 1);
+    ++m_derivedSignals;
+}
+
+void Traffic::deriveSignals() {
+    if (m_edges.empty() || m_nodes.empty()) return;
+    std::vector<std::vector<u32>> incoming(m_nodes.size());
+    for (u32 i = 0; i < m_edges.size(); ++i) {
+        const u32 to = m_edges[i].to;
+        if (to < incoming.size()) incoming[to].push_back(i);
+    }
+    for (u32 n = 0; n < m_nodes.size(); ++n) {
+        const std::vector<u32>& arms = incoming[n];
+        // One approach per arm.  Fewer than three approaches is not a junction:
+        // a road that passes through has two, one in each direction.
+        if (arms.size() < 3) continue;
+        u32 baked = 0, missing = 0;
+        for (u32 e : arms) (m_signalOfEdge[e] == kNoSignal ? ++missing : ++baked);
+        if (baked != 0) {
+            if (missing == 0) continue;
+            // The pipeline decided this junction.  Complete the plan for the arms
+            // the format could not name, taking the axis from the arms it did.
+            Vec2d axis{0, 0};
+            for (u32 e : arms) {
+                const u32 si = m_signalOfEdge[e];
+                if (si == kNoSignal) continue;
+                if (m_signals[si].greenStart < 0.5) { axis = m_edges[e].dir; break; }
+            }
+            if (axis.lengthSq() < 1e-9) axis = m_edges[arms[0]].dir;
+            for (u32 e : arms)
+                if (m_signalOfEdge[e] == kNoSignal) addDerivedPhase(e, axis);
+            continue;
+        }
+        navsignal::JunctionShape shape;
+        shape.degree = static_cast<u32>(arms.size());
+        Vec2d axis{0, 0};
+        for (u32 e : arms) {
+            const SimEdge& se = m_edges[e];
+            if (se.cls >= 1 && se.cls <= 4) ++shape.major;
+            else if (se.cls == 5 || se.cls == 6) ++shape.tertiary;
+            if (se.lanes >= 4) ++shape.wide;
+            if (axis.lengthSq() == 0.0 && se.cls >= 1 && se.cls <= 6 && se.dir.lengthSq() > 1e-9)
+                axis = se.dir;
+        }
+        if (!navsignal::signalWarranted(shape) || axis.lengthSq() < 1e-9) continue;
+        for (u32 e : arms) addDerivedPhase(e, axis);
     }
 }
 
@@ -914,6 +1071,13 @@ TrafficMetrics Traffic::metrics(const Vec2d& camera, f64 radius) const {
     m.badPosition = m_badPosition;
     m.laneViolations = m_laneViolations;
     m.maxLateralG = m_maxLateralG;
+    m.nodesMerged = m_nodesMerged + m_nodesMergedAcrossChunks;
+    m.nodesMergedAcrossChunks = m_nodesMergedAcrossChunks;
+    m.deadEndUTurns = m_deadEndUTurns;
+    m.derivedSignals = static_cast<size_t>(m_derivedSignals);
+    m.reverseEdges = 0;
+    for (u32 i = 0; i < m_edges.size(); ++i)
+        if (m_edges[i].reverse != kNoEdge && m_edges[i].reverse > i) ++m.reverseEdges;
     return m;
 }
 

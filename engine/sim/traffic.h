@@ -19,9 +19,11 @@
 #include "engine/core/geo.h"
 #include "engine/core/math.h"
 #include "engine/world/chunk.h"
+#include "engine/world/signal_warrant.h"
 
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mumbai::sim {
@@ -129,8 +131,17 @@ struct Vehicle {
 // -----------------------------------------------------------------------------
 //  Graph
 // -----------------------------------------------------------------------------
+// The chunk format stores one record per segment with a direction flag: 0 means
+// both ways, and no reverse record is written.  The runtime therefore builds the
+// reverse edge itself — a road a vehicle can only drive along in one direction is
+// not a road — and remembers the pairing so that a U-turn at a mid-block node can
+// be refused and the opposing approach can carry the signal phase its own
+// direction could not name.
+constexpr u32 kNoEdge = 0xFFFFFFFFu;
+
 struct SimEdge {
     u32 from = 0, to = 0;
+    u32 reverse = kNoEdge;
     f32 length = 0.0f;
     f32 limit = 30.0f;       // kph
     u16 lanes = 1;
@@ -153,6 +164,8 @@ struct TrafficMetrics {
     size_t nodes = 0;
     size_t lanesTotal = 0;
     size_t signals = 0;
+    size_t reverseEdges = 0;       // two-way segments materialised as both edges
+    size_t derivedSignals = 0;     // phases the runtime had to derive itself
     f64 meanSpeedKph = 0.0;
     f64 minGap = 1e9;
     f64 crawlShare = 0.0;          // fraction below 1.4 m/s
@@ -168,6 +181,9 @@ struct TrafficMetrics {
     u64 hailStops = 0;
     u64 hardBrakes = 0;
     u64 badState = 0, badSpeed = 0, badPosition = 0;
+    u64 nodesMerged = 0;           // nodes jointed to another node by position
+    u64 nodesMergedAcrossChunks = 0;   // ...of which the seam between files
+    u64 deadEndUTurns = 0;
     u64 laneViolations = 0;        // pairs in one lane closer than the floor
     f64 maxLateralG = 0.0;         // worst lean seen, across all two-wheelers
     u64 archetypeCount[static_cast<int>(Archetype::Count)] = {0, 0, 0, 0, 0};
@@ -218,12 +234,19 @@ private:
     void lateralDynamics(f64 dt);
     void faresAndQueues(f64 dt);
     void advanceEdges();
+    void deriveSignals();
+    void addDerivedPhase(u32 edge, const Vec2d& axis);
+    u32 nodeAt(const Vec2d& p, bool* created = nullptr);
     void insertSorted(std::vector<u32>& list, u32 idx);
     bool laneEntryClear(const SimEdge& e, u16 lane, f64 s, f64 length, f64 width) const;
     void placeHeld(Vehicle& veh, const SimEdge& e, u16 lane, f64 limit);
 
     std::vector<SimNode> m_nodes;
     std::vector<SimEdge> m_edges;
+    // Nodes are jointed by position across the whole world, not per file: a
+    // junction whose arms lie in two neighbouring cells is two nodes in two
+    // chunks, and only this map can see it as one junction.
+    std::unordered_map<u64, u32> m_nodeAt;
     std::vector<Vehicle> m_vehicles;
     std::vector<SignalPhase> m_signals;
     std::vector<u32> m_signalOfEdge;      // edge -> index into m_signals, or kNoSignal
@@ -240,6 +263,8 @@ private:
     u64 m_spawned = 0;
     u64 m_rngState = 0;
     u64 m_laneChanges = 0, m_laneChangeRefusals = 0;
+    u64 m_nodesMerged = 0, m_nodesMergedAcrossChunks = 0;
+    u64 m_derivedSignals = 0, m_deadEndUTurns = 0;
     u64 m_signalStops = 0, m_signalCrossings = 0, m_edgeCompletions = 0, m_deadEndHolds = 0;
     u64 m_laneTick = 0;
     u64 m_boidsUpdates = 0, m_separationEvents = 0;
@@ -264,5 +289,13 @@ private:
 // Minimum bumper-to-bumper separation the safety projection enforces.  A floor,
 // not a target: IDM normally holds 2-15 m.
 inline constexpr f64 kMinGap = 0.5;
+
+// How far a vehicle may hang back over the junction it has just crossed, beyond
+// its own length, before the lane is called full.  A queue that runs out of edge
+// spills backwards across the junction — Mumbai queues do exactly this — and
+// clamping the spill at zero instead stacked bodies on the boundary (the
+// diagnostic this replaced caught a motorcycle inside a bus).  Half a metre of
+// tolerance keeps the intrusion into the edge behind a tolerance.
+constexpr f64 kHangBehind = 0.5;
 
 }  // namespace mumbai::sim

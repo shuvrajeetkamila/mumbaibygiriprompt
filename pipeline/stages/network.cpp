@@ -14,6 +14,10 @@
 // =============================================================================
 #include "pipeline/pipeline.h"
 
+#include "engine/world/signal_warrant.h"
+
+#include <unordered_set>
+
 namespace mumbai::pipeline {
 
 namespace detail {
@@ -142,6 +146,466 @@ RoadProfile roadProfile(osm::HighwayClass cls, std::string_view lanesTag, bool o
 }
 
 } // namespace detail
+
+namespace {
+
+// -----------------------------------------------------------------------------
+//  The navigation graph
+// -----------------------------------------------------------------------------
+// A graph a vehicle can actually drive.  Until now the graph was a set of chains:
+// every resampled vertex became two fresh nodes and one edge, so nothing ever
+// met anything, every junction was an invisible wall, and no signal could be
+// obeyed because there was no junction to signalise.  Here each distinct point on
+// the network is ONE node (ways that share a coordinate share the node), each
+// node owns a contiguous run of out-edges, and the junctions that have earned a
+// signal get one, with a two-phase 90-second plan that the runtime's green /
+// amber / red cycle completes.
+// -----------------------------------------------------------------------------
+//  Crossing census (diagnostic)
+// -----------------------------------------------------------------------------
+//  At-grade planarisation
+// -----------------------------------------------------------------------------
+// A city's junctions are where its roads *cross*, not only where the source data
+// happens to share one coordinate.  Measured on this network before the pass
+// below existed (run 44): 16,344 at-grade crossing pairs, of which 4,994 were
+// already jointed by a shared vertex — so ~11,000 crossings carried no junction
+// at all.  The authored corridors and the OSM arterial subset, the only roads
+// with a class, crossed the ward lattice mid-span every ninety metres and met
+// nothing; that is why the signal warrant found exactly one junction to signal
+// in a 600 km² city, and why the traffic model had no turning movements.
+//
+// This pass inserts the crossing point into both roads' *navigation* chains — see
+// WaySpec::navPoints — and leaves `points`, the mesh chain, untouched: a junction
+// node is a topology fact, and a ribbon needs no extra cross-section for it.
+// Crossings are skipped when either road is flagged bridge or tunnel (grade
+// separated, and the source says which), and a road that already has a vertex
+// within 1.5 m of the crossing keeps it (already jointed, or jointed inside the
+// specification's 2 m horizontal tolerance).
+void planarizeCrossings(Context& ctx, std::vector<detail::WaySpec>& ways) {
+    constexpr f64 kCell = 24.0;
+    constexpr f64 kJointed = 1.5;
+    const i64 gx0 = static_cast<i64>(std::floor(ctx.extent.min.x / kCell));
+    const i64 gz0 = static_cast<i64>(std::floor(ctx.extent.min.y / kCell));
+    const i64 gw = static_cast<i64>(std::ceil((ctx.extent.max.x - ctx.extent.min.x) / kCell)) + 2;
+    const i64 gh = static_cast<i64>(std::ceil((ctx.extent.max.y - ctx.extent.min.y) / kCell)) + 2;
+    std::vector<std::vector<u32>> buckets(static_cast<size_t>(gw * gh));
+
+    struct Sub { u32 way; u32 seg; Vec2d a, b; };
+    std::vector<Sub> subs;
+    auto cellOf = [&](f64 x, i64 lo, i64 n) {
+        return std::clamp<i64>(static_cast<i64>(std::floor(x / kCell)) - lo, 0, n - 1);
+    };
+    for (u32 w = 0; w < ways.size(); ++w) {
+        const std::vector<Vec2d>& pts = ways[w].points;
+        for (size_t i = 0; i + 1 < pts.size(); ++i) {
+            const Vec2d a = pts[i], b = pts[i + 1];
+            const f64 len = (b - a).length();
+            const u32 steps = static_cast<u32>(std::max<f64>(1.0, std::ceil(len / (kCell * 0.5))));
+            for (u32 k = 0; k < steps; ++k) {
+                const Vec2d p0 = a + (b - a) * (static_cast<f64>(k) / steps);
+                const Vec2d p1 = a + (b - a) * (static_cast<f64>(k + 1) / steps);
+                const u32 idx = static_cast<u32>(subs.size());
+                subs.push_back(Sub{w, static_cast<u32>(i), p0, p1});
+                const i64 x0 = cellOf(std::min(p0.x, p1.x), gx0, gw), x1 = cellOf(std::max(p0.x, p1.x), gx0, gw);
+                const i64 z0 = cellOf(std::min(p0.y, p1.y), gz0, gh), z1 = cellOf(std::max(p0.y, p1.y), gz0, gh);
+                for (i64 z = z0; z <= z1; ++z)
+                    for (i64 x = x0; x <= x1; ++x) buckets[static_cast<size_t>(z * gw + x)].push_back(idx);
+            }
+        }
+    }
+
+    struct Insert { u32 seg; f64 along; Vec2d p; };
+    std::unordered_map<u32, std::vector<Insert>> byWay;
+    std::unordered_set<u64> seen;
+    u64 crossings = 0, gradeSeparated = 0, jointed = 0, inserted = 0;
+    for (const std::vector<u32>& b : buckets) {
+        for (size_t i = 0; i < b.size(); ++i) {
+            for (size_t j = i + 1; j < b.size(); ++j) {
+                const Sub& s0 = subs[b[i]];
+                const Sub& s1 = subs[b[j]];
+                if (s0.way == s1.way) continue;
+                const Vec2d r = s0.b - s0.a, q = s1.b - s1.a;
+                const f64 den = r.x * q.y - r.y * q.x;
+                const Vec2d o = s1.a - s0.a;
+                if (std::fabs(den) < 1e-12) continue;      // parallel
+                const f64 t = (o.x * q.y - o.y * q.x) / den;
+                const f64 u = (o.x * r.y - o.y * r.x) / den;
+                if (t <= 0.0 || t >= 1.0 || u <= 0.0 || u >= 1.0) continue;
+                const Vec2d p = s0.a + r * t;
+                const u32 wa = std::min(s0.way, s1.way), wb = std::max(s0.way, s1.way);
+                const i64 bx = cellOf(p.x, gx0, gw), bz = cellOf(p.y, gz0, gh);
+                const u64 key = (static_cast<u64>(wa) << 47) ^ (static_cast<u64>(wb) << 30) ^
+                                (static_cast<u64>(bx) << 15) ^ static_cast<u64>(bz);
+                if (!seen.insert(key).second) continue;
+                ++crossings;
+                if (ways[wa].bridge || ways[wa].tunnel || ways[wb].bridge || ways[wb].tunnel) {
+                    ++gradeSeparated;      // a flyover over a street is not a junction
+                    continue;
+                }
+                const u32 pair[2] = {wa, wb};
+                const u32 segOf[2] = {s0.way == wa ? s0.seg : s1.seg, s0.way == wb ? s0.seg : s1.seg};
+                for (int side = 0; side < 2; ++side) {
+                    const detail::WaySpec& w = ways[pair[side]];
+                    bool has = false;
+                    for (const Vec2d& v : w.points)
+                        if ((v - p).lengthSq() < kJointed * kJointed) { has = true; break; }
+                    if (has) { ++jointed; continue; }
+                    const Vec2d& anchor = w.points[segOf[side]];
+                    byWay[pair[side]].push_back(Insert{segOf[side], (p - anchor).length(), p});
+                    ++inserted;
+                }
+            }
+        }
+    }
+
+    for (auto& entry : byWay) {
+        detail::WaySpec& w = ways[entry.first];
+        std::vector<Insert>& list = entry.second;
+        std::sort(list.begin(), list.end(), [](const Insert& a, const Insert& b) {
+            return a.seg != b.seg ? a.seg < b.seg : a.along < b.along;
+        });
+        w.navPoints.reserve(w.points.size() + list.size());
+        size_t k = 0;
+        for (size_t i = 0; i + 1 < w.points.size(); ++i) {
+            w.navPoints.push_back(w.points[i]);
+            while (k < list.size() && list[k].seg == i) w.navPoints.push_back(list[k++].p);
+        }
+        w.navPoints.push_back(w.points.back());
+    }
+
+    MLOG_INFO("crossings: %llu at-grade pairs, %llu grade-separated, %llu already jointed, %llu junction vertices inserted into %llu roads",
+              (unsigned long long)crossings, (unsigned long long)gradeSeparated,
+              (unsigned long long)jointed, (unsigned long long)inserted,
+              (unsigned long long)byWay.size());
+    ctx.qa.add("roads.crossingsAtGrade", static_cast<f64>(crossings));
+    ctx.qa.add("roads.crossingsGradeSeparated", static_cast<f64>(gradeSeparated));
+    ctx.qa.add("roads.junctionVerticesInserted", static_cast<f64>(inserted));
+    ctx.qa.add("roads.planarisedRoads", static_cast<f64>(byWay.size()));
+}
+
+void buildNavGraph(Context& ctx, const std::vector<detail::WaySpec>& ways) {
+    std::unordered_map<CellData*, std::vector<const detail::WaySpec*>> byCell;
+    for (const detail::WaySpec& wi : ways) {
+        if (wi.points.size() < 2) continue;
+        CellData* cd = ctx.tryCell(wi.points.front());
+        if (!cd) continue;                      // outside the extent: not our world
+        byCell[cd].push_back(&wi);
+    }
+
+    u64 totalNodes = 0, totalEdges = 0, totalSignals = 0;
+    u64 junctions3 = 0, junctionsSignalled = 0, deadEnds = 0;
+    u32 maxDegree = 0;
+    // Only the branching count matters here (see the report at the end of this
+    // function): an unclassified junction needs no signal, whatever its size.
+    // The tally index is the warrant's own value, so the counts cannot drift
+    // from the rule, and "no axis to phase the junction on" gets a slot of its
+    // own past the warrant values rather than aliasing one of them.
+    enum WarrantCause : int {
+        WC_None = static_cast<int>(navsignal::Warrant::None),
+        WC_TwoClassified = static_cast<int>(navsignal::Warrant::TwoClassified),
+        WC_ClassifiedWideJunction = static_cast<int>(navsignal::Warrant::ClassifiedWideJunction),
+        WC_ThreeCollectors = static_cast<int>(navsignal::Warrant::ThreeCollectors),
+        WC_TwoWide = static_cast<int>(navsignal::Warrant::TwoWide),
+        WC_NoAxis = static_cast<int>(navsignal::Warrant::Count),
+    };
+    u64 warrantCause[WC_NoAxis + 1] = {};
+
+    for (auto& entry : byCell) {
+        CellData& cd = *entry.first;
+        const std::vector<const detail::WaySpec*>& list = entry.second;
+        // --- 1. Nodes, deduplicated on position -----------------------------
+        // 5 cm quantum, and an injective key, so two points are the same node
+        // exactly when they are the same point to within a hand's width.  (The
+        // specification's road tolerance is 2 m horizontally; merging at 5 cm
+        // cannot move a centreline meaningfully and turns every shared OSM
+        // coordinate into a real junction.)
+        std::unordered_map<u64, u32> nodeAt;
+        auto keyOf = [](const Vec2d& p) {
+            const i64 x = static_cast<i64>(std::llround(p.x * 20.0));
+            const i64 z = static_cast<i64>(std::llround(p.y * 20.0));
+            return (static_cast<u64>(static_cast<u32>(x)) << 32) | static_cast<u32>(z);
+        };
+        auto nodeFor = [&](const Vec2d& p, f32 y, u16 flags) -> u32 {
+            const u64 k = keyOf(p);
+            auto it = nodeAt.find(k);
+            if (it != nodeAt.end()) {
+                NavNode& n = cd.navNodes[it->second];
+                n.flags = static_cast<u16>(n.flags | flags);
+                // Where a street and a flyover meet at the same plan position, the
+                // deck belongs to the ground road: a flyover passes over, it does
+                // not sit on the street.
+                n.y = std::min(n.y, y);
+                return it->second;
+            }
+            NavNode n{};
+            n.x = static_cast<f32>(p.x - cd.origin.x);
+            n.y = y;
+            n.z = static_cast<f32>(p.y - cd.origin.y);
+            n.firstEdge = 0;
+            n.edgeCount = 0;
+            n.flags = flags;
+            n.osmId = 0;
+            const u32 idx = static_cast<u32>(cd.navNodes.size());
+            cd.navNodes.push_back(n);
+            nodeAt.emplace(k, idx);
+            return idx;
+        };
+
+        struct PendingEdge { u32 from; NavEdge e; };
+        std::vector<PendingEdge> pend;
+
+        for (const detail::WaySpec* wp : list) {
+            const detail::WaySpec& wi = *wp;
+            // The navigation chain, not the mesh chain: a junction exists where
+            // the centrelines cross, whether or not the ribbon has a ring there.
+            const std::vector<Vec2d>& pts = wi.navPoints.empty() ? wi.points : wi.navPoints;
+            const auto maxSpeed = wi.way ? ctx.osm.tag(*wi.way, "maxspeed") : std::string_view{};
+            f64 speed = 25.0;
+            if (!maxSpeed.empty()) {
+                const f64 v = std::atof(std::string(maxSpeed).c_str());
+                if (v > 1.0 && v < 200.0) speed = v;
+            } else {
+                switch (wi.cls) {
+                    case osm::HW_Motorway: speed = 80.0; break;
+                    case osm::HW_Trunk: speed = 65.0; break;
+                    case osm::HW_Primary: speed = 55.0; break;
+                    case osm::HW_Secondary: speed = 45.0; break;
+                    case osm::HW_Tertiary: speed = 40.0; break;
+                    case osm::HW_Residential: speed = 30.0; break;
+                    case osm::HW_Service: speed = 15.0; break;
+                    case osm::HW_Pedestrian:
+                    case osm::HW_Footway:
+                    case osm::HW_Path: speed = 5.0; break;
+                    default: speed = 25.0; break;
+                }
+            }
+            const bool oneway = wi.way && ctx.osm.tag(*wi.way, "oneway") == "yes";
+            const u32 navFlags = NavFlagDrivable | (wi.profile.pedOnly ? NavFlagPedestrianOnly : 0u) |
+                                 (wi.bridge ? NavFlagBridge : 0u) | (wi.tunnel ? NavFlagTunnel : 0u) |
+                                 (oneway ? NavFlagOneWay : 0u) |
+                                 (wi.cls == osm::HW_Footway || wi.cls == osm::HW_Path || wi.profile.pedOnly
+                                      ? NavFlagWalkable : 0u);
+
+            auto heightAt = [&](size_t i) {
+                f64 h = ctx.terrainHF.sample(pts[i].x, pts[i].y);
+                if (wi.bridge) h += 6.0 + 0.02 * static_cast<f64>(i);
+                return static_cast<f32>(h + wi.profile.layerOffset);
+            };
+
+            for (size_t i = 0; i + 1 < pts.size(); ++i) {
+                const f64 segLen = (pts[i + 1] - pts[i]).length();
+                if (segLen < 0.5) continue;
+                const u32 na = nodeFor(pts[i], heightAt(i), static_cast<u16>(navFlags & 0xFFFFu));
+                const u32 nb = nodeFor(pts[i + 1], heightAt(i + 1), static_cast<u16>(navFlags & 0xFFFFu));
+                if (na == nb) continue;
+                NavEdge e{};
+                e.toNode = nb;
+                e.laneCount = static_cast<u16>(std::max(1, wi.profile.lanesTotal));
+                e.direction = oneway || wi.profile.pedOnly ? 1 : 0;
+                e.surface = static_cast<u8>(wi.surface);
+                e.speedLimitKph = static_cast<f32>(speed);
+                e.length = static_cast<f32>(segLen);
+                e.flags = navFlags;
+                e.roadClass = static_cast<u32>(wi.cls);
+                e.bezier[0] = static_cast<f32>(pts[i].x - cd.origin.x);
+                e.bezier[1] = heightAt(i);
+                e.bezier[2] = static_cast<f32>(pts[i].y - cd.origin.y);
+                e.bezier[3] = static_cast<f32>(pts[i + 1].x - cd.origin.x);
+                e.bezier[4] = heightAt(i + 1);
+                e.bezier[5] = static_cast<f32>(pts[i + 1].y - cd.origin.y);
+                pend.push_back(PendingEdge{na, e});
+                ctx.stats.roadLengthMetres += static_cast<u64>(segLen);
+            }
+        }
+
+        // --- 2. Connect dangling endpoints -----------------------------------
+        // OSM ways do not always share a coordinate where they meet, and the
+        // synthesised lattice is generated per ward, so thousands of way ends
+        // dangle.  A dangling end is a wall to the traffic model — the vehicle
+        // reaches it and has nowhere to go — so each one is joined to the nearest
+        // node within 25 m (never to its own predecessor, which would just make a
+        // two-way stub).  This is graph repair, not invention: the join is a
+        // short link at the end of a road that visibly continues.
+        {
+            const f64 snapRadius = 25.0;
+            const u32 nodeCount = static_cast<u32>(cd.navNodes.size());
+            std::vector<u32> outDeg(nodeCount, 0), inDeg(nodeCount, 0);
+            for (const PendingEdge& p : pend) {
+                ++outDeg[p.from];
+                ++inDeg[p.e.toNode];
+            }
+            // Grid index at 25 m, one bucket per node.
+            std::unordered_map<u64, std::vector<u32>> grid;
+            auto bucket = [](i64 x, i64 z) {
+                return (static_cast<u64>(static_cast<u32>(x)) << 32) | static_cast<u32>(z);
+            };
+            for (u32 i = 0; i < nodeCount; ++i) {
+                const NavNode& n = cd.navNodes[i];
+                grid[bucket(static_cast<i64>(std::floor(n.x / snapRadius)),
+                            static_cast<i64>(std::floor(n.z / snapRadius)))].push_back(i);
+            }
+            u32 links = 0;
+            for (u32 i = 0; i < nodeCount && links < 4000; ++i) {
+                if (outDeg[i] != 0 || inDeg[i] == 0) continue;      // not a dangling end
+                const NavNode& a = cd.navNodes[i];
+                const i64 gx = static_cast<i64>(std::floor(a.x / snapRadius));
+                const i64 gz = static_cast<i64>(std::floor(a.z / snapRadius));
+                f64 bestD2 = snapRadius * snapRadius;
+                u32 bestNode = 0xFFFFFFFFu;
+                for (i64 dx = -1; dx <= 1; ++dx)
+                    for (i64 dz = -1; dz <= 1; ++dz) {
+                        auto it = grid.find(bucket(gx + dx, gz + dz));
+                        if (it == grid.end()) continue;
+                        for (u32 j : it->second) {
+                            if (j == i) continue;
+                            const NavNode& b = cd.navNodes[j];
+                            const f64 ddx = static_cast<f64>(b.x) - a.x;
+                            const f64 ddz = static_cast<f64>(b.z) - a.z;
+                            const f64 d2 = ddx * ddx + ddz * ddz;
+                            if (d2 < bestD2) { bestD2 = d2; bestNode = j; }
+                        }
+                    }
+                if (bestNode == 0xFFFFFFFFu) continue;
+                const NavNode& b = cd.navNodes[bestNode];
+                NavEdge e{};
+                e.toNode = bestNode;
+                e.laneCount = 1;
+                e.direction = 0;
+                e.surface = 0;
+                e.speedLimitKph = 20.0f;
+                e.length = static_cast<f32>(std::sqrt(std::max(0.25, bestD2)));
+                e.flags = NavFlagDrivable;
+                e.roadClass = 7;                                    // residential link
+                e.bezier[0] = a.x; e.bezier[1] = a.y; e.bezier[2] = a.z;
+                e.bezier[3] = b.x; e.bezier[4] = b.y; e.bezier[5] = b.z;
+                pend.push_back(PendingEdge{i, e});
+                ++outDeg[i];
+                ++inDeg[bestNode];
+                ++links;
+                ctx.stats.roadLengthMetres += static_cast<u64>(e.length);
+            }
+            if (links) MLOG_INFO("nav: %u dangling ends joined in one cell", links);
+        }
+
+        // --- 3. Contiguous out-edge runs ------------------------------------
+        const u32 nodeCount = static_cast<u32>(cd.navNodes.size());
+        std::vector<u32> counts(nodeCount, 0);
+        for (const PendingEdge& p : pend) counts[p.from]++;
+        u32 cursor = 0;
+        for (u32 i = 0; i < nodeCount; ++i) {
+            cd.navNodes[i].firstEdge = cursor;
+            cd.navNodes[i].edgeCount = static_cast<u16>(std::min<u32>(counts[i], 0xFFFFu));
+            cursor += counts[i];
+        }
+        std::vector<u32> fill(nodeCount, 0);
+        for (u32 i = 0; i < nodeCount; ++i) fill[i] = cd.navNodes[i].firstEdge;
+        cd.navEdges.resize(pend.size());
+        for (const PendingEdge& p : pend) cd.navEdges[fill[p.from]++] = p.e;
+
+        // --- 3. Signals ------------------------------------------------------
+        // Approaches, grouped by their heading.  Two phases, 90-second cycle:
+        // the dominant axis runs for 42 s from t=0, the crossing street for 42 s
+        // from t=45, and the runtime's 3 s amber plus 1.5 s all-red fill the
+        // gaps.  A junction earns a signal by having at least two approaches on
+        // a secondary-or-better road (the OSM enum runs most-important-first).
+        std::vector<std::vector<u32>> incoming(nodeCount);
+        for (u32 i = 0; i < cd.navEdges.size(); ++i) {
+            const u32 to = cd.navEdges[i].toNode;
+            if (to < nodeCount) incoming[to].push_back(i);
+        }
+        for (u32 n = 0; n < nodeCount; ++n) {
+            const u32 outDeg = cd.navNodes[n].edgeCount;
+            u32 degree = outDeg + static_cast<u32>(incoming[n].size());
+            maxDegree = std::max(maxDegree, degree);
+            if (degree < 3) {
+                if (outDeg == 0 && !incoming[n].empty()) ++deadEnds;
+                continue;
+            }
+            ++junctions3;
+            u32 major = 0, tertiary = 0, wide = 0;
+            Vec2d axis{0, 0};
+            // Arms, not edges: every incident segment counts once, whether the
+            // source stored it as an approach to this node or as a departure from
+            // it.  A road that only passes through contributes two arms on one
+            // alignment, which the axis test below recognises.
+            auto armOf = [&](const NavEdge& ne) {
+                const u32 cls = ne.roadClass;
+                if (cls >= 1 && cls <= 4) ++major;            // motorway .. secondary
+                else if (cls == 5 || cls == 6) ++tertiary;    // tertiary, unclassified
+                if (ne.laneCount >= 4) ++wide;
+                if (axis.lengthSq() == 0.0 && cls >= 1 && cls <= 6) {
+                    const Vec2d d{ne.bezier[3] - ne.bezier[0], ne.bezier[5] - ne.bezier[2]};
+                    if (d.lengthSq() > 1e-9) axis = d.normalized();
+                }
+            };
+            for (u32 e : incoming[n]) armOf(cd.navEdges[e]);
+            for (u32 k = 0; k < outDeg; ++k) {
+                const u32 e = cd.navNodes[n].firstEdge + k;
+                if (e < cd.navEdges.size()) armOf(cd.navEdges[e]);
+            }
+            // Every junction is classified by the shape that warrants its
+            // signal, so the numbers below are a decision and not a guess.
+            const navsignal::JunctionShape shape{major, tertiary, wide, degree};
+            const navsignal::Warrant cause = navsignal::classifyJunction(shape);
+            if (cause == navsignal::Warrant::None) { ++warrantCause[WC_None]; continue; }
+            ++warrantCause[static_cast<int>(cause)];
+            if (axis.lengthSq() == 0.0) { ++warrantCause[WC_NoAxis]; continue; }
+            ++junctionsSignalled;
+            // One phase per arm, because the runtime turns every two-way segment
+            // into both approaches: a phase on an outgoing segment is the phase
+            // its opposing approach obeys.
+            for (u32 e : incoming[n]) {
+                const NavEdge& ne = cd.navEdges[e];
+                const Vec2d dir{ne.bezier[3] - ne.bezier[0], ne.bezier[5] - ne.bezier[2]};
+                if (dir.lengthSq() < 1e-9) continue;
+                const Vec2d u = dir.normalized();
+                const bool along = navsignal::armRunsAlong(u, axis);
+                NavSignalPhase p{};
+                p.edgeIndex = e;
+                p.startGreenDeciseconds = static_cast<u16>(
+                    along ? 0 : navsignal::kCrossOffsetDeciseconds);
+                p.greenDeciseconds = static_cast<u16>(navsignal::kGreenDeciseconds);
+                cd.signals.push_back(p);
+                ++totalSignals;
+            }
+            for (u32 k = 0; k < outDeg; ++k) {
+                const u32 e = cd.navNodes[n].firstEdge + k;
+                if (e >= cd.navEdges.size()) continue;
+                const NavEdge& ne = cd.navEdges[e];
+                const Vec2d dir{ne.bezier[3] - ne.bezier[0], ne.bezier[5] - ne.bezier[2]};
+                if (dir.lengthSq() < 1e-9) continue;
+                const bool along = navsignal::armRunsAlong(dir.normalized(), axis);
+                NavSignalPhase p{};
+                p.edgeIndex = e;
+                p.startGreenDeciseconds = static_cast<u16>(
+                    along ? 0 : navsignal::kCrossOffsetDeciseconds);
+                p.greenDeciseconds = static_cast<u16>(navsignal::kGreenDeciseconds);
+                cd.signals.push_back(p);
+                ++totalSignals;
+            }
+        }
+
+        totalNodes += nodeCount;
+        totalEdges += cd.navEdges.size();
+    }
+
+    ctx.stats.navNodes = totalNodes;
+    ctx.stats.navEdges = totalEdges;
+    ctx.stats.navSignals = totalSignals;
+    MLOG_INFO("nav: signal warrant — two classified %llu, classified+wide %llu, three collectors %llu, two wide %llu, no warrant %llu, no axis %llu",
+              (unsigned long long)warrantCause[WC_TwoClassified],
+              (unsigned long long)warrantCause[WC_ClassifiedWideJunction],
+              (unsigned long long)warrantCause[WC_ThreeCollectors],
+              (unsigned long long)warrantCause[WC_TwoWide],
+              (unsigned long long)warrantCause[WC_None],
+              (unsigned long long)warrantCause[WC_NoAxis]);
+    MLOG_INFO("nav: %llu nodes, %llu edges, %llu junctions (3+), %llu signalled, %llu signals, %llu dead ends, max degree %u",
+              (unsigned long long)totalNodes, (unsigned long long)totalEdges,
+              (unsigned long long)junctions3, (unsigned long long)junctionsSignalled,
+              (unsigned long long)totalSignals, (unsigned long long)deadEnds, maxDegree);
+}
+
+}  // namespace
 
 // -----------------------------------------------------------------------------
 //  buildRoads
@@ -370,76 +834,6 @@ bool buildRoads(Context& ctx) {
                 cd.roads.endSubmesh();
                 ctx.stats.roadTriangles += 16;
             }
-
-            // --- navigation graph ----------------------------------------------
-            // Nodes are emitted per resampled vertex; edges connect consecutive
-            // vertices and carry lane/speed/class metadata for the traffic AI.
-            const f64 speed = [&] {
-                const auto maxSpeed = wi.way ? ctx.osm.tag(*wi.way, "maxspeed")
-                                             : std::string_view{};
-                if (!maxSpeed.empty()) {
-                    const f64 v = std::atof(std::string(maxSpeed).c_str());
-                    if (v > 1.0 && v < 200.0) return v;
-                }
-                switch (wi.cls) {
-                    case osm::HW_Motorway: return 80.0;
-                    case osm::HW_Trunk: return 65.0;
-                    case osm::HW_Primary: return 55.0;
-                    case osm::HW_Secondary: return 45.0;
-                    case osm::HW_Tertiary: return 40.0;
-                    case osm::HW_Residential: return 30.0;
-                    case osm::HW_Service: return 15.0;
-                    case osm::HW_Pedestrian:
-                    case osm::HW_Footway:
-                    case osm::HW_Path: return 5.0;
-                    default: return 25.0;
-                }
-            }();
-            const bool oneway = wi.way && ctx.osm.tag(*wi.way, "oneway") == "yes";
-            const u32 navFlags = NavFlagDrivable | (prof.pedOnly ? NavFlagPedestrianOnly : 0u) |
-                                 (wi.bridge ? NavFlagBridge : 0u) |
-                                 (wi.tunnel ? NavFlagTunnel : 0u) |
-                                 (oneway ? NavFlagOneWay : 0u) |
-                                 (wi.cls == osm::HW_Footway || wi.cls == osm::HW_Path || prof.pedOnly
-                                      ? NavFlagWalkable : 0u);
-            auto addNavNode = [&](const Vec2d& p, f32 y) -> u32 {
-                NavNode n{};
-                n.x = static_cast<f32>(p.x - cd.origin.x);
-                n.y = y;
-                n.z = static_cast<f32>(p.y - cd.origin.y);
-                n.firstEdge = static_cast<u32>(cd.navEdges.size());
-                n.edgeCount = 0;
-                n.flags = static_cast<u16>(navFlags & 0xFFFFu);
-                n.osmId = 0;
-                cd.navNodes.push_back(n);
-                return static_cast<u32>(cd.navNodes.size() - 1);
-            };
-            const u32 nodeCountBefore = static_cast<u32>(cd.navNodes.size());
-            const u32 na = addNavNode(a, y0);
-            const u32 nb = addNavNode(b, y1);
-            NavEdge e{};
-            e.toNode = nb;
-            e.laneCount = static_cast<u16>(std::max(1, prof.lanesTotal));
-            e.direction = oneway || prof.pedOnly ? 1 : 0;
-            e.surface = static_cast<u8>(wi.surface);
-            e.speedLimitKph = static_cast<f32>(speed);
-            e.length = static_cast<f32>(segLen);
-            e.flags = navFlags;
-            e.roadClass = static_cast<u32>(wi.cls);
-            // Cubic control points of the segment (for lane following).
-            e.bezier[0] = static_cast<f32>(a.x - cd.origin.x);
-            e.bezier[1] = y0;
-            e.bezier[2] = static_cast<f32>(a.y - cd.origin.y);
-            e.bezier[3] = static_cast<f32>(b.x - cd.origin.x);
-            e.bezier[4] = y1;
-            e.bezier[5] = static_cast<f32>(b.y - cd.origin.y);
-            cd.navEdges.push_back(e);
-            cd.navNodes[na].edgeCount = 1;
-            ctx.stats.navEdges++;
-            ctx.stats.navNodes += 2;
-            ctx.stats.roadLengthMetres += static_cast<u64>(segLen);
-            (void)nodeCountBefore;
-            ctx.stats.roadTriangles += 0;
         }
         ++ctx.stats.roadWays;
         ctx.stats.surfaceCounts[surfaceName(wi.surface)] += 1;
@@ -478,6 +872,9 @@ bool buildRoads(Context& ctx) {
         cd.counts.roadJunctions++;
     }
 
+    planarizeCrossings(ctx, ways);
+    buildNavGraph(ctx, ways);
+
     MLOG_INFO("roads: %llu ways, %.1f km centreline, %llu junctions, %llu triangles",
               (unsigned long long)ctx.stats.roadWays,
               ctx.stats.roadLengthMetres / 1000.0,
@@ -487,6 +884,9 @@ bool buildRoads(Context& ctx) {
     ctx.qa.add("roads.centrelineKilometres", ctx.stats.roadLengthMetres / 1000.0);
     ctx.qa.add("roads.junctionCount", static_cast<f64>(ctx.stats.junctions));
     ctx.qa.add("roads.triangles", static_cast<f64>(ctx.stats.roadTriangles));
+    ctx.qa.add("roads.navNodes", static_cast<f64>(ctx.stats.navNodes));
+    ctx.qa.add("roads.navEdges", static_cast<f64>(ctx.stats.navEdges));
+    ctx.qa.add("roads.navSignals", static_cast<f64>(ctx.stats.navSignals));
     return true;
 }
 

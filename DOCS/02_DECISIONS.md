@@ -575,6 +575,143 @@ would begin with a real DEM via `--dem`.
 
 ---
 
+## D-027 — The specification's comfort numbers are fractions of class maxima
+
+**Decided.** Section 5 gives each archetype a pair of numbers — BEST 0.9/0.3,
+auto-rickshaw 0.2/0.7, kaali-peeli 0.4/0.6, motorcycles 0.05/0.8 — and words:
+the bus pulls away hard and brakes early, the auto crawls and brakes late, the
+two-wheeler barely touches the throttle and brakes hardest of all. Read as metres
+per second squared the numbers describe no vehicle that exists: 0.05 m/s² is a
+motorcycle taking six minutes to reach 20 km/h, and 0.9 m/s² for a 16-tonne bus
+is roughly twice what its engine can do from rest. Read as *fractions of the
+archetype's own maxima* every one of the specification's sentences is reproduced
+exactly, which is the reading that makes the pair a model parameter rather than a
+contradiction: the bus uses 90 % of a modest engine and only 30 % of its brakes,
+the motorcycle uses 5 % of a strong engine and 80 % of its brakes.
+
+| archetype | length | mass | width | accel (frac × max) | brake | v₀ |
+|---|---|---|---|---|---|---|
+| motorcycle | 1.95 m | 135 kg | 0.75 m | 0.05 × 3.0 = 0.15 m/s² | 0.80 × 4.0 = 3.20 | 80 kph |
+| auto-rickshaw | 2.60 m | 400 kg | 1.40 m | 0.20 × 1.5 = 0.30 | 0.70 × 3.0 = 2.10 | 55 kph |
+| kaali-peeli | 3.90 m | 1,150 kg | 1.65 m | 0.40 × 2.5 = 1.00 | 0.60 × 3.5 = 2.10 | 85 kph |
+| car | 4.40 m | 1,400 kg | 1.75 m | 0.45 × 2.6 = 1.17 | 0.60 × 3.6 = 2.16 | 85 kph |
+| BEST | 11.90 m | 16,000 kg | 2.55 m | 0.90 × 1.2 = 1.08 | 0.30 × 2.0 = 0.60 | 60 kph |
+
+**Consequence, accepted.** Two-wheelers are the slowest class away from a
+signal — after one second a motorcycle at 0.15 m/s² has gained 0.54 km/h. That is
+the specification's "barely touches the throttle" taken at its word, and it is
+also what makes the fleet's measured mean speed a Mumbai number rather than a
+motorway number. A two-wheeler's advantage is not acceleration; it is that it
+holds no lane, which is what the Boids field gives it.
+
+---
+
+## D-028 — Junctions exist where roads cross, so the roads are planarised
+
+**Decided.** Before this pass the navigation graph contained only the junctions
+the source data happened to store as a shared coordinate: 4,994 of the 16,344
+at-grade crossings in the network. Everything else — every arterial crossing a
+ward street, and 19 arterial-on-arterial crossings — crossed *mid-span* and met
+nothing. Measured, the consequence was stark: 48,279 junctions of 112,704 nodes
+and the signal warrant firing at exactly **one** of them, because a junction with
+one approach and no arm opposite it is not a junction.
+
+`detail::planarizeCrossings` (`pipeline/stages/network.cpp`) finds every at-grade
+crossing with a 24 m spatial hash over the resampled centrelines, and inserts the
+crossing point into both roads' *navigation* chains (`WaySpec::navPoints`) — 24,503
+vertices into 16,562 roads. The mesh chain (`points`) is untouched: a junction is
+a topology fact and a ribbon needs no extra cross-section for it, which also
+keeps the 8,394 km of carriageway triangles unchanged. Crossings are skipped when
+either road is flagged bridge or tunnel (9 of them, and the flag is what says a
+flyover is not a junction) and when a road already has a vertex within 1.5 m.
+Planarising cost 14,194 nodes and 25,333 edges and left the triangle count
+identical.
+
+**The warrant moves to `engine/world/signal_warrant.h`** because two pieces of
+the system must agree on it: the pipeline bakes the phases it can express into the
+chunks, and the runtime has to phase the junctions the chunk format *cannot*
+express — a junction whose arms lie in two files is two nodes in two files, and
+only the runtime, with the merged graph in hand, can see it as one junction. Two
+copies of a warrant would be two different cities. Counting is by **arms**, not by
+edges: at a junction every incident segment contributes one arm whichever way it
+is stored. The warrant fires on two or more classified arms (an arterial
+intersection, or an arterial passing through a four-arm junction — every junction
+on S.V. Road is signalised), on one classified arm at a four-arm junction, on
+three or more classified arms of any rank, and on two four-lane arms.
+
+**The plan is 90 s with two 45 s axes, 40 s of green.** The previous numbers (42 s
+green, 45 s offset) overlapped the crossing phase's green by 1.5 s once amber and
+all-red are counted; a signal model that runs both axes green at the same time is
+the one failure a signal model must not have, and the arithmetic is now asserted
+in the header.
+
+**Result (run 46).** 126,898 nodes, 169,701 edges, 59,185 junctions, **181
+signalled junctions and 648 armed phases** — up from 1 and 3 before the pass. The
+warrant tally says exactly where they come from: 148 junctions with two or more
+classified arms, 33 with three or more classified approaches of any rank, and
+59,004 junctions that earn nothing. 181 signalised junctions across 8,394 km of
+carriageway is the right order for a network that is a quarter of the real city's
+length; what it is not yet is the *whole* of Mumbai's signals, because 6,711 of
+the 8,167 already-jointed crossings were jointed by the ward lattice meeting
+itself, and a lattice street is residential.
+
+---
+
+## D-029 — The runtime materialises the graph the chunk format only describes
+
+**Decided.** Three things the chunk format cannot say, and the runtime therefore
+does itself. Each was a measured failure before it was a rule.
+
+1. **Two-way segments become two edges.** The format stores one record per
+   segment and a direction flag (0 = both ways), so before this a street was
+   drivable in one direction only: 10,767 nodes had no exit at all and every one
+   of them was a wall. The runtime now builds the reverse edge for every segment
+   whose flag says both ways, with `SimEdge::reverse` recording the pairing.
+2. **Nodes are jointed on world position, not per file.** A junction whose arms
+   fall in two neighbouring 1,024 m cells is two nodes in two chunks, and no
+   record can point across a file boundary. Nodes are merged on a 0.10 m quantum
+   with a probe of the neighbouring quanta, which absorbs both the float
+   rounding and a point that lands exactly on a quantum edge. `nodesMerged` and
+   `nodesMergedAcrossChunks` report the two kinds of joint apart.
+3. **Signals are completed, then derived.** Where a two-way segment could only be
+   named in one direction, the opposing approach is given the plan of the arms
+   that *were* named (the junction's own axis, not a copied phase). Where a
+   junction has no baked phase at all — the cross-chunk case — the runtime
+   applies the same warrant and the same plan constants as the pipeline
+   (`derivedSignals` counts them).
+
+**Two rules the traffic model needed and did not have.**
+
+* **No U-turns at junctions.** With both directions materialised, every node
+  offers the reversal of the edge just travelled; taking it is a U-turn in the
+  middle of a block, which Mumbai traffic does not do. The reversal is refused
+  while any other arm exists and taken only at a dead end (`deadEndUTurns`).
+* **A queue spills backwards over the junction it is waiting at.** `s` may go
+  negative by up to the vehicle's own length plus 0.5 m, which is geometrically
+  the tail of the previous edge. Clamping at zero instead stacked bodies on the
+  boundary: the diagnostic this replaced caught a motorcycle inside a bus with
+  the front vehicle's rear 1 cm behind the edge origin.
+
+**One pass, not two.** Lane discipline and the obstruction check are now a single
+descending-`s` sweep per edge: each vehicle's constraint is the tighter of its
+obstruction and the real rear of the vehicle listed in front of it, and because
+the sweep runs from the front of the queue backwards every leader is settled
+before the vehicle behind it is clamped. Run as two sweeps the second could undo
+the first — a motorcycle pushed back by its own leader after the car behind it
+had already been corrected left a 0.29 m gap where the floor asks 0.5 m. The
+reported `minGap` is likewise measured on the settled state and only between
+bodies whose lateral footprints overlap: a pair riding abreast is not a pair
+following.
+
+**Tested.** `tests/test_traffic.cpp` gains three cases that exercise the runtime's
+own graph construction rather than the driving model: a two-way segment driven
+both ways and turned around at its end, a road crossing a chunk boundary jointed
+node for node (7 written nodes, 6 graph nodes, one of them the seam), and a T
+junction assembled from three chains with no shared node record at all, which must
+still be signalled — the arms open on two axes and never both at once.
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

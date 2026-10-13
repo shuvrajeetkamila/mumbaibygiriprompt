@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,9 @@ struct Straight {
     f64 greenStart = 0.0;      // seconds into the cycle the green opens
     f64 greenSeconds = 0.0;    // 0 = no signal, on the last straight edge
     bool loop = false;         // connect the last node back to the first
+    bool twoWay = false;       // write direction 0: one record, both directions
+    bool alongZ = false;       // run along +z instead of +x
+    u8 roadClass = 12;         // roadClass written into every edge
 };
 
 struct SyntheticWorld {
@@ -45,14 +49,15 @@ struct SyntheticWorld {
     std::vector<u32> chainFirstEdge;
     std::vector<u32> chainLastEdge;
     std::vector<f64> chainLength;
+    std::vector<u32> edgeFrom;      // the node each edge leaves; NavEdge has no fromNode
 
     void add(const Straight& s) {
         const u32 first = static_cast<u32>(nodes.size());
         for (int i = 0; i <= s.segments; ++i) {
             NavNode n{};
-            n.x = static_cast<f32>(s.x0 + i * s.segLen);
+            n.x = static_cast<f32>(s.x0 + (s.alongZ ? 0.0 : i * s.segLen));
             n.y = 0.0f;
-            n.z = static_cast<f32>(s.z0);
+            n.z = static_cast<f32>(s.z0 + (s.alongZ ? i * s.segLen : 0.0));
             n.firstEdge = 0;
             n.edgeCount = (i < s.segments) ? 1u : 0u;
             n.flags = 0;
@@ -65,13 +70,14 @@ struct SyntheticWorld {
             NavEdge e{};
             e.toNode = first + static_cast<u32>(i + 1);
             e.laneCount = s.lanes;
-            e.direction = 1;
+            e.direction = s.twoWay ? 0 : 1;
             e.surface = 0;
             e.speedLimitKph = s.limit;
             e.length = static_cast<f32>(s.segLen);
             e.flags = 0;
-            e.roadClass = 12;
+            e.roadClass = s.roadClass;
             nodes[first + static_cast<u32>(i)].firstEdge = static_cast<u32>(edges.size());
+            edgeFrom.push_back(first + static_cast<u32>(i));
             edges.push_back(e);
         }
         const u32 lastStraight = static_cast<u32>(edges.size()) - 1;
@@ -84,14 +90,15 @@ struct SyntheticWorld {
             NavEdge e{};
             e.toNode = first;
             e.laneCount = s.lanes;
-            e.direction = 1;
+            e.direction = s.twoWay ? 0 : 1;
             e.surface = 0;
             e.speedLimitKph = s.limit;
             e.length = static_cast<f32>(s.segLen);
             e.flags = 0;
-            e.roadClass = 12;
+            e.roadClass = s.roadClass;
             nodes[lastNode].firstEdge = static_cast<u32>(edges.size());
             nodes[lastNode].edgeCount = 1;
+            edgeFrom.push_back(lastNode);
             edges.push_back(e);
         }
         chainLastEdge.push_back(lastStraight);
@@ -114,6 +121,131 @@ struct SyntheticWorld {
         f64 rem = std::max(0.0, metres);
         while (e < last && edges[e].length < rem) { rem -= edges[e].length; ++e; }
         return Place{e, std::min(rem, static_cast<f64>(edges[e].length) - 0.5)};
+    }
+
+    // Splits the world into macro-cells the way the pipeline does: an edge
+    // belongs to the cell that contains its midpoint, and a node whose edges fall
+    // in two cells is written into both — which is the seam a runtime has to
+    // joint, because no chunk record can name a node in another file.
+    std::vector<std::string> writeCells(const std::string& name) const {
+        struct CellOut {
+            i64 cx = 0, cz = 0;
+            std::vector<NavNode> nodes;
+            std::vector<NavEdge> edges;
+            std::vector<NavSignalPhase> signals;
+        };
+        std::vector<CellOut> cells;
+        std::map<std::pair<i64, i64>, u32> cellAt;
+        std::vector<std::vector<u32>> globalEdges(1);   // [cell] -> global edge indices
+        std::vector<std::vector<u32>> localEdge(1);     // [cell][global edge] -> local edge
+        std::vector<u32> edgeCell(edges.size(), 0xFFFFFFFFu);
+
+        auto cellOf = [&](i64 cx, i64 cz) {
+            const std::pair<i64, i64> k{cx, cz};
+            const auto it = cellAt.find(k);
+            if (it != cellAt.end()) return it->second;
+            CellOut c;
+            c.cx = cx;
+            c.cz = cz;
+            cells.push_back(std::move(c));
+            const u32 idx = static_cast<u32>(cells.size()) - 1;
+            cellAt.emplace(k, idx);
+            globalEdges.push_back({});
+            localEdge.push_back({});
+            return idx;
+        };
+
+        for (u32 i = 0; i < edges.size(); ++i) {
+            const u32 from = edgeFrom[i], to = edges[i].toNode;
+            const Vec2d a{nodes[from].x, nodes[from].z}, b{nodes[to].x, nodes[to].z};
+            const Vec2d mid = (a + b) * 0.5;
+            const u32 cell = cellOf(static_cast<i64>(std::floor(mid.x / MACRO_CELL_SIZE)),
+                                    static_cast<i64>(std::floor(mid.y / MACRO_CELL_SIZE)));
+            edgeCell[i] = cell;
+            globalEdges[cell].push_back(i);
+        }
+
+        for (u32 c = 0; c < cells.size(); ++c) {
+            CellOut& out = cells[c];
+            localEdge[c].assign(edges.size(), 0xFFFFFFFFu);
+            // Local nodes are created in ascending global index, so both the node
+            // order and the edge runs are deterministic.
+            std::map<u32, u32> local;
+            auto localNode = [&](u32 global) {
+                const auto it = local.find(global);
+                if (it != local.end()) return it->second;
+                NavNode n = nodes[global];
+                const f64 ox = static_cast<f64>(out.cx) * MACRO_CELL_SIZE;
+                const f64 oz = static_cast<f64>(out.cz) * MACRO_CELL_SIZE;
+                n.x = static_cast<f32>(static_cast<f64>(nodes[global].x) - ox);
+                n.z = static_cast<f32>(static_cast<f64>(nodes[global].z) - oz);
+                const u32 idx = static_cast<u32>(out.nodes.size());
+                local.emplace(global, idx);
+                out.nodes.push_back(n);
+                return idx;
+            };
+            for (u32 ge : globalEdges[c]) (void)localNode(edgeFrom[ge]);
+            for (u32 ge : globalEdges[c]) (void)localNode(edges[ge].toNode);
+            for (u32 l = 0; l < out.nodes.size(); ++l) {
+                out.nodes[l].firstEdge = 0;
+                out.nodes[l].edgeCount = 0;
+            }
+            // Runs, in local node order.
+            std::map<u32, std::vector<u32>> byFrom;
+            for (u32 ge : globalEdges[c]) byFrom[local[edgeFrom[ge]]].push_back(ge);
+            for (u32 l = 0; l < out.nodes.size(); ++l) {
+                const auto it = byFrom.find(l);
+                if (it == byFrom.end()) continue;
+                out.nodes[l].firstEdge = static_cast<u32>(out.edges.size());
+                out.nodes[l].edgeCount = static_cast<u32>(it->second.size());
+                for (u32 ge : it->second) {
+                    NavEdge e = edges[ge];
+                    e.toNode = local[edges[ge].toNode];
+                    localEdge[c][ge] = static_cast<u32>(out.edges.size());
+                    out.edges.push_back(e);
+                }
+            }
+        }
+
+        for (const NavSignalPhase& p : signals) {
+            const u32 cell = edgeCell[p.edgeIndex];
+            if (cell == 0xFFFFFFFFu) continue;
+            if (localEdge[cell][p.edgeIndex] == 0xFFFFFFFFu) continue;
+            NavSignalPhase sp = p;
+            sp.edgeIndex = localEdge[cell][p.edgeIndex];
+            cells[cell].signals.push_back(sp);
+        }
+
+        std::vector<std::string> paths;
+        for (u32 c = 0; c < cells.size(); ++c) {
+            const CellOut& cell = cells[c];
+            NavGraphHeader nh{};
+            nh.nodeCount = static_cast<u32>(cell.nodes.size());
+            nh.edgeCount = static_cast<u32>(cell.edges.size());
+            nh.signalCount = static_cast<u32>(cell.signals.size());
+            std::vector<u8> payload(sizeof(NavGraphHeader) + cell.nodes.size() * sizeof(NavNode) +
+                                    cell.edges.size() * sizeof(NavEdge) +
+                                    cell.signals.size() * sizeof(NavSignalPhase));
+            size_t at = 0;
+            std::memcpy(payload.data() + at, &nh, sizeof(nh));
+            at += sizeof(nh);
+            std::memcpy(payload.data() + at, cell.nodes.data(), cell.nodes.size() * sizeof(NavNode));
+            at += cell.nodes.size() * sizeof(NavNode);
+            std::memcpy(payload.data() + at, cell.edges.data(), cell.edges.size() * sizeof(NavEdge));
+            at += cell.edges.size() * sizeof(NavEdge);
+            if (!cell.signals.empty())
+                std::memcpy(payload.data() + at, cell.signals.data(),
+                            cell.signals.size() * sizeof(NavSignalPhase));
+            ChunkWriter w(cell.cx, cell.cz, 0xA3C0FFEEull);
+            w.addSection(SectionType::RoadNavGraph, payload.data(), payload.size(), nh.nodeCount,
+                         sizeof(NavNode), 1, SectionFlagMandatory | SectionFlagPrefixed);
+            char buf[8];
+            std::snprintf(buf, sizeof(buf), "_%u", c);
+            const std::string path = "/tmp/mumbai_traffic_" + name + buf + ".chunk";
+            if (!w.write(path)) return {};
+            paths.push_back(path);
+        }
+        return paths;
     }
 
     std::string write(const std::string& name) const {
@@ -565,6 +697,67 @@ TEST(hailedTaxisStopAndTheCityKeepsMoving) {
     checkLaneInvariants(t);
 }
 
+#if defined(MUMBAI_TRAFFIC_DIAG)
+// Diagnostic build: run the world tick by tick and report the first moment two
+// bodies registered in one lane are closer than the floor while their lateral
+// footprints overlap, with the forty ticks that follow.  Compiled only with
+// -DMUMBAI_TRAFFIC_DIAG; the normal suite never pays for it.
+TEST(diagTrafficPenetrationReporter) {
+    SyntheticWorld w;
+    for (int i = 0; i < 4; ++i) {
+        Straight s;
+        s.z0 = i * 45.0;
+        s.segments = 10;
+        s.segLen = 60.0;
+        s.lanes = 3;
+        s.limit = 50.0f;
+        s.loop = true;
+        if (i % 2 == 0) { s.greenStart = 15.0 * i; s.greenSeconds = 40.0; }
+        w.add(s);
+    }
+    const std::string path = w.write("diag");
+    if (path.empty()) return;
+    sim::Traffic t({path}, {}, Vec2d{200, 60}, 240, 1234);
+    const f64 dt = 1.0 / 60.0;
+    const std::vector<sim::SimEdge>& E = t.edges();
+    for (int tick = 0; tick < 600 * 60; ++tick) {
+        t.step(dt);
+        const std::vector<sim::Vehicle>& V = t.vehicles();
+        for (u32 ei = 0; ei < E.size(); ++ei) {
+            for (u16 l = 0; l < E[ei].lanes; ++l) {
+                const std::vector<u32>& list = E[ei].laneVehicles[l];
+                for (size_t k = 1; k < list.size(); ++k) {
+                    const sim::Vehicle& behind = V[list[k - 1]];
+                    const sim::Vehicle& ahead = V[list[k]];
+                    const f64 sides = 0.5 * (sim::archetypeSpec(ahead.kind).width +
+                                             sim::archetypeSpec(behind.kind).width);
+                    if (std::fabs(ahead.lateral - behind.lateral) > sides) continue;
+                    if (ahead.s - ahead.length - behind.s >= sim::kMinGap - 1e-6) continue;
+                    std::printf("\nPENETRATION t=%.3f edge=%u lane=%u  ahead=%s s=%.2f len=%.2f lat=%.2f v=%.2f obs=%.2f\n"
+                                "                                       behind=%s s=%.2f len=%.2f lat=%.2f v=%.2f obs=%.2f\n",
+                                tick * dt, ei, l, sim::archetypeSpec(ahead.kind).name, ahead.s,
+                                ahead.length, ahead.lateral, ahead.v, ahead.obstruction,
+                                sim::archetypeSpec(behind.kind).name, behind.s, behind.length,
+                                behind.lateral, behind.v, behind.obstruction);
+                    for (int k2 = 0; k2 < 40; ++k2) {
+                        t.step(dt);
+                        const std::vector<sim::Vehicle>& W = t.vehicles();
+                        std::printf("   +%.3f ahead: e=%u s=%.2f v=%.2f lat=%.2f obs=%.2f | behind: e=%u s=%.2f v=%.2f lat=%.2f obs=%.2f\n",
+                                    (k2 + 1) * dt, W[list[k]].edge, W[list[k]].s, W[list[k]].v,
+                                    W[list[k]].lateral, W[list[k]].obstruction, W[list[k - 1]].edge,
+                                    W[list[k - 1]].s, W[list[k - 1]].v, W[list[k - 1]].lateral,
+                                    W[list[k - 1]].obstruction);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    std::printf("\nno penetration in 600 s\n");
+}
+
+#endif
+
 TEST(theFleetMixIsTheCitysAndTheCountersAddUp) {
     SyntheticWorld w;
     for (int i = 0; i < 3; ++i) {
@@ -688,4 +881,118 @@ TEST(aLongRunStaysInsideTheWorldAndTheLaw) {
     CHECK(m.vehicles > 200u);
     CHECK(a.meanSpeedKph > 1.0);
 CHECK(a.minGap >= sim::kMinGap - 1e-6);
+}
+
+// -----------------------------------------------------------------------------
+//  Two-way streets, the cross-chunk seam, and the signals the chunks cannot
+//  express.  These three exercise the runtime's own graph construction rather
+//  than the driving model: a city whose streets can only be driven one way, whose
+//  junctions stop at a file boundary, or whose signals exist only where one
+//  chunk happens to contain the whole crossing, is not the city the pipeline
+//  describes.
+// -----------------------------------------------------------------------------
+TEST(aTwoWaySegmentIsDrivableBothWaysAndATurnaroundIsNot) {
+    SyntheticWorld w;
+    Straight s;
+    s.segments = 4;          // 4 x 60 m = 240 m, written as direction 0
+    s.segLen = 60.0;
+    s.lanes = 2;
+    s.twoWay = true;
+    w.add(s);
+    const std::string path = w.write("twoway");
+    CHECK_FALSE(path.empty());
+    if (path.empty()) return;
+
+    sim::Traffic t({path}, {}, Vec2d{0, 0}, 0, 7);
+    CHECK_EQ(t.metrics(Vec2d{0, 0}, 0.0).reverseEdges, 4u);   // one per segment
+    // A car near the far end of the chain: its only way onward is the turnaround.
+    const u32 car = place(t, w, 0, 200.0, sim::Archetype::Car, 0, 8.0);
+    const f64 before = t.positionOf(t.vehicles()[car]).x;
+    const sim::TrafficMetrics m = run(t, 12.0);
+    const f64 after = t.positionOf(t.vehicles()[car]).x;
+    CHECK(m.deadEndUTurns >= 1u);                 // turned around at the end...
+    CHECK(after < before - 5.0);                  // ...and came back down the chain
+    CHECK_EQ(m.badState, 0u);
+    CHECK(m.minGap >= sim::kMinGap - 1e-6);
+}
+
+TEST(nodesAreJointedAcrossAChunkBoundary) {
+    SyntheticWorld w;
+    Straight a;
+    a.x0 = 1000.0;           // straddles x = 1024
+    a.segments = 2;
+    a.segLen = 24.0;
+    a.lanes = 1;
+    w.add(a);
+    Straight b;
+    b.x0 = 1048.0;
+    b.segments = 3;
+    b.segLen = 24.0;
+    b.lanes = 1;
+    w.add(b);
+    const std::vector<std::string> paths = w.writeCells("seam");
+    CHECK_EQ(paths.size(), 2u);
+    if (paths.size() != 2) return;
+
+    sim::Traffic t(paths, {}, Vec2d{0, 0}, 0, 13);
+    const sim::TrafficMetrics e = t.metrics(Vec2d{0, 0}, 0.0);
+    CHECK(e.nodesMergedAcrossChunks >= 1u);       // the boundary node was jointed
+    CHECK_EQ(e.nodes, 6u);                        // 7 written nodes, 1 shared
+    // A car on the first edge of the first chunk drives into the second chunk.
+    const u32 car = place(t, w, 0, 30.0, sim::Archetype::Car, 0, 10.0);
+    const sim::TrafficMetrics m = run(t, 8.0);
+    CHECK(m.edgeCompletions >= 2u);
+    CHECK(m.deadEndHolds == 0u);
+    CHECK(t.vehicles()[car].v > 2.0);
+}
+
+TEST(theRuntimeSignalsAJunctionNoSingleChunkCouldDescribe) {
+    SyntheticWorld w;
+    // A T: two arterial chains meeting at (100, 0) plus a residential stem.  The
+    // three chains are three separate node arrays; only the position merge makes
+    // the point one junction, and only the shared warrant makes it a signal.
+    Straight west;
+    west.segments = 2;
+    west.segLen = 50.0;
+    west.lanes = 4;          // wide as well as classified
+    west.roadClass = 3;      // primary
+    west.twoWay = true;
+    w.add(west);
+    Straight east;
+    east.x0 = 100.0;
+    east.segments = 3;
+    east.segLen = 50.0;
+    east.lanes = 4;
+    east.roadClass = 3;
+    east.twoWay = true;
+    w.add(east);
+    Straight stem;
+    stem.x0 = 100.0;
+    stem.z0 = 0.0;
+    stem.alongZ = true;      // the stem runs south from the junction
+    stem.segments = 2;
+    stem.segLen = 50.0;
+    stem.lanes = 1;
+    stem.roadClass = 7;      // residential
+    stem.twoWay = true;
+    w.add(stem);
+
+    const std::string path = w.write("junction");
+    CHECK_FALSE(path.empty());
+    if (path.empty()) return;
+
+    sim::Traffic t({path}, {}, Vec2d{100, 0}, 0, 17);
+    const sim::TrafficMetrics e = t.metrics(Vec2d{100, 0}, 0.0);
+    CHECK(e.nodesMerged >= 2u);                   // the two shared endpoints
+    CHECK(e.derivedSignals >= 3u);                // one phase per arm
+    CHECK(e.signals >= 3u);
+    // Every arm of the junction opens on one of the two axes, and the two axes
+    // must not both be green at the same instant.
+    size_t along = 0, cross = 0;
+    for (const sim::SignalPhase& p : t.signals()) {
+        if (p.greenStart < 0.5) ++along;
+        else ++cross;
+    }
+    CHECK(along > 0u);
+    CHECK(cross > 0u);
 }

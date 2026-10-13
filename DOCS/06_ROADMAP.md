@@ -15,7 +15,7 @@ GPU, a device, or the Android toolchain exists yet.
 |---|---|---|---|---|
 | A1 | **Renderer (S6)** | Vulkan 1.1: depth prepass + forward, clustered lights, WBOIT, TAA, filmic tonemap, compute post, dynamic resolution 720p–1080p | the chunk sections a renderer consumes are built and hash-verified; the three.js preview is a *viewer*, not this | no — no Vulkan headers, no ICD, no GPU |
 | A2 | **Physics (S4/S5)** | Jolt: vehicle dynamics, motorcycle handling, bulk transform update on origin shift, capsule colliders on Sea Link stays | collision geometry baked per chunk (164,104 boxes), collision capsules on the hero meshes, the shift itself is validated at 0.00e+00 m | partly — Jolt is fetchable from GitHub, but it ships CMake and this environment has no cmake; it would need a hand-written build |
-| A3 | **ECS + full traffic (S5)** | flecs, five vehicle archetypes with the named masses/dimensions, IDM + MOBIL for large vehicles, Boids flow field for two-wheelers, signal phases | a custom IDM on one lane per edge, 620 vehicles, 60-minute run, zero invalid states; signal data exists in the world (`cd.signals`) but nothing obeys it | **yes** — CPU-only, and the largest remaining coverage per unit of work |
+| A3 | **ECS + full traffic (S5)** | five vehicle archetypes with the named masses/dimensions, IDM + MOBIL for large vehicles, Boids flow field for two-wheelers, signal phases from the world | **built** (`engine/sim/`): five archetypes (D-027), IDM + MOBIL, two-wheeler Boids field at 200 ms / 20 m, signals with amber and all-red, 15 cases in `tests/test_traffic.cpp`.  Remaining: the 60-minute *validation* still runs the old single-lane model in `engine/app/sim_main.cpp` rather than this layer, and the city graph's own fleet is not yet driven end to end | partly — folding the validation onto `engine/sim/` is the next piece of work |
 | A4 | **GPU weather (S3)** | 2,400 mm/yr monsoon, GPU rain particles, screen-space wetness driving roughness→0 and albedo −30 %, normal flatten | the CPU hydrology is built and verified (D-026); the wetness *response* is a material parameter with nothing driving it | no — shader work, unverifiable without a GPU |
 | A5 | **Ocean (S3)** | 4–8 Gerstner waves (80–150 m swell, 0.5–2 m; monsoon 3–5 m), PBR + subsurface scattering, sun glitter, depth-buffer foam and runup | the sea/creek mesh exists (31,180 quads) | no — same reason |
 | A6 | **Sky / scattering (S3)** | Rayleigh + Mie with time-of-day, humidity and pollution | the preview has a skydome approximation | no |
@@ -52,11 +52,12 @@ GPU, a device, or the Android toolchain exists yet.
 
 ## The order I would build them in
 
-1. **A3 — traffic completion.** CPU-only, fully testable here, and it is the
-   last large block of Section 5 that is genuinely absent: MOBIL lane changes,
-   the two-wheeler Boids field, signal-phase behaviour, and the five archetypes
-   with the masses and dimensions the specification names.  `mumbai_sim` already
-   measures the right things (gap floor, invalid states, density within 500 m).
+1. **A3 — traffic completion.** Done except for its last piece: the 60-minute
+   validation in `engine/app/sim_main.cpp` still runs the old single-lane IDM,
+   so the layer that fifteen test cases exercise is not the layer the long run
+   measures.  Folding the validation onto `engine/sim/traffic.cpp` (and giving
+   the runtime the city's own nav graph rather than a hand-built corridor) is
+   what closes Section 5.
 2. **A8 — texture and material content.** Procedural PBR maps and an atlas move
    the visual standard more than anything else that can be done without a GPU,
    and they are what makes the 160 GB figure real rather than nominal.
