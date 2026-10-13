@@ -100,6 +100,11 @@ struct ControlPoint {
     f64 radius = 900.0;
     f64 weight = 1.0;
     bool hard = false;
+    // A depression bed: the ground here is what collects the monsoon, and it is
+    // flat.  Fractal detail is damped inside the radius, because a bowl with
+    // two metres of random relief in its floor is a bowl with a leak, and the
+    // flood model will (correctly) drain it.  Hills keep their detail.
+    bool flat = false;
     std::string name;
 };
 

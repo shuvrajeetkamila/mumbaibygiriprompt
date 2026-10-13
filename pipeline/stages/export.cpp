@@ -287,6 +287,44 @@ bool exportViewer(Context& ctx) {
         }
     }
 
+    // --- monsoon flood raster -------------------------------------------------
+    // Peak severe-storm depth, in centimetres, on the same grid as the terrain so
+    // the viewer can drape it directly.  This is the Section 3 deliverable made
+    // visible: the water that emerges from the DEM at Hindmata, King's Circle and
+    // the Andheri subway rather than being painted on.
+    // Both design storms travel: the routine monsoon day the city lives with and
+    // the 26 July 2005 analogue it does not.  Two rasters cost a megabyte and
+    // turn "it floods" into something a reader can compare against their own
+    // street.
+    struct FloodStats { u64 wet = 0, deep = 0; f64 peakCm = 0.0; };
+    const auto buildFloodRaster = [&](const std::vector<u8>& src, std::vector<u8>& dst) {
+        FloodStats st;
+        if (src.empty()) return st;
+        const u32 fw = ctx.floodWidth, fh = ctx.floodHeight;
+        const f64 fstep = ctx.floodStep;
+        dst.assign(static_cast<size_t>(TW) * TH, 0u);
+        for (u32 gz = 0; gz < TH; ++gz) {
+            for (u32 gx = 0; gx < TW; ++gx) {
+                const f64 x = minX + (maxX - minX) * (gx / static_cast<f64>(TW - 1));
+                const f64 z = minZ + (maxZ - minZ) * (gz / static_cast<f64>(TH - 1));
+                const i64 fi = static_cast<i64>((x - minX) / fstep);
+                const i64 fj = static_cast<i64>((z - minZ) / fstep);
+                if (fi < 0 || fj < 0 || fi >= static_cast<i64>(fw) || fj >= static_cast<i64>(fh)) continue;
+                const u8 v = src[static_cast<size_t>(fj) * fw + fi];
+                const f64 cm = v == 255 ? 255.0 : static_cast<f64>(v);
+                if (cm > 1.0) { ++st.wet; if (cm > 50.0) ++st.deep; }
+                if (cm > st.peakCm) st.peakCm = cm;
+                dst[static_cast<size_t>(gz) * TW + gx] = v;
+            }
+        }
+        return st;
+    };
+    std::vector<u8> flood, floodMod;
+    const FloodStats floodStats = buildFloodRaster(ctx.floodSevere, flood);
+    const FloodStats floodModStats = buildFloodRaster(ctx.floodModerate, floodMod);
+    const u64 floodWet = floodStats.wet, floodDeep = floodStats.deep;
+    const f64 floodPeakCm = floodStats.peakCm;
+
     BinWriter out;
     const u64 terrainBytes = static_cast<u64>(terrain.size()) * sizeof(u16);
     const u64 terrainOffset = 0;
@@ -295,7 +333,9 @@ bool exportViewer(Context& ctx) {
     const u64 edgesOffset = nodesOffset + nodes.size();
     const u64 heroVertOffset = edgesOffset + edges.size();
     const u64 heroIdxOffset = heroVertOffset + heroVerts.size();
-    out.data.reserve(static_cast<size_t>(heroIdxOffset + heroIdx.size()));
+    const u64 floodOffset = heroIdxOffset + heroIdx.size();
+    const u64 floodModOffset = floodOffset + flood.size();
+    out.data.reserve(static_cast<size_t>(floodModOffset + floodMod.size()));
     out.data.insert(out.data.end(), reinterpret_cast<const u8*>(terrain.data()),
                     reinterpret_cast<const u8*>(terrain.data() + terrain.size()));
     out.data.insert(out.data.end(), buildings.data.begin(), buildings.data.end());
@@ -303,6 +343,8 @@ bool exportViewer(Context& ctx) {
     out.data.insert(out.data.end(), edges.data.begin(), edges.data.end());
     out.data.insert(out.data.end(), heroVerts.data.begin(), heroVerts.data.end());
     out.data.insert(out.data.end(), heroIdx.data.begin(), heroIdx.data.end());
+    out.data.insert(out.data.end(), flood.begin(), flood.end());
+    out.data.insert(out.data.end(), floodMod.begin(), floodMod.end());
 
     const std::string dataDir = "viewer/data";
     ensureDir(dataDir);
@@ -331,6 +373,28 @@ bool exportViewer(Context& ctx) {
     terr.set("minHeight", Json(terrainMin));
     terr.set("maxHeight", Json(terrainMax));
     meta.set("terrain", terr);
+
+    Json fl = Json::object();
+    fl.set("width", Json(static_cast<f64>(TW)));
+    fl.set("height", Json(static_cast<f64>(TH)));
+    fl.set("offset", Json(static_cast<f64>(floodOffset)));
+    fl.set("units", Json(std::string("cm")));          // value = peak depth in cm
+    fl.set("storm", Json(std::string("severe")));
+    fl.set("wetCells", Json(static_cast<f64>(floodWet)));
+    fl.set("cellsOver50cm", Json(static_cast<f64>(floodDeep)));
+    fl.set("peakCm", Json(floodPeakCm));
+    meta.set("flood", fl);
+
+    Json fm = Json::object();
+    fm.set("width", Json(static_cast<f64>(TW)));
+    fm.set("height", Json(static_cast<f64>(TH)));
+    fm.set("offset", Json(static_cast<f64>(floodModOffset)));
+    fm.set("units", Json(std::string("cm")));
+    fm.set("storm", Json(std::string("moderate")));
+    fm.set("wetCells", Json(static_cast<f64>(floodModStats.wet)));
+    fm.set("cellsOver50cm", Json(static_cast<f64>(floodModStats.deep)));
+    fm.set("peakCm", Json(floodModStats.peakCm));
+    meta.set("floodModerate", fm);
 
     Json b = Json::object();
     b.set("stride", Json(14.0));
@@ -401,6 +465,18 @@ bool exportViewer(Context& ctx) {
     ctx.qa.add("viewer.exportBuildings", static_cast<f64>(buildingCount));
     ctx.qa.add("viewer.exportFallbackCells", static_cast<f64>(fallbackCells));
     ctx.qa.add("viewer.exportBytes", static_cast<f64>(out.size()));
+    ctx.qa.add("viewer.exportFloodWetCells", static_cast<f64>(floodWet));
+    ctx.qa.add("viewer.exportFloodPeakCm", floodPeakCm);
+    MLOG_INFO("viewer export: flood rasters — severe %llu wet cells / peak %.0f cm, "
+              "moderate %llu / peak %.0f cm",
+              (unsigned long long)floodWet, floodPeakCm,
+              (unsigned long long)floodModStats.wet, floodModStats.peakCm);
+    if (!ctx.floodModerate.empty() && floodModStats.wet == 0)
+        ctx.qa.fail("viewer: the moderate storm flooded nothing at all");
+    if (!ctx.floodSevere.empty() && floodWet == 0)
+        ctx.qa.fail("viewer: the flood raster is empty - the severe storm wetted nothing");
+    if (!ctx.floodSevere.empty() && floodPeakCm < 50.0)
+        ctx.qa.warn("viewer: the severe storm peaked below 50 cm everywhere");
     (void)terrainValid;
     return true;
 }

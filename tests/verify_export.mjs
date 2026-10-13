@@ -50,7 +50,8 @@ console.log('===================================================================
 // UTF-8 becoming U+FFFD) keeps a valid prefix and grows a tail.  Payload
 // length is therefore checked first, against the last declared structure.
 {
-  const declared = meta.hero.indexOffset + meta.hero.indexCount * 4;
+  const declared = meta.floodModerate.offset +
+                   meta.floodModerate.width * meta.floodModerate.height;
   check('payload length equals the declared layout', buf.length === declared,
         `${buf.length} on disk vs ${declared} declared`);
   const replacements = buf.indexOf(Buffer.from([0xef, 0xbf, 0xbd]));
@@ -229,6 +230,57 @@ const B = meta.buildings;
     check('sea link spans the bay', span > 2500, `${span.toFixed(0)} m`);
   }
   check('pylons reach their published height', maxY > 100, `${maxY.toFixed(1)} m`);
+}
+
+// --- monsoon flood rasters --------------------------------------------------
+// Section 3's model is only real if the water shows up where the city floods and
+// nowhere else.  Both design storms travel with the payload — the routine
+// monsoon day and the 26 July 2005 analogue — and they are checked the way a
+// reader would: look at the ground under the water.
+{
+  const T = meta.terrain;
+  const heightAt = k => T.bias + dv.getUint16(T.offset + k * 2, true) / 65535 * T.span;
+
+  for (const [key, label, minWet, minDeep, hillLimit] of [
+    ['flood',         'severe (2005 analogue)', 100000, 20000, 100],
+    ['floodModerate', 'moderate monsoon day',    20000,  3000, 25],
+  ]) {
+    const F = meta[key];
+    console.log(`\n ${label} — ${F.width} x ${F.height} ${F.units}, ` +
+                `${F.wetCells} wet cells, peak ${F.peakCm} cm`);
+    check(`${key}: raster is the terrain grid`,
+          F.width === T.width && F.height === T.height);
+    check(`${key}: has water`, F.wetCells > minWet && F.cellsOver50cm > minDeep,
+          `${F.wetCells} wet, ${F.cellsOver50cm} deeper than 50 cm`);
+
+    let wet = 0, inSea = 0, seaCells = 0, maxCm = 0;
+    let lowLand = 0, lowWet = 0, highLand = 0, highWet = 0;
+    for (let k = 0; k < F.width * F.height; ++k) {
+      const cm = buf[F.offset + k];
+      const y = heightAt(k);
+      if (cm > 1) ++wet;
+      if (cm > maxCm) maxCm = cm;
+      // Open water is drawn as water, never as flooding.  The seabed pick line
+      // the hydrology uses is 1.1 m below datum, so anything under that is sea.
+      if (y < -1.1) { ++seaCells; if (cm > 1) ++inSea; continue; }
+      if (y < 6) { ++lowLand; if (cm > 15) ++lowWet; }
+      if (y > 25) { ++highLand; if (cm > 15) ++highWet; }
+    }
+    const lowFrac = lowLand ? (100 * lowWet / lowLand) : 0;
+    const highFrac = highLand ? (100 * highWet / highLand) : 0;
+    console.log(`    ${wet} cells drawn, ${inSea}/${seaCells} open-water cells wet; ` +
+                `>15 cm on ${lowFrac.toFixed(1)} % of low ground and ${highFrac.toFixed(1)} % ` +
+                `of high ground`);
+    check(`${key}: every wet cell is counted`, wet === F.wetCells);
+    check(`${key}: open water is not drawn as flooding`, inSea < seaCells * 0.02,
+          `${inSea} wet sea cells of ${seaCells}`);
+    check(`${key}: the low city floods`, lowFrac > 15, `${lowFrac.toFixed(1)} %`);
+    check(`${key}: the ridges do not flood worse than the flats`,
+          lowFrac > highFrac * 1.4, `low ${lowFrac.toFixed(1)} % vs high ${highFrac.toFixed(1)} %`);
+    if (hillLimit < 100)
+      check(`${key}: the ridges stay largely dry`, highFrac < hillLimit,
+            `${highFrac.toFixed(1)} %`);
+  }
 }
 
 // --- QA block ---------------------------------------------------------------

@@ -109,6 +109,7 @@ int main(int argc, char** argv) {
         {"buildBuildings",     buildBuildings},
         {"buildProps",         buildProps},
         {"buildHeroAssets",    buildHeroAssets},
+        {"buildFloodModel",    buildFloodModel},
         {"writeChunks",        writeChunks},
         {"writeManifest",      writeManifest},
         {"exportViewer",       exportViewer},

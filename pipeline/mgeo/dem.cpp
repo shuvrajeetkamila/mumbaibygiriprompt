@@ -291,10 +291,35 @@ void synthesizeHeightfield(Heightfield& hf,
             // as one giant plane clamped at the minimum land height, which both
             // looks wrong and robs the flood model of the small-scale relief it
             // needs.  Hills keep full detail; the coastal strip keeps 15%.
-            const f64 detailScale = clamp(shoreDist / 900.0, 0.15, 1.0);
+            f64 detailScale = clamp(shoreDist / 900.0, 0.15, 1.0);
+            // Depression beds are flat.  See ControlPoint::flat: a random two
+            // metres of relief in the floor of a bowl gives the water a way out,
+            // and the streets that flood every monsoon would flood nowhere.
+            for (const ControlPoint& cp : controlPoints) {
+                if (!cp.flat) continue;
+                const f64 d = (world - cp.position).length();
+                if (d >= cp.radius * 2.0) continue;
+                const f64 t = clamp((d - cp.radius) / cp.radius, 0.0, 1.0);
+                detailScale *= 0.12 + 0.88 * t * t;
+            }
             const f64 detail = fractalNoise(world.x * 0.0022, world.y * 0.0022, seed, 4) *
                                detailAmplitude * detailScale;
             f64 h = base + detail;
+            // Depression sites get their bowl cut in explicitly.  Hindmata is a
+            // former tank bed, and the Andheri and Milan subways are trenches:
+            // these are the places Mumbai floods first, they are known to the
+            // metre, and no interpolator will invent them from surrounding
+            // control points.  The floor sits at the point's stated height and
+            // the rim rises to meet the surrounding ground, so the basin is
+            // shallow, closed, and where the specification says it is.  `min`
+            // means this can only lower ground, never raise it.
+            for (const ControlPoint& cp : controlPoints) {
+                if (!cp.flat) continue;
+                const f64 d = (world - cp.position).length();
+                if (d >= cp.radius) continue;
+                const f64 t = d / cp.radius;
+                h = std::min(h, cp.height + 1.6 * t * t);
+            }
 
             // Land may sit slightly below the water plane: that is precisely how
             // Mumbai floods. The drainage analysis later finds these places, and

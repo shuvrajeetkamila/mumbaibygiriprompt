@@ -42,6 +42,7 @@ struct BuildConfig {
 
     // Road/geometry density controls (quality vs build time).
     bool buildTerrain  = true;
+    bool buildFloodModel = true;      // monsoon hydrology: storms + flood raster
     bool buildRoads    = true;
     bool buildBuildings= true;
     bool buildProps    = true;
@@ -210,6 +211,15 @@ struct Context {
     };
     std::vector<FootprintRecord> footprints;
 
+    // --- monsoon flood model (Section 3, pipeline/stages/flood.cpp) ----------
+    // Peak submersion depth of the severe design storm, in centimetres, on the
+    // same grid the viewer payload uses.  This is a *result*, not an input: it
+    // is produced by letting the DEM route the design rainfall.
+    std::vector<u8> floodSevere;
+    std::vector<u8> floodModerate;
+    u32 floodWidth = 0, floodHeight = 0;
+    f64 floodStep = 32.0;
+
     // Synthesised building parcels produced by buildRoads (which is what owns
     // the street lattice) and consumed by buildBuildings.  Every entry carries
     // its own zone/height/seed so the two stages stay decoupled.  Province:
@@ -233,6 +243,7 @@ struct Context {
         u64 instanceCount = 0, heroAssetCount = 0;
         u64 terrainTriangles = 0, waterTriangles = 0, railWays = 0, railTriangles = 0;
         u64 landusePolys = 0;
+        f64 landAreaKm2 = 0.0;               // dry land inside the extent (hydro model)
         u64 chunkCount = 0, chunkBytes = 0, totalTriangles = 0;
         u64 heroTriangles = 0;
         std::map<std::string, u64> zoneCounts;
@@ -289,6 +300,7 @@ bool buildRailAndLanduse(Context& ctx);
 bool buildBuildings(Context& ctx);
 bool buildProps(Context& ctx);
 bool buildHeroAssets(Context& ctx);
+bool buildFloodModel(Context& ctx);      // monsoon hydrology (flood.cpp)
 bool writeChunks(Context& ctx);
 bool writeManifest(Context& ctx);
 // Viewer export: re-reads every chunk through the runtime reader and packs the

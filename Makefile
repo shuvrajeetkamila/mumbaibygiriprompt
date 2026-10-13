@@ -41,6 +41,7 @@ PIPE_SRC    := $(MGEOM_SRC) $(STAGE_SRC)
 ENGINE_OBJ  := $(patsubst %.cpp,$(OBJ)/%.o,$(ENGINE_SRC))
 PIPE_OBJ    := $(patsubst %.cpp,$(OBJ)/%.o,$(PIPE_SRC))
 
+MAIN_OBJ     := $(OBJ)/pipeline/main.o
 PIPELINE_BIN := $(BIN)/mumbai_pipeline
 SIM_BIN      := $(BIN)/mumbai_sim
 TEST_BIN     := $(BIN)/mumbai_tests
@@ -61,9 +62,14 @@ $(OBJ)/%.o: %.cpp
 # the same binary: the ABI mismatch corrupts containers and manifests as
 # impossible failures (a std::bad_alloc inside an unrelated stage was the
 # symptom that motivated adding this).
--include $(ENGINE_OBJ:.o=.d) $(PIPE_OBJ:.o=.d)
+# main.o is listed explicitly as a prerequisite of the pipeline binary, and its
+# dependency file must be included with the rest: leaving it out means no header
+# edit ever rebuilds main.cpp, and a header that changes the layout of Context
+# then links a stale main against fresh stages.  That is not a missing rebuild,
+# it is a segmentation fault at startup.
+-include $(ENGINE_OBJ:.o=.d) $(PIPE_OBJ:.o=.d) $(MAIN_OBJ:.o=.d)
 
-$(PIPELINE_BIN): $(PIPE_OBJ) $(ENGINE_OBJ) $(OBJ)/pipeline/main.o
+$(PIPELINE_BIN): $(PIPE_OBJ) $(ENGINE_OBJ) $(MAIN_OBJ)
 	@mkdir -p $(BIN)
 	@echo "  LD   $@"
 	@$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)

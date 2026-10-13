@@ -66,7 +66,7 @@ is met at the level of the mask plus a documented grammar, not by survey.
 
 | file | contents | why it exists |
 |---|---|---|
-| `data/authored/terrain_control_points.json` | 43 published approximate elevations (Malabar Hill, Antop Hill, Powai basin, the reclamation fringes, Mumbra hills, creek edges), each with a source note | no obtainable DEM (D-006) |
+| `data/authored/terrain_control_points.json` | 43 published approximate elevations (Malabar Hill, Antop Hill, Powai basin, the reclamation fringes, Mumbra hills, creek edges), each with a source note; four entries carry `flat: true` and are shaped as depressions — Hindmata (a former tank bed at 2.2 m), King's Circle (3.0 m) and the Andheri (3.5 m) and Milan (3.2 m) subway trenches | no obtainable DEM (D-006); the depressions are known to the metre and are the sites the specification requires the flood model to reproduce (D-026) |
 | `data/authored/transport_corridors.json` | the named highway/rail corridors as polylines with class, name and provenance | truncated or absent in the extract (D-021) |
 
 Both files are small, diffable, and every entry states where its numbers came

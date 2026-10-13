@@ -217,6 +217,7 @@ bool loadSources(Context& ctx) {
                 cp.height = p["height"].asNumber();
                 cp.radius = p["radius"].asNumber(800.0);
                 cp.hard = p["hard"].asBool(false);
+                cp.flat = p["flat"].asBool(false);
                 cp.name = p["name"].asStringOr("");
                 cp.weight = cp.hard ? 4.0 : 1.0;
                 ctx.controlPoints.push_back(cp);

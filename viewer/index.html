@@ -15,6 +15,7 @@
      presets    1 Marine Drive   2 Sea Link   3 BKC   4 aerial   5 CSMT
      time       [ / ] move the sun   0 golden hour   9 noon   M monsoon
      R rain + wet streets   H hide buildings   G wireframe   T traffic off
+     L monsoon flood layer — cycles 2005 analogue / routine monsoon day / off
      F ride mode (motorcycle along the Sea Link corridor, first person)
   ============================================================================
 -->
@@ -65,6 +66,7 @@
   <div class="row"><span>structures</span><b id="s-buildings">—</b></div>
   <div class="row"><span>streets</span><b id="s-streets">—</b></div>
   <div class="row"><span>terrain</span><b id="s-terrain">—</b></div>
+  <div class="row"><span>monsoon flood</span><b id="s-flood">—</b></div>
   <div class="row"><span>cells</span><b id="s-cells">—</b></div>
   <div class="row"><span>position</span><b id="s-pos">—</b></div>
   <div class="row"><span>sun</span><b id="s-sun">—</b></div>
@@ -232,12 +234,17 @@ async function loadWorld() {
   $('s-buildings').textContent = meta.stats.buildings.toLocaleString();
   $('s-streets').textContent = meta.stats.navEdges.toLocaleString();
   $('s-terrain').textContent = meta.terrain.width + '×' + meta.terrain.height;
+  $('s-flood').textContent = meta.flood
+    ? (meta.flood.wetCells / 1000).toFixed(0) + 'k cells · peak ' +
+      (meta.flood.peakCm / 100).toFixed(1) + ' m · ' + meta.flood.storm
+    : '—';
   $('s-cells').textContent = meta.stats.chunks;
   $('s-qa').textContent = (meta.qa.passed ? 'PASS' : 'FAIL') + ' · ' + meta.qa.counters + ' counters';
   $('s-qa').style.color = meta.qa.passed ? '#7fe0c0' : '#ff9d9d';
   for (const l of (meta.landmarks || [])) world.landmarks[l.name] = l;
 
   decodeTerrain();
+  decodeFlood();
   setProgress(0.4, 'decoding structure…');
   await new Promise(r => setTimeout(r, 0));       // let the progress paint
   decodeBuildings();
@@ -250,6 +257,24 @@ function decodeTerrain() {
   const h = new Float32Array(W * H);
   for (let i = 0; i < W * H; ++i) h[i] = T.bias + (dv.getUint16(T.offset + i * 2, true) / 65535) * T.span;
   world.terrain = { w: W, h: H, step: T.step, heights: h };
+}
+
+// The monsoon flood raster: peak depth in centimetres on the terrain grid.  It
+// is the hydrology model's answer, not a texture — the water is where the DEM
+// puts it, which is why Hindmata and King's Circle fill and Marine Drive does
+// not.
+function decodeFlood() {
+  const pick = (key) => {
+    const F = world.meta[key];
+    if (!F || !F.wetCells) return null;
+    return { w: F.width, h: F.height, peakCm: F.peakCm, storm: F.storm, wetCells: F.wetCells,
+             at: k => world.dv.getUint8(F.offset + k) };
+  };
+  // Both storms: the routine monsoon day and the 2005 analogue.  The layer
+  // cycles between them, because which one you are looking at changes what the
+  // picture means — a wet Marine Drive is a different claim from a wet Parel.
+  world.storms = [pick('flood'), pick('floodModerate')].filter(Boolean);
+  world.flood = world.storms[0] || null;
 }
 
 function decodeBuildings() {
@@ -348,6 +373,64 @@ function buildTerrain(step = 2) {
   const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.0 });
   const mesh = new THREE.Mesh(g, m);
   mesh.frustumCulled = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+// ---------------------------------------------------------------------------
+// The monsoon flood: the modelled peak water surface, drawn as its own sheet.
+// Not a tint on the ground — each vertex sits at the ground height plus the
+// depth the model computed for it, so the layer reads as standing water over
+// the streets that actually filled.  Deep water is drawn darker and less
+// transparent; the shallow fringe over a wet street stays pale.
+function buildFlood(step = 2) {
+  const F = world.flood;
+  if (!F) return null;
+  const T = world.terrain, W = T.w, H = T.h;
+  const nx = Math.floor((W - 1) / step) + 1, nz = Math.floor((H - 1) / step) + 1;
+  const pos = new Float32Array(nx * nz * 3), col = new Float32Array(nx * nz * 3);
+  const idx = new Uint32Array((nx - 1) * (nz - 1) * 6);
+  const c = new THREE.Color();
+  const wMin = Math.min(F.w, W), hMin = Math.min(F.h, H);
+  for (let j = 0; j < nz; ++j) {
+    for (let i = 0; i < nx; ++i) {
+      const gi = Math.min(W - 1, i * step), gj = Math.min(H - 1, j * step);
+      const k = (j * nx + i) * 3;
+      const cm = (gi < wMin && gj < hMin) ? F.at(gj * F.w + gi) : 0;
+      const ground = T.heights[gj * W + gi];
+      pos[k] = gi * T.step;
+      // Peak water surface: ground plus the modelled depth.  A dry cell sits a
+      // centimetre under the ground so it never shows through it.
+      pos[k + 1] = ground + (cm > 0 ? cm / 100 : -0.01);
+      pos[k + 2] = gj * T.step;
+      const d = cm / 100;
+      if (d <= 0) { col[k] = 0.30; col[k + 1] = 0.34; col[k + 2] = 0.36; }
+      else if (d < 0.15) c.setRGB(0.62, 0.78, 0.84);        // wet street
+      else if (d < 0.50) c.setRGB(0.30, 0.62, 0.86);        // knee deep
+      else if (d < 1.00) c.setRGB(0.16, 0.40, 0.78);        // waist deep
+      else c.setRGB(0.10, 0.20, 0.52);                      // the 2005 depths
+      if (d > 0) { col[k] = c.r; col[k + 1] = c.g; col[k + 2] = c.b; }
+    }
+  }
+  for (let j = 0, t = 0; j + 1 < nz; ++j) {
+    for (let i = 0; i + 1 < nx; ++i) {
+      const a = j * nx + i, b = a + 1, d2 = a + nx, e = d2 + 1;
+      idx[t++] = a; idx[t++] = d2; idx[t++] = b;
+      idx[t++] = b; idx[t++] = d2; idx[t++] = e;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.computeVertexNormals();
+  const m = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.06, metalness: 0.45,
+    transparent: true, opacity: 0.82, depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 2;
   scene.add(mesh);
   return mesh;
 }
@@ -733,6 +816,26 @@ addEventListener('keydown', e => {
   else if (k === 'h') city.visible = !city.visible;
   else if (k === 'g') terrain.material.wireframe = !terrain.material.wireframe;
   else if (k === 't') { traffic.enabled = !traffic.enabled; traffic.mesh.visible = traffic.enabled; }
+  else if (k === 'l' || k === 'L') {
+    // Cycle: severe storm -> routine monsoon day -> off.  Rebuilding the sheet
+    // is cheap enough at this grid step to do on the key press.
+    if (!flood) return;
+    const i = floodIndex;
+    const next = (i + 1) % (world.storms.length + 1);
+    floodIndex = next;
+    if (next === world.storms.length) { flood.visible = false; $('s-flood').style.color = '#8d8577'; }
+    else {
+      const st = world.storms[next];
+      world.flood = st;
+      scene.remove(flood);
+      flood.geometry.dispose(); flood.material.dispose();
+      flood = buildFlood(2);
+      flood.visible = true;
+      $('s-flood').style.color = '#ffd98a';
+      $('s-flood').textContent = (st.wetCells / 1000).toFixed(0) + 'k cells · peak ' +
+        (st.peakCm / 100).toFixed(1) + ' m · ' + st.storm;
+    }
+  }
   else if (k === 'f') { if (ride.on) { ride.on = false; controls.enabled = true; $('ride').style.display = 'none'; }
                         else startRide(); }
   else if (e.key === '[') setTime(Math.max(-2, sun.alt - 3), sun.az, Math.max(0.6, sun.intensity - 0.2), 'custom');
@@ -762,7 +865,8 @@ function flyFly(dt) {
 // ---------------------------------------------------------------------------
 //  Build and run
 // ---------------------------------------------------------------------------
-let terrain = null, water = null, streets = null, city = null, landmarks = null;
+let terrain = null, water = null, streets = null, city = null, landmarks = null, flood = null;
+let floodIndex = 0;
 const clock = new THREE.Clock();
 let fpsAcc = 0, fpsFrames = 0;
 
@@ -812,6 +916,7 @@ addEventListener('resize', () => {
 try {
   await loadWorld();
   terrain = buildTerrain(2);
+  flood = buildFlood(2);
   setProgress(0.5, 'sea and sky…');
   water = buildWater();
   streets = buildStreets();

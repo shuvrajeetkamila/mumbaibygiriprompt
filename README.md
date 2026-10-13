@@ -22,8 +22,9 @@ GPU, no Android toolchain, no graphics dependencies — see decision D-001 in
 | roads | 107,764 OSM ways, **8,189 km** of centreline, 82,933 junctions |
 | nav graph | **254,470 nodes / 127,235 edges** |
 | hero assets | Gateway of India, Taj Mahal Palace, CSMT, Bandra–Worli Sea Link, Marine Drive — 14,736 triangles |
-| QA | 68 counters, 0 warnings, 0 failures |
-| tests | 23 cases / 203 checks, 0 failing (+30 payload checks) |
+| monsoon flood | two design storms on a 705 × 1345 hydrology grid; mass balance closed to 8 × 10⁻³ m³ on 2.3 × 10⁸ m³ of rain; Hindmata 268 mm / King's Circle 265 mm / Andheri subway 371 mm in the 2005 analogue, Marine Drive dry in both (D-026) |
+| QA | 153 counters, 0 warnings, 0 failures |
+| tests | 35 cases / 469 checks, 0 failing (+43 payload checks) |
 | runtime validation | 60-minute Colaba → Borivali drive: PASS (105 origin crossings at 0.00e+00 m error, 0 hash failures, 545 vehicles within 500 m) |
 
 ## Quick start
@@ -55,6 +56,9 @@ docs/            the master build prompt as received (structured restatement)
 
 0. The viewer preview: `make serve`, then open the page (it streams the real
    built Mumbai — terrain, 164,057 buildings, the street graph, five landmarks).
+   Press **L** for the monsoon flood layer: the modelled peak water surface of
+   the 26 July 2005 analogue and of a routine monsoon day, drawn at the depth the
+   hydrology computed for every cell.
 1. `DOCS/00_ARCHITECTURE.md` — what was built and how it fits together.
 2. `DOCS/02_DECISIONS.md` — every decision, including the four deviations from
    the specification and why they were necessary.
