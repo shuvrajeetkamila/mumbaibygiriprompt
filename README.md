@@ -64,3 +64,5 @@ docs/            the master build prompt as received (structured restatement)
    the specification and why they were necessary.
 3. `DOCS/05_VALIDATION.md` — what is proven, what is not, and the gap list.
 4. `DOCS/01_DATA_SOURCES.md` — exactly which data the world is made of.
+5. `DOCS/06_ROADMAP.md` — what is still missing, why, and what can be built
+   without a GPU or a device.
