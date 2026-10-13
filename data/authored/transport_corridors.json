@@ -1,0 +1,425 @@
+{
+  "_README": [
+    "Authored transport corridors for Mumbai, used by the pipeline to build the",
+    "primary network where the raw OSM extract is incomplete (see DOCS/D-020).",
+    "",
+    "PROVENANCE AND ACCURACY: coordinates are taken from public knowledge of the",
+    "railway system and the named road corridors, and are accurate to roughly",
+    "50-150 m - good enough to place a corridor in the correct alignment and",
+    "neighbourhood, NOT survey-grade. Every corridor is a real, named Mumbai",
+    "corridor at its real location and orientation; station positions are the",
+    "real station positions. The pipeline increases accuracy automatically when a",
+    "complete OSM extract is supplied (--osm), because real ways then outrank",
+    "authored corridors for the same class (DOCS/D-021).",
+    "",
+    "Station lists are the published station sequences. Where a corridor passes",
+    "through a dense section the pipeline resamples the polyline, so the vertex",
+    "list below only needs to fix the alignment."
+  ],
+
+  "roads": [
+    {
+      "id": "weh",
+      "name": "Western Express Highway",
+      "name_mr": "पश्चिम द्रुतगती महामार्ग",
+      "osmid": "NH-48",
+      "class": "motorway",
+      "lanes": 6,
+      "authored": true,
+      "note": "Dahisar to Bandra, the spine of the western suburbs; 6 lanes + service roads.",
+      "points": [
+        [19.2508, 72.8590], [19.2320, 72.8620], [19.2080, 72.8660], [19.1865, 72.8600],
+        [19.1650, 72.8580], [19.1455, 72.8550], [19.1250, 72.8570], [19.1080, 72.8700],
+        [19.0990, 72.8660], [19.0880, 72.8580], [19.0720, 72.8510], [19.0560, 72.8460],
+        [19.0430, 72.8430]
+      ]
+    },
+    {
+      "id": "eeh",
+      "name": "Eastern Express Highway",
+      "osmid": "NH-48",
+      "class": "motorway",
+      "lanes": 6,
+      "authored": true,
+      "note": "Mulund to Sion, the spine of the eastern suburbs.",
+      "points": [
+        [19.1720, 72.9530], [19.1550, 72.9490], [19.1300, 72.9410], [19.1080, 72.9300],
+        [19.0870, 72.9130], [19.0720, 72.8960], [19.0640, 72.8820], [19.0480, 72.8700],
+        [19.0380, 72.8610]
+      ]
+    },
+    {
+      "id": "sv_road",
+      "name": "S.V. Road",
+      "class": "trunk",
+      "lanes": 4,
+      "authored": true,
+      "note": "Swami Vivekananda Road - the older western arterial, parallel to the railway.",
+      "points": [
+        [19.2510, 72.8420], [19.2300, 72.8450], [19.2100, 72.8470], [19.1880, 72.8460],
+        [19.1680, 72.8440], [19.1460, 72.8420], [19.1240, 72.8420], [19.1020, 72.8400],
+        [19.0830, 72.8390], [19.0630, 72.8370], [19.0440, 72.8380]
+      ]
+    },
+    {
+      "id": "lbs_marg",
+      "name": "Lala Bahadur Shastri Marg",
+      "class": "trunk",
+      "lanes": 4,
+      "authored": true,
+      "note": "Sion to Mulund through Kurla, Ghatkopar, Vikhroli, Bhandup.",
+      "points": [
+        [19.0400, 72.8620], [19.0520, 72.8700], [19.0680, 72.8790], [19.0790, 72.8890],
+        [19.0900, 72.9050], [19.1000, 72.9180], [19.1180, 72.9300], [19.1400, 72.9350],
+        [19.1550, 72.9420], [19.1720, 72.9500]
+      ]
+    },
+    {
+      "id": "marine_drive",
+      "name": "Marine Drive",
+      "name_mr": "मरीन ड्राइव्ह",
+      "class": "primary",
+      "lanes": 6,
+      "authored": true,
+      "note": "The Art Deco sea-face arc from Nariman Point to Chowpatty, backed by the sea wall.",
+      "points": [
+        [18.9258, 72.8236], [18.9304, 72.8230], [18.9360, 72.8220], [18.9420, 72.8192],
+        [18.9480, 72.8152], [18.9540, 72.8110], [18.9600, 72.8090]
+      ]
+    },
+    {
+      "id": "sea_link",
+      "name": "Bandra-Worli Sea Link",
+      "name_mr": "वांद्रे-वरळी सागरी सेतू",
+      "class": "motorway",
+      "lanes": 8,
+      "authored": true,
+      "note": "Rajiv Gandhi Setu. Rest of the alignment is the real OSM cable bridge way, which the pipeline prefers when present.",
+      "points": [
+        [19.0170, 72.8153], [19.0260, 72.8160], [19.0360, 72.8180], [19.0470, 72.8200],
+        [19.0535, 72.8205], [19.0560, 72.8310]
+      ]
+    },
+    {
+      "id": "cst_road",
+      "name": "CST Road",
+      "class": "primary",
+      "lanes": 4,
+      "authored": true,
+      "note": "Kalina - Santacruz - Bandra Kurla Complex link.",
+      "points": [
+        [19.0560, 72.8460], [19.0680, 72.8500], [19.0780, 72.8580], [19.0860, 72.8690],
+        [19.0940, 72.8770]
+      ]
+    },
+    {
+      "id": "eastern_freeway",
+      "name": "Eastern Freeway",
+      "class": "motorway",
+      "lanes": 4,
+      "authored": true,
+      "note": "Orange Gate to Ghatkopar-Mankhurd Link Road along the harbour.",
+      "points": [
+        [18.9570, 72.8460], [18.9760, 72.8580], [18.9920, 72.8660], [19.0170, 72.8700],
+        [19.0360, 72.8760], [19.0480, 72.8850], [19.0620, 72.8980]
+      ]
+    },
+    {
+      "id": "jvlr",
+      "name": "Jogeshwari-Vikhroli Link Road",
+      "class": "trunk",
+      "lanes": 6,
+      "authored": true,
+      "note": "The main east-west cross-link across the middle of the city.",
+      "points": [
+        [19.1360, 72.8330], [19.1300, 72.8500], [19.1220, 72.8720], [19.1160, 72.8930],
+        [19.1120, 72.9150], [19.1130, 72.9330]
+      ]
+    },
+    {
+      "id": "sc_lr",
+      "name": "Santacruz-Chembur Link Road",
+      "class": "trunk",
+      "lanes": 4,
+      "authored": true,
+      "note": "The east-west link under the railway at Kurla, opened 2014.",
+      "points": [
+        [19.0750, 72.8370], [19.0730, 72.8560], [19.0700, 72.8730], [19.0680, 72.8880],
+        [19.0660, 72.9010]
+      ]
+    },
+    {
+      "id": "andheri_kurla",
+      "name": "Andheri-Kurla Road",
+      "class": "primary",
+      "lanes": 4,
+      "authored": true,
+      "note": "Andheri station to Kurla via Saki Naka, the busiest cross-link of the eastern suburbs.",
+      "points": [
+        [19.1190, 72.8460], [19.1120, 72.8580], [19.1050, 72.8700], [19.0980, 72.8820],
+        [19.0900, 72.8900], [19.0800, 72.8800], [19.0720, 72.8790]
+      ]
+    },
+    {
+      "id": "agr",
+      "name": "Aghadi Nagar / Aarey Cross Road",
+      "class": "secondary",
+      "lanes": 2,
+      "authored": true,
+      "note": "Suburban east-west connector through Goregaon-Aarey.",
+      "points": [
+        [19.1660, 72.8350], [19.1620, 72.8600], [19.1580, 72.8850], [19.1560, 72.9100]
+      ]
+    },
+    {
+      "id": "haji_ali",
+      "name": "Haji Ali / Tardeo corridor",
+      "class": "primary",
+      "lanes": 4,
+      "authored": true,
+      "note": "Tardeo to Haji Ali to Mahalaxmi, connecting the island city to Worli.",
+      "points": [
+        [18.9650, 72.8150], [18.9770, 72.8140], [18.9840, 72.8130], [18.9900, 72.8180],
+        [18.9970, 72.8200], [19.0040, 72.8170]
+      ]
+    },
+    {
+      "id": "ltt_thane",
+      "name": "Thane-Belapur Road",
+      "class": "trunk",
+      "lanes": 4,
+      "authored": true,
+      "note": "Thane to Belapur through Airoli and Turbhe (MMR spine east of Thane Creek).",
+      "points": [
+        [19.1870, 72.9760], [19.1690, 72.9950], [19.1500, 73.0100], [19.1260, 73.0160],
+        [19.1000, 73.0220], [19.0750, 73.0280], [19.0400, 73.0300]
+      ]
+    },
+    {
+      "id": "kalyan_thane",
+      "name": "Thane-Kalyan Road",
+      "class": "trunk",
+      "lanes": 4,
+      "authored": true,
+      "note": "Thane to Kalyan (NH-3 southern approach), the northern boundary of the world.",
+      "points": [
+        [19.1900, 72.9800], [19.1990, 73.0050], [19.2080, 73.0350], [19.2150, 73.0650]
+      ]
+    },
+    {
+      "id": "thane_creek_east",
+      "name": "Vashi-Nerul coastal spine",
+      "class": "primary",
+      "lanes": 4,
+      "authored": true,
+      "note": "Palm Beach Road along the harbour's east shore.",
+      "points": [
+        [19.0700, 72.9950], [19.0450, 73.0100], [19.0250, 73.0220], [19.0050, 73.0300],
+        [18.9850, 73.0340]
+      ]
+    }
+  ],
+
+  "rail": [
+    {
+      "id": "western",
+      "name": "Western Line",
+      "operator": "Western Railway",
+      "track_type": "suburban_emission",
+      "gauge_m": 1.676,
+      "electrified": true,
+      "lines": 4,
+      "note": "Churchgate-Dahisar. Two fast and two slow lines; the busiest suburban railway in the world.",
+      "stations": [
+        [18.9350, 72.8270], [18.9430, 72.8230], [18.9510, 72.8190], [18.9630, 72.8150],
+        [18.9720, 72.8190], [18.9820, 72.8230], [18.9930, 72.8280], [19.0020, 72.8330],
+        [19.0180, 72.8440], [19.0270, 72.8470], [19.0390, 72.8400], [19.0550, 72.8400],
+        [19.0700, 72.8370], [19.0820, 72.8410], [19.0990, 72.8430], [19.1190, 72.8460],
+        [19.1360, 72.8480], [19.1490, 72.8480], [19.1640, 72.8490], [19.1860, 72.8480],
+        [19.2090, 72.8520], [19.2300, 72.8570], [19.2510, 72.8560]
+      ]
+    },
+    {
+      "id": "central_main",
+      "name": "Central Main Line",
+      "operator": "Central Railway",
+      "gauge_m": 1.676,
+      "electrified": true,
+      "lines": 4,
+      "note": "CSMT-Kalyan alignment; the section inside the world runs CSMT to Mulund.",
+      "stations": [
+        [18.9400, 72.8355], [18.9450, 72.8380], [18.9490, 72.8400], [18.9580, 72.8330],
+        [18.9660, 72.8300], [18.9720, 72.8280], [18.9910, 72.8370], [19.0180, 72.8440],
+        [19.0270, 72.8550], [19.0430, 72.8620], [19.0720, 72.8800], [19.0790, 72.8890],
+        [19.0860, 72.9080], [19.1110, 72.9280], [19.1290, 72.9360], [19.1440, 72.9370],
+        [19.1530, 72.9410], [19.1720, 72.9530], [19.1860, 72.9750]
+      ]
+    },
+    {
+      "id": "harbour",
+      "name": "Harbour Line",
+      "operator": "Central Railway",
+      "gauge_m": 1.676,
+      "electrified": true,
+      "lines": 2,
+      "note": "CSMT to Vashi/Nerul through Wadala and Chembur; the line that serves the port and Dockyard Road.",
+      "stations": [
+        [18.9400, 72.8355], [18.9450, 72.8380], [18.9640, 72.8440], [18.9690, 72.8420],
+        [18.9760, 72.8430], [18.9820, 72.8550], [19.0060, 72.8590], [19.0330, 72.8540],
+        [19.0390, 72.8400], [19.0180, 72.8620], [19.0200, 72.8700], [19.0330, 72.8760],
+        [19.0450, 72.8800], [19.0520, 72.8870], [19.0620, 72.8990], [19.0660, 72.9120],
+        [19.0700, 72.9300], [19.0770, 72.9980], [19.0330, 73.0180]
+      ]
+    },
+    {
+      "id": "trans_harbour",
+      "name": "Trans-Harbour Line",
+      "operator": "Central Railway",
+      "gauge_m": 1.676,
+      "electrified": true,
+      "lines": 2,
+      "note": "Thane to Vashi/Nerul/Nerul-Uran across Vashi Bridge.",
+      "stations": [
+        [19.1860, 72.9750], [19.1590, 72.9980], [19.1440, 73.0000], [19.1290, 73.0000],
+        [19.1180, 73.0000], [19.0800, 73.0170], [19.0700, 73.0170], [19.0770, 72.9980],
+        [19.0330, 73.0180]
+      ]
+    },
+    {
+      "id": "uran",
+      "name": "Nerul-Uran Line",
+      "operator": "Central Railway",
+      "gauge_m": 1.676,
+      "electrified": true,
+      "lines": 2,
+      "note": "Opened 2018; runs along the Thane Creek flats to Uran.",
+      "stations": [
+        [19.0330, 73.0180], [19.0200, 73.0100], [19.0060, 72.9980], [18.9900, 72.9820],
+        [18.9770, 72.9650], [18.9640, 72.9470], [18.9530, 72.9300], [18.9430, 72.9150]
+      ]
+    },
+    {
+      "id": "port_line",
+      "name": "Port Line",
+      "operator": "Central Railway",
+      "gauge_m": 1.676,
+      "electrified": true,
+      "lines": 2,
+      "note": "Wadala Road to Reay Road along the docks; freight corridor with a suburban service.",
+      "stations": [
+        [19.0180, 72.8620], [19.0110, 72.8570], [18.9990, 72.8520], [18.9880, 72.8490],
+        [18.9760, 72.8430], [18.9690, 72.8420]
+      ]
+    },
+    {
+      "id": "metro_1",
+      "name": "Metro Line 1",
+      "operator": "MMRDA / Reliance Infrastructure",
+      "gauge_m": 1.435,
+      "electrified": true,
+      "lines": 2,
+      "elevated": true,
+      "note": "Versova-Andheri-Ghatkopar, opened 2014.",
+      "stations": [
+        [19.1330, 72.8120], [19.1300, 72.8250], [19.1240, 72.8320], [19.1190, 72.8460],
+        [19.1160, 72.8510], [19.1120, 72.8620], [19.1080, 72.8730], [19.1080, 72.8830],
+        [19.1000, 72.8880], [19.0930, 72.8960], [19.0890, 72.9020], [19.0860, 72.9080]
+      ]
+    },
+    {
+      "id": "metro_2a",
+      "name": "Metro Line 2A",
+      "operator": "MMRDA",
+      "gauge_m": 1.435,
+      "elevated": true,
+      "lines": 2,
+      "note": "Dahisar to Andheri West, opened 2023.",
+      "stations": [
+        [19.2510, 72.8620], [19.2380, 72.8590], [19.2260, 72.8540], [19.2130, 72.8500],
+        [19.1980, 72.8460], [19.1830, 72.8420], [19.1690, 72.8380], [19.1550, 72.8340],
+        [19.1410, 72.8300], [19.1330, 72.8120]
+      ]
+    },
+    {
+      "id": "metro_2b",
+      "name": "Metro Line 2B",
+      "operator": "MMRDA",
+      "gauge_m": 1.435,
+      "elevated": true,
+      "lines": 2,
+      "note": "Andheri West to Mankhurd through Bandra and Kurla, opened 2025.",
+      "stations": [
+        [19.1330, 72.8120], [19.1260, 72.8200], [19.1130, 72.8270], [19.0960, 72.8340],
+        [19.0790, 72.8410], [19.0620, 72.8500], [19.0520, 72.8660], [19.0470, 72.8830],
+        [19.0520, 72.9000], [19.0620, 72.9200], [19.0660, 72.9400]
+      ]
+    },
+    {
+      "id": "metro_3",
+      "name": "Metro Line 3 (Aqua)",
+      "operator": "MMRC",
+      "gauge_m": 1.435,
+      "underground_section_m": 33500,
+      "lines": 2,
+      "note": "Colaba-Bandra-SEEPZ; the only fully underground corridor.",
+      "stations": [
+        [18.9060, 72.8150], [18.9258, 72.8236], [18.9400, 72.8355], [18.9480, 72.8260],
+        [18.9630, 72.8150], [18.9720, 72.8190], [18.9820, 72.8210], [18.9900, 72.8230],
+        [19.0020, 72.8170], [19.0170, 72.8300], [19.0180, 72.8440], [19.0280, 72.8470],
+        [19.0400, 72.8580], [19.0550, 72.8500], [19.0700, 72.8600], [19.0860, 72.8720],
+        [19.0960, 72.8900], [19.1080, 72.8800], [19.1190, 72.8680], [19.1290, 72.8750]
+      ]
+    },
+    {
+      "id": "metro_7",
+      "name": "Metro Line 7",
+      "operator": "MMRDA",
+      "gauge_m": 1.435,
+      "elevated": true,
+      "lines": 2,
+      "note": "Dahisar East to Andheri East along the Western Express Highway median, opened 2023.",
+      "stations": [
+        [19.2508, 72.8590], [19.2320, 72.8620], [19.2080, 72.8660], [19.1865, 72.8600],
+        [19.1650, 72.8580], [19.1455, 72.8550], [19.1250, 72.8570], [19.1080, 72.8700]
+      ]
+    },
+    {
+      "id": "monorail",
+      "name": "Mumbai Monorail",
+      "operator": "MMRDA",
+      "gauge_m": 0.85,
+      "elevated": true,
+      "lines": 1,
+      "note": "Chembur to Jacob Circle; the only monorail in India, straddle-beam on its own viaduct.",
+      "stations": [
+        [19.0520, 72.9000], [19.0470, 72.8940], [19.0440, 72.8860], [19.0400, 72.8800],
+        [19.0370, 72.8740], [19.0320, 72.8680], [19.0260, 72.8640], [19.0200, 72.8580],
+        [19.0140, 72.8480], [19.0120, 72.8440], [18.9970, 72.8330]
+      ]
+    },
+    {
+      "id": "vasai_diva",
+      "name": "Vasai Road-Diva-Panvel Line",
+      "operator": "Central Railway",
+      "gauge_m": 1.676,
+      "electrified": true,
+      "lines": 2,
+      "note": "The northern freight/passenger bypass; the stretch inside the world runs across the creek.",
+      "stations": [
+        [19.2500, 72.8800], [19.2400, 72.9100], [19.2290, 72.9500], [19.2180, 73.0000],
+        [19.2100, 73.0500], [19.2050, 73.0900]
+      ]
+    },
+    {
+      "id": "panvel_karjat",
+      "name": "Panvel-Karjat Line",
+      "operator": "Central Railway",
+      "gauge_m": 1.676,
+      "lines": 2,
+      "note": "The south-eastern chord; only its northern approach lies inside the extent.",
+      "stations": [
+        [19.0330, 73.0180], [19.0050, 73.0300], [18.9800, 73.0450], [18.9600, 73.0600]
+      ]
+    }
+  ]
+}

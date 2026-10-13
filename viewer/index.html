@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+   MUMBAI 1:1 EXACT — world viewer
+
+   Renders the world the geospatial pipeline produced.  Nothing in this file is
+   authored data: terrain, buildings, the street graph, the landmark meshes and
+   the material palette are all decoded from viewer/data/mumbai.bin, which the
+   pipeline packs by RE-READING every .mumbai_chunk through the runtime reader
+   (mmap + typed views + per-section hash verification).  If the viewer shows
+   Mumbai, the bytes on disk are correct.
+
+   Controls
+     orbit      left drag / wheel          fly    WASD + Q/E, shift to boost
+     presets    1 Marine Drive   2 Sea Link   3 BKC   4 aerial   5 CSMT
+     time       [ / ] move the sun   0 golden hour   9 noon   M monsoon
+     R rain + wet streets   H hide buildings   G wireframe   T traffic off
+     F ride mode (motorcycle along the Sea Link corridor, first person)
+  ============================================================================
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mumbai 1:1 Exact — world viewer</title>
+<style>
+  html, body { margin:0; height:100%; background:#05070c; overflow:hidden;
+               font:12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+               color:#cfe3ff; -webkit-font-smoothing:antialiased; }
+  #app { position:fixed; inset:0; }
+  .panel { position:fixed; background:rgba(6,10,18,.74); border:1px solid #1d2b45;
+           border-radius:9px; padding:10px 12px; backdrop-filter:blur(7px); }
+  #hud { top:12px; left:12px; min-width:250px; }
+  #hud h1 { margin:0 0 7px; font-size:12px; letter-spacing:.14em; color:#ffd9a0; }
+  #hud .row { display:flex; justify-content:space-between; gap:14px; }
+  #hud b { color:#7fe0c0; font-weight:600; }
+  #keys { bottom:12px; left:12px; color:#93a9c8; max-width:min(760px, 96vw); }
+  #keys kbd { background:#16233a; border:1px solid #2b3d5c; border-radius:4px;
+              padding:0 4px; color:#cfe3ff; }
+  #ride { bottom:12px; right:12px; text-align:right; display:none; }
+  #ride .big { font-size:30px; color:#ffd9a0; line-height:1; }
+  #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+             flex-direction:column; gap:12px; background:#05070c; z-index:10;
+             transition:opacity .7s; }
+  #loading .t { color:#ffd9a0; letter-spacing:.2em; font-size:12px; }
+  #bar { width:280px; height:3px; background:#16233a; border-radius:2px; overflow:hidden; }
+  #bar i { display:block; height:100%; width:0%; background:linear-gradient(90deg,#ffd9a0,#7fe0c0);
+           transition:width .3s; }
+  #note { color:#6d7f9c; font-size:11px; }
+  #err { position:fixed; inset:0; display:none; align-items:center; justify-content:center;
+         padding:40px; text-align:center; color:#ff9d9d; white-space:pre-wrap; z-index:20; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="loading">
+  <div class="t">MUMBAI 1:1 EXACT</div>
+  <div id="bar"><i></i></div>
+  <div id="note">decoding world…</div>
+</div>
+<div id="err"></div>
+
+<div class="panel" id="hud">
+  <h1>MUMBAI 1:1 EXACT</h1>
+  <div class="row"><span>structures</span><b id="s-buildings">—</b></div>
+  <div class="row"><span>streets</span><b id="s-streets">—</b></div>
+  <div class="row"><span>terrain</span><b id="s-terrain">—</b></div>
+  <div class="row"><span>cells</span><b id="s-cells">—</b></div>
+  <div class="row"><span>position</span><b id="s-pos">—</b></div>
+  <div class="row"><span>sun</span><b id="s-sun">—</b></div>
+  <div class="row"><span>weather</span><b id="s-wx">golden hour</b></div>
+  <div class="row"><span>fps · tris</span><b id="s-fps">—</b></div>
+  <div class="row"><span>qa</span><b id="s-qa">—</b></div>
+</div>
+<div class="panel" id="keys">
+  <kbd>1</kbd> Marine Drive <kbd>2</kbd> Sea Link <kbd>3</kbd> BKC <kbd>4</kbd> aerial <kbd>5</kbd> CSMT ·
+  <kbd>0</kbd> golden hour <kbd>9</kbd> noon <kbd>M</kbd> monsoon <kbd>R</kbd> rain
+  <kbd>H</kbd> buildings <kbd>G</kbd> wireframe <kbd>T</kbd> traffic <kbd>F</kbd> ride
+  <kbd>WASD</kbd> fly
+</div>
+<div class="panel" id="ride">
+  <div class="big" id="ride-kmh">0</div>
+  <div>km/h · <span id="ride-road">Sea Link</span></div>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from './vendor/OrbitControls.js';
+
+const $ = id => document.getElementById(id);
+const bar = $('bar').firstElementChild;
+const setProgress = (p, note) => { bar.style.width = (p * 100).toFixed(0) + '%';
+                                   if (note) $('note').textContent = note; };
+const fail = msg => { $('err').style.display = 'flex'; $('err').textContent = msg;
+                      $('loading').style.display = 'none'; };
+
+// ---------------------------------------------------------------------------
+//  Renderer / scene
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+$('app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.4, 60000);
+camera.position.set(0, 900, 2600);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.075;
+controls.maxPolarAngle = Math.PI * 0.497;
+controls.maxDistance = 30000;
+controls.minDistance = 3;
+
+// ---------------------------------------------------------------------------
+//  Atmosphere: analytic Rayleigh + Mie sky, sun, haze
+// ---------------------------------------------------------------------------
+const sun = { alt: 4.2, az: 288, intensity: 3.2, temp: 1.0 };
+function sunDir() {
+  const a = sun.alt * Math.PI / 180, z = sun.az * Math.PI / 180;
+  return new THREE.Vector3(Math.cos(a) * Math.sin(z), Math.sin(a), Math.cos(a) * Math.cos(z)).normalize();
+}
+let sunVec = sunDir();
+
+const skyUniforms = {
+  uSun:      { value: sunVec.clone() },
+  uMonsoon:  { value: 0 },
+  uPollution:{ value: 0.35 },
+  uSeaLevel: { value: 0 },
+};
+const skyMat = new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, uniforms: skyUniforms,
+  vertexShader: `varying vec3 vDir; void main(){ vDir = position;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+  fragmentShader: `
+    varying vec3 vDir;
+    uniform vec3 uSun; uniform float uMonsoon; uniform float uPollution;
+    // Optical-depth style single-scattering integral: Rayleigh (blue, isotropic)
+    // plus Mie (aerosol forward lobe, which is what smog does to a Mumbai sunset).
+    void main() {
+      vec3 d = normalize(vDir);
+      float up = max(d.y, -0.05);
+      float sunUp = max(uSun.y, -0.10);
+      float sunAmt = smoothstep(-0.02, 0.22, sunUp);
+      float haze = mix(1.0, 3.2, uMonsoon) * mix(0.7, 1.6, uPollution);
+
+      // Rayleigh column: redder and dimmer as the sun sinks.
+      vec3 betaR = mix(vec3(0.62, 0.34, 0.16), vec3(0.10, 0.22, 0.52), sunAmt);
+      float thick = 1.0 / max(up + 0.045, 0.045);
+      vec3 sky = betaR * thick * 0.42;
+
+      // Mie: the white disc of glare around the sun, plus the horizon band.
+      float cosT = dot(d, normalize(uSun));
+      float mie = pow(max(cosT, 0.0), 7.0) * 1.5 + pow(max(cosT, 0.0), 1.6) * 0.22;
+      vec3 mieTint = mix(vec3(1.0, 0.62, 0.30), vec3(1.0, 0.94, 0.86), sunAmt);
+      sky += mieTint * mie * haze * mix(1.0, 0.45, uMonsoon);
+
+      // Aerodynamic horizon haze, densest at the sea surface.
+      vec3 hazeCol = mix(vec3(0.78, 0.72, 0.66), vec3(0.42, 0.44, 0.47), uMonsoon);
+      sky = mix(sky, hazeCol * mix(0.55, 1.0, sunAmt), exp(-max(d.y, 0.0) * 11.0) * 0.55 * haze);
+
+      // Ground half: the sea's own ambient, so the horizon line never jumps.
+      vec3 sea = mix(vec3(0.05, 0.09, 0.14), vec3(0.12, 0.15, 0.18), uMonsoon);
+      sky = mix(sky, sea, smoothstep(0.0, -0.05, d.y));
+
+      gl_FragColor = vec4(sky, 1.0);
+    }`
+});
+const sky = new THREE.Mesh(new THREE.SphereGeometry(45000, 48, 28), skyMat);
+sky.frustumCulled = false;
+scene.add(sky);
+
+const hemi = new THREE.HemisphereLight(0x9dbbff, 0x332c22, 0.30);
+scene.add(hemi);
+const sunLight = new THREE.DirectionalLight(0xffd2a0, sun.intensity);
+sunLight.position.copy(sunVec).multiplyScalar(4000);
+scene.add(sunLight);
+scene.add(new THREE.AmbientLight(0x27324c, 0.55));
+
+// ---------------------------------------------------------------------------
+//  World payload
+// ---------------------------------------------------------------------------
+const world = {
+  meta: null, dv: null,
+  buildings: null, terrain: null, seats: null,
+  mat: new Map(),        // material id -> { name, colour, roughness, metallic, wetness }
+  roads: null,           // { positions, colours, count }
+  nodes: null, edges: null, adjacency: null,
+  landmarks: {},
+};
+const THREE_TAU = Math.PI * 2;
+
+function materialOf(id) {
+  return world.mat.get(id) || { name: 'unknown', colour: new THREE.Color(0.62, 0.60, 0.57),
+                                roughness: 0.8, metallic: 0.0, wetness: 0.5 };
+}
+
+async function loadWorld() {
+  setProgress(0.05, 'reading manifest…');
+  const res = await fetch('./data/mumbai.json');
+  if (!res.ok) throw new Error('viewer/data/mumbai.json not found.\n\nRun:  ./build/bin/mumbai_pipeline --config configs/world.json\n\nthen reload.');
+  const meta = await res.json();
+
+  setProgress(0.15, 'opening world binary…');
+  const buf = await (await fetch('./data/mumbai.bin')).arrayBuffer();
+  const dv = new DataView(buf);
+  world.meta = meta; world.dv = dv;
+
+  // Materials carry the real PBR parameters the pipeline baked; variant
+  // materials (weathering x tint) are separate ids, which is where the city's
+  // facade variety comes from.
+  for (const m of (meta.materials || [])) {
+    // Material id 0 is "unknown": the pipeline registers it with no colour, so
+    // a building that fell through to it would render as a black hole in the
+    // skyline.  Unset colours are read as neutral concrete instead.
+    const unset = (m.r === 0 && m.g === 0 && m.b === 0);
+    world.mat.set(m.id, {
+      name: m.name,
+      colour: new THREE.Color().setRGB(unset ? 0.60 : m.r, unset ? 0.58 : m.g,
+                                       unset ? 0.55 : m.b, THREE.LinearSRGBColorSpace),
+      roughness: m.roughness, metallic: m.metallic,
+      wetness: m.wetness === undefined ? 0.5 : m.wetness,
+    });
+  }
+  $('s-buildings').textContent = meta.stats.buildings.toLocaleString();
+  $('s-streets').textContent = meta.stats.navEdges.toLocaleString();
+  $('s-terrain').textContent = meta.terrain.width + '×' + meta.terrain.height;
+  $('s-cells').textContent = meta.stats.chunks;
+  $('s-qa').textContent = (meta.qa.passed ? 'PASS' : 'FAIL') + ' · ' + meta.qa.counters + ' counters';
+  $('s-qa').style.color = meta.qa.passed ? '#7fe0c0' : '#ff9d9d';
+  for (const l of (meta.landmarks || [])) world.landmarks[l.name] = l;
+
+  decodeTerrain();
+  setProgress(0.4, 'decoding structure…');
+  await new Promise(r => setTimeout(r, 0));       // let the progress paint
+  decodeBuildings();
+  decodeStreets();
+  setProgress(0.8, 'building scene…');
+}
+
+function decodeTerrain() {
+  const T = world.meta.terrain, W = T.width, H = T.height, dv = world.dv;
+  const h = new Float32Array(W * H);
+  for (let i = 0; i < W * H; ++i) h[i] = T.bias + (dv.getUint16(T.offset + i * 2, true) / 65535) * T.span;
+  world.terrain = { w: W, h: H, step: T.step, heights: h };
+}
+
+function decodeBuildings() {
+  const B = world.meta.buildings, dv = world.dv;
+  world.buildings = {
+    count: B.count, stride: B.stride, offset: B.offset, dv,
+    x: i => dv.getUint16(B.offset + i * B.stride, true),
+    z: i => dv.getUint16(B.offset + i * B.stride + 2, true),
+    w: i => dv.getUint16(B.offset + i * B.stride + 4, true),
+    d: i => dv.getUint16(B.offset + i * B.stride + 6, true),
+    h: i => dv.getUint16(B.offset + i * B.stride + 8, true),
+    g: i => dv.getUint16(B.offset + i * B.stride + 10, true) - 32,
+    mat: i => dv.getUint8(B.offset + i * B.stride + 12),
+    yaw: i => (dv.getUint8(B.offset + i * B.stride + 13) / 256) * THREE_TAU,
+  };
+}
+
+function decodeStreets() {
+  const N = world.meta.nodes, E = world.meta.edges, dv = world.dv;
+  const nodeCount = N.count, edgeCount = E.count;
+  const nx = new Float32Array(nodeCount), nz = new Float32Array(nodeCount), ny = new Float32Array(nodeCount);
+  for (let i = 0; i < nodeCount; ++i) {
+    const o = N.offset + i * 6;
+    nx[i] = dv.getInt16(o, true); nz[i] = dv.getInt16(o + 2, true); ny[i] = dv.getInt16(o + 4, true);
+  }
+  const from = new Uint32Array(edgeCount), to = new Uint32Array(edgeCount);
+  const lanes = new Uint16Array(edgeCount), cls = new Uint8Array(edgeCount), dir = new Uint8Array(edgeCount);
+  const pos = new Float32Array(edgeCount * 6), col = new Float32Array(edgeCount * 6);
+  const roadColour = c => c >= 7 ? 0x8d94a0 : (c >= 5 ? 0x7c828e : (c >= 3 ? 0x6f7581 : 0x646a76));
+  const c = new THREE.Color();
+  for (let i = 0; i < edgeCount; ++i) {
+    const o = E.offset + i * 12;
+    from[i] = dv.getUint32(o, true); to[i] = dv.getUint32(o + 4, true);
+    lanes[i] = dv.getUint16(o + 8, true); cls[i] = dv.getUint8(o + 10); dir[i] = dv.getUint8(o + 11);
+    const a = from[i], b = to[i];
+    pos[i * 6] = nx[a]; pos[i * 6 + 1] = ny[a] + 0.45; pos[i * 6 + 2] = nz[a];
+    pos[i * 6 + 3] = nx[b]; pos[i * 6 + 4] = ny[b] + 0.45; pos[i * 6 + 5] = nz[b];
+    c.setHex(roadColour(lanes[i] || (cls[i] >= 5 ? 6 : 2)));
+    col[i * 6] = c.r; col[i * 6 + 1] = c.g; col[i * 6 + 2] = c.b;
+    col[i * 6 + 3] = c.r; col[i * 6 + 4] = c.g; col[i * 6 + 5] = c.b;
+  }
+  world.nodes = { x: nx, z: nz, y: ny, count: nodeCount };
+  world.edges = { from, to, lanes, cls, dir, count: edgeCount };
+  world.roads = { pos, col, count: edgeCount };
+
+  // Adjacency for the traffic and ride modes.
+  const degree = new Uint32Array(nodeCount + 1);
+  for (let i = 0; i < edgeCount; ++i) { degree[from[i] + 1]++; degree[to[i] + 1]++; }
+  for (let i = 0; i < nodeCount; ++i) degree[i + 1] += degree[i];
+  const adj = new Uint32Array(edgeCount * 2);
+  const cursor = degree.slice(0, nodeCount);
+  for (let i = 0; i < edgeCount; ++i) {
+    adj[cursor[from[i]]++] = i;
+    adj[cursor[to[i]]++] = i;
+  }
+  world.adjacency = { data: adj, start: degree };
+}
+
+// ---------------------------------------------------------------------------
+//  Terrain mesh + water
+// ---------------------------------------------------------------------------
+function buildTerrain(step = 2) {
+  const T = world.terrain, W = T.w, H = T.h;
+  const nx = Math.floor((W - 1) / step) + 1, nz = Math.floor((H - 1) / step) + 1;
+  const pos = new Float32Array(nx * nz * 3), col = new Float32Array(nx * nz * 3);
+  const idx = new Uint32Array((nx - 1) * (nz - 1) * 6);
+  const c = new THREE.Color();
+  for (let j = 0; j < nz; ++j) {
+    for (let i = 0; i < nx; ++i) {
+      const gi = Math.min(W - 1, i * step), gj = Math.min(H - 1, j * step);
+      const y = T.heights[gj * W + gi];
+      const k = (j * nx + i) * 3;
+      pos[k] = gi * T.step; pos[k + 1] = y; pos[k + 2] = gj * T.step;
+      if (y < -1.0)      c.setRGB(0.10, 0.12, 0.13);   // harbour bed
+      else if (y < 1.5)  c.setRGB(0.38, 0.38, 0.36);   // reclamation, docks
+      else if (y < 8)    c.setRGB(0.34, 0.35, 0.30);
+      else if (y < 30)   c.setRGB(0.28, 0.33, 0.24);
+      else if (y < 70)   c.setRGB(0.22, 0.30, 0.19);
+      else               c.setRGB(0.17, 0.24, 0.16);
+      const n = ((gi * 2654435761 ^ gj * 40503) >>> 0) % 1000 / 1000;
+      col[k] = c.r * (0.94 + n * 0.12); col[k + 1] = c.g * (0.94 + n * 0.12); col[k + 2] = c.b * (0.94 + n * 0.12);
+    }
+  }
+  for (let j = 0, t = 0; j + 1 < nz; ++j) {
+    for (let i = 0; i + 1 < nx; ++i) {
+      const a = j * nx + i, b = a + 1, d = a + nx, e = d + 1;
+      idx[t++] = a; idx[t++] = d; idx[t++] = b;
+      idx[t++] = b; idx[t++] = d; idx[t++] = e;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.computeVertexNormals();
+  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.0 });
+  const mesh = new THREE.Mesh(g, m);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+// Water: 4 Gerstner waves (the spec's swell/wind-chop split) + depth-aware
+// colour and shoreline foam sampled from the terrain heightfield, so the
+// shoreline breathes with the same geometry the collision uses.
+function buildWater() {
+  const T = world.terrain;
+  const tex = new THREE.DataTexture(new Float32Array(1), 1, 1, THREE.RedFormat, THREE.FloatType);
+  tex.image = { data: T.heights, width: T.w, height: T.h };
+  tex.needsUpdate = true;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+
+  const uni = {
+    uTime:   { value: 0 },
+    uSun:    { value: sunVec.clone() },
+    uHeight: { value: tex },
+    uTerrain:{ value: new THREE.Vector4(T.step, T.step, T.w, T.h) },
+    uSwell:  { value: 0.45 },
+    uDeep:   { value: new THREE.Color(0.012, 0.030, 0.045) },
+    uShallow:{ value: new THREE.Color(0.06, 0.20, 0.22) },
+    uFoam:   { value: 0.9 },
+  };
+  const mat = new THREE.ShaderMaterial({
+    uniforms: uni,
+    vertexShader: `
+      uniform float uTime, uSwell;
+      varying vec3 vW; varying vec3 vN; varying float vH;
+      float wave(vec2 p, vec2 dir, float len, float amp, float speed, inout vec2 g) {
+        float k = 6.28318 / len;
+        float f = k * (dot(dir, p) - speed * uTime);
+        g += dir * (k * amp * cos(f));
+        return amp * sin(f);
+      }
+      void main() {
+        vec3 p = position;
+        vec2 g = vec2(0.0); float h = 0.0;
+        // Long Arabian Sea swell (80-150 m) plus three wind-chop trains.
+        h += wave(p.xz, normalize(vec2(0.88, 0.47)), 118.0, 1.05 * uSwell, 9.0, g);
+        h += wave(p.xz, normalize(vec2(0.55, 0.83)),  67.0, 0.48 * uSwell, 6.6, g);
+        h += wave(p.xz, normalize(vec2(-0.35, 0.94)), 33.0, 0.20 * uSwell, 4.7, g);
+        h += wave(p.xz, normalize(vec2(0.16, -0.99)), 17.0, 0.09 * uSwell, 3.3, g);
+        p.y += h;
+        vH = h; vW = p; vN = normalize(vec3(-g.x, 1.0, -g.y));
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 uSun, uDeep, uShallow; uniform sampler2D uHeight;
+      uniform vec4 uTerrain; uniform float uFoam;
+      varying vec3 vW; varying vec3 vN; varying float vH;
+      float terrainAt(vec2 xz) {
+        vec2 uv = vec2(xz.x, xz.y) / (uTerrain.xy * uTerrain.zw);
+        if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return -40.0;
+        return texture2D(uHeight, uv).r;
+      }
+      void main() {
+        float bed = terrainAt(vW.xz);
+        float depth = clamp(-bed, 0.0, 40.0);
+        vec3 N = normalize(vN);
+        vec3 V = normalize(cameraPosition - vW);
+        float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+        vec3 L = normalize(uSun);
+        vec3 H = normalize(L + V);
+        // Glitter: a tight lobe plus a broad sheen - the two together are what
+        // makes a low sun on the sea read as water rather than a blue field.
+        float spec = pow(max(dot(N, H), 0.0), 420.0) * 5.0 + pow(max(dot(N, H), 0.0), 30.0) * 0.35;
+        vec3 skyTint = mix(vec3(1.0, 0.66, 0.36), vec3(0.52, 0.66, 0.86),
+                           clamp(L.y * 3.0, 0.0, 1.0));
+        vec3 body = mix(uShallow, uDeep, clamp(depth / 12.0, 0.0, 1.0));
+        body += vec3(0.02, 0.05, 0.05) * clamp(1.0 - depth / 3.0, 0.0, 1.0);
+        vec3 col = body + skyTint * fres * 1.15 + vec3(1.0, 0.93, 0.80) * spec;
+        // Foam: a band where the swell runs out of water, plus crest caps.
+        float shore = 1.0 - smoothstep(0.0, 1.6, depth);
+        float crest = smoothstep(0.55, 1.35, vH) * smoothstep(0.05, 1.2, depth);
+        float foam = clamp(shore * 0.9 + crest * 0.35, 0.0, 1.0) * uFoam;
+        col = mix(col, vec3(0.86, 0.90, 0.92) * (0.5 + 0.5 * max(L.y, 0.0)), foam * 0.75);
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  });
+  const size = Math.max(world.meta.extent.maxX - world.meta.extent.minX,
+                        world.meta.extent.maxZ - world.meta.extent.minZ) * 2.4;
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(size, size, 340, 340), mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set((world.meta.extent.maxX - world.meta.extent.minX) * 0.5, 0,
+                    (world.meta.extent.maxZ - world.meta.extent.minZ) * 0.5);
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return { mesh, uni };
+}
+
+function buildStreets() {
+  const R = world.roads;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(R.pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(R.col, 3));
+  const m = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.45 });
+  const lines = new THREE.LineSegments(g, m);
+  m.depthWrite = false;
+  lines.frustumCulled = false;
+  scene.add(lines);
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
+//  Buildings: oriented instanced boxes straight from the BuildingProxy section
+// ---------------------------------------------------------------------------
+function buildCity() {
+  const B = world.buildings;
+  const geo = new THREE.BoxGeometry(1, 1, 1);
+  geo.translate(0, 0.5, 0);
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0.05 });
+  const mesh = new THREE.InstancedMesh(geo, mat, B.count);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(),
+        p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
+  const cool = new THREE.Color(0x40618f);
+  for (let i = 0; i < B.count; ++i) {
+    const mm = materialOf(B.mat(i));
+    p.set(B.x(i), B.g(i) - 0.4, B.z(i));
+    q.setFromAxisAngle(up, B.yaw(i));
+    s.set(B.w(i), B.h(i) + 0.4, B.d(i));
+    m.compose(p, q, s);
+    mesh.setMatrixAt(i, m);
+    col.copy(mm.colour);
+    const h = B.h(i);
+    if (h > 45) col.lerp(cool, Math.min(0.7, (h - 45) / 90));
+    mesh.setColorAt(i, col);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+// ---------------------------------------------------------------------------
+//  Landmarks: the hero meshes, decoded from the chunk HeroAssets sections
+// ---------------------------------------------------------------------------
+function buildLandmarks() {
+  const H = world.meta.hero, dv = world.dv;
+  if (!H || !H.indexCount) return null;
+  const pos = new Float32Array(H.vertexCount * 3), nor = new Float32Array(H.vertexCount * 3),
+        col = new Float32Array(H.vertexCount * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < H.vertexCount; ++i) {
+    const o = H.vertexOffset + i * H.vertexStride;
+    pos[i * 3] = dv.getFloat32(o, true);
+    pos[i * 3 + 1] = dv.getFloat32(o + 4, true);
+    pos[i * 3 + 2] = dv.getFloat32(o + 8, true);
+    nor[i * 3] = dv.getFloat32(o + 12, true);
+    nor[i * 3 + 1] = dv.getFloat32(o + 16, true);
+    nor[i * 3 + 2] = dv.getFloat32(o + 20, true);
+    c.copy(materialOf(dv.getUint8(o + 24)).colour);
+    const ao = 0.45 + (dv.getUint8(o + 25) / 255) * 0.55;
+    col[i * 3] = c.r * ao; col[i * 3 + 1] = c.g * ao; col[i * 3 + 2] = c.b * ao;
+  }
+  const idx = new Uint32Array(H.indexCount);
+  for (let i = 0; i < H.indexCount; ++i) idx[i] = dv.getUint32(H.indexOffset + i * 4, true);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.62, metalness: 0.05, side: THREE.DoubleSide }));
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+// ---------------------------------------------------------------------------
+//  Traffic — one fleet driven along the exported navigation graph
+// ---------------------------------------------------------------------------
+const traffic = { mesh: null, cars: [], count: 0, enabled: true };
+function buildTraffic(target = 2600) {
+  const E = world.edges, N = world.nodes;
+  const count = Math.min(target, E.count);
+  const geo = new THREE.BoxGeometry(1, 1, 1); geo.translate(0, 0.5, 0);
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.35, metalness: 0.25,
+                                               emissive: 0x140d03, emissiveIntensity: 1.0 });
+  const mesh = new THREE.InstancedMesh(geo, mat, count);
+  const col = new THREE.Color();
+  const palette = [0x9aa3ad, 0xd8b23c, 0xb9bec6, 0x2f3a4a, 0x6a4f7a, 0xc25f38, 0x3d6b52];
+  for (let i = 0; i < count; ++i) {
+    const e = Math.floor((i / count) * E.count);
+    let a = E.from[e], b = E.to[e];
+    if (E.dir[e] === 2) { const t = a; a = b; b = t; }
+    // Mumbai's fleet is overwhelmingly two-wheelers and yellow-black taxis.
+    const r = Math.random();
+    const kind = r < 0.46 ? 0 : (r < 0.72 ? 1 : (r < 0.9 ? 2 : 3));
+    traffic.cars.push({
+      edge: e, a, b, t: Math.random(), kind,
+      speed: (kind === 0 ? 9.5 : kind === 3 ? 5.5 : 7.5) + Math.random() * 4.0,
+      lane: (kind === 3 ? 1 : 0) * (Math.random() < 0.5 ? 1 : -1) + (Math.random() - 0.5) * 0.6,
+    });
+    col.setHex(kind === 1 ? 0xd8b23c : (kind === 3 ? 0xd8d8d8 : palette[i % palette.length]));
+    mesh.setColorAt(i, col);
+  }
+  mesh.frustumCulled = false;
+  traffic.mesh = mesh; traffic.count = count;
+  scene.add(mesh);
+  return mesh;
+}
+
+const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(),
+      _p = new THREE.Vector3(), _up = new THREE.Vector3(0, 1, 0), _t = new THREE.Vector3();
+function updateTraffic(dt) {
+  if (!traffic.mesh || !traffic.enabled) return;
+  const N = world.nodes, mesh = traffic.mesh;
+  for (let i = 0; i < traffic.cars.length; ++i) {
+    const c = traffic.cars[i];
+    const ax = N.x[c.a], az = N.z[c.a], ay = N.y[c.a];
+    const bx = N.x[c.b], bz = N.z[c.b], by = N.y[c.b];
+    const dx = bx - ax, dz = bz - az;
+    const len = Math.max(1e-3, Math.hypot(dx, dz));
+    c.t += (c.speed * dt) / len;
+    let wrapped = false;
+    if (c.t >= 1) {
+      c.t -= 1; wrapped = true;
+      // Move to the next edge sharing this node, so vehicles travel the graph.
+      const adj = world.adjacency, s = adj.start[c.b], e = adj.start[c.b + 1];
+      if (e > s) {
+        const cand = adj.data[s + ((i * 7919) % (e - s))];
+        const other = world.edges.from[cand] === c.b ? world.edges.to[cand] : world.edges.from[cand];
+        if (other !== c.a) { c.a = c.b; c.b = other; c.edge = cand; }
+        else { c.a = c.b; c.b = c.a; }
+      } else { c.t = 0; }
+    }
+    if (wrapped && c.t < 0) c.t = 0;
+    const px = ax + dx * c.t, pz = az + dz * c.t, py = ay + (by - ay) * c.t;
+    const yaw = Math.atan2(dx, dz);
+    // Lateral offset: oncoming traffic sits on the other side of the centreline.
+    const side = (c.kind === 3 ? 1 : (i % 2 ? 1 : -1)) * (1.7 + c.lane);
+    const ox = Math.cos(yaw) * side, oz = -Math.sin(yaw) * side;
+    const speedScale = 1 + (c.speed / 14) * 0.35;
+    if (c.kind === 0) _s.set(0.8, 1.5, 2.0 * speedScale);         // motorcycle / scooter
+    else if (c.kind === 1) _s.set(1.9, 1.6, 4.4);                 // kaali-peeli taxi
+    else if (c.kind === 2) _s.set(2.3, 2.4, 5.6);                 // SUV / van
+    else _s.set(2.6, 3.4, 11.5);                                  // BEST double-decker
+    _p.set(px + ox, py + 0.35, pz + oz);
+    _q.setFromAxisAngle(_up, yaw);
+    _m4.compose(_p, _q, _s);
+    mesh.setMatrixAt(i, _m4);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------------------
+//  Rain and wet streets
+// ---------------------------------------------------------------------------
+const weather = { rain: false, monsoon: false, wetness: 0 };
+let rain = null, rainUni = null;
+function buildRain(count = 42000) {
+  const g = new THREE.BufferGeometry();
+  const pos = new Float32Array(count * 3);
+  const vel = new Float32Array(count);
+  for (let i = 0; i < count; ++i) {
+    pos[i * 3] = (Math.random() - 0.5) * 2000;
+    pos[i * 3 + 1] = Math.random() * 900;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 2000;
+    vel[i] = 55 + Math.random() * 45;
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aVel', new THREE.BufferAttribute(vel, 1));
+  rainUni = { uTime: { value: 0 }, uOpacity: { value: 0.0 }, uWind: { value: new THREE.Vector2(0.25, 0.1) } };
+  const mat = new THREE.ShaderMaterial({
+    uniforms: rainUni, transparent: true, depthWrite: false,
+    vertexShader: `
+      uniform float uTime; uniform vec2 uWind; attribute float aVel;
+      varying float vFade;
+      void main() {
+        vec3 p = position;
+        p.y = mod(p.y - uTime * aVel, 900.0);
+        p.xz += uWind * (900.0 - p.y) * 0.02;   // slant with the squall
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vFade = clamp(1.0 - length(p.xz) / 900.0, 0.0, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = 1.7;
+      }`,
+    fragmentShader: `
+      uniform float uOpacity; varying float vFade;
+      void main() { gl_FragColor = vec4(0.78, 0.85, 0.95, uOpacity * vFade * 0.55); }`
+  });
+  rain = new THREE.Points(g, mat);
+  rain.frustumCulled = false;
+  scene.add(rain);
+  return rain;
+}
+
+// ---------------------------------------------------------------------------
+//  Camera modes
+// ---------------------------------------------------------------------------
+const DEG = Math.PI / 180;
+function anchorMatch(name) {
+  for (const k in world.landmarks) if (k.includes(name)) return world.landmarks[k];
+  return null;
+}
+function goTo(x, z, height, distance, bearingDeg) {
+  ride.on = false;
+  const yaw = bearingDeg * DEG;
+  camera.position.set(x - Math.sin(yaw) * distance, height, z - Math.cos(yaw) * distance);
+  controls.target.set(x, height * 0.1, z);
+  controls.update();
+}
+const presets = {
+  '1': () => { const a = anchorMatch('Marine'); if (a) goTo(a.x, a.z, 46, 620, 205); },
+  '2': () => { const a = anchorMatch('Bandra'); if (a) goTo(a.x, a.z, 140, 1100, 25); },
+  '3': () => goTo(11200, 21000, 300, 1700, 255),
+  '4': () => goTo(11000, 21000, 4600, 9500, 190),
+  '5': () => { const a = anchorMatch('Chhatrapati'); if (a) goTo(a.x, a.z, 70, 460, 300); },
+};
+function setTime(alt, az, intensity, label) {
+  sun.alt = alt; sun.az = az; sun.intensity = intensity;
+  sunVec = sunDir();
+  sunLight.position.copy(sunVec).multiplyScalar(4000);
+  sunLight.intensity = intensity;
+  const warm = THREE.MathUtils.clamp(0.055 + alt / 260, 0.045, 0.12);
+  sunLight.color.setHSL(warm, 0.62, THREE.MathUtils.clamp(0.5 + alt / 160, 0.4, 0.92));
+  hemi.intensity = weather.monsoon ? 0.42 : (alt > 25 ? 0.4 : 0.26);
+  skyUniforms.uSun.value.copy(sunVec);
+  skyUniforms.uMonsoon.value = weather.monsoon ? 0.85 : 0.0;
+  skyUniforms.uPollution.value = weather.monsoon ? 0.5 : 0.35;
+  if (water) water.uni.uSun.value.copy(sunVec);
+  $('s-sun').textContent = alt.toFixed(1) + '° / ' + az.toFixed(0) + '°';
+  $('s-wx').textContent = label + (weather.rain ? ' · rain' : '');
+}
+
+const ride = { on: false, kmh: 0, node: 0, prev: 0, lean: 0, pick: 0 };
+function startRide() {
+  // Begin at the node closest to the Sea Link anchor and follow the graph.
+  const a = anchorMatch('Bandra') || { x: 0, z: 0 };
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < world.nodes.count; ++i) {
+    const dx = world.nodes.x[i] - a.x, dz = world.nodes.z[i] - a.z;
+    const d = dx * dx + dz * dz;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  ride.on = true; ride.node = best; ride.prev = -1; ride.kmh = 0;
+  controls.enabled = false;
+  $('ride').style.display = 'block';
+  $('ride-road').textContent = 'Sea Link corridor';
+}
+function updateRide(dt) {
+  if (!ride.on) return;
+  const N = world.nodes, adj = world.adjacency;
+  const s = adj.start[ride.node], e = adj.start[ride.node + 1];
+  if (e <= s) { ride.node = ride.pick % world.nodes.count; return; }
+  ride.pick++;
+  const edge = adj.data[s + (ride.pick % (e - s))];
+  const other = world.edges.from[edge] === ride.node ? world.edges.to[edge] : world.edges.from[edge];
+  const ax = N.x[ride.node], az = N.z[ride.node], bx = N.x[other], bz = N.z[other];
+  const len = Math.max(1, Math.hypot(bx - ax, bz - az));
+  ride.kmh = Math.min(78, ride.kmh + dt * 26);            // roll on the throttle
+  const step = (ride.kmh / 3.6) * dt;
+  const yaw = Math.atan2(bx - ax, bz - az);
+  const y = Math.max(1.4, N.y[ride.node] + 1.45);
+  camera.position.set(ax + (bx - ax) * 0.5, y, az + (bz - az) * 0.5);
+  const lean = Math.sin(ride.pick * 0.7) * 0.05;
+  const ahead = new THREE.Vector3(ax + (bx - ax) * 3, y - 0.4, az + (bz - az) * 3);
+  ahead.x += Math.cos(yaw) * lean * 12;
+  ahead.z += -Math.sin(yaw) * lean * 12;
+  camera.lookAt(ahead);
+  ride.lean += (lean - ride.lean) * 0.08;
+  if (step >= len) ride.node = other; else ride.node = other;
+  $('ride-kmh').textContent = ride.kmh.toFixed(0);
+}
+
+// ---------------------------------------------------------------------------
+//  Input
+// ---------------------------------------------------------------------------
+const keysDown = {};
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (presets[e.key]) presets[e.key]();
+  else if (e.key === '0') setTime(4.2, 288, 3.2, 'golden hour');
+  else if (e.key === '9') setTime(63, 205, 4.4, 'midday');
+  else if (k === 'm') { weather.monsoon = !weather.monsoon; weather.rain = weather.monsoon;
+                        setTime(26, 250, 1.5, weather.monsoon ? 'monsoon' : 'golden hour');
+                        if (!weather.monsoon) setTime(4.2, 288, 3.2, 'golden hour'); }
+  else if (k === 'r') { weather.rain = !weather.rain; $('s-wx').textContent =
+                        (weather.monsoon ? 'monsoon' : 'golden hour') + (weather.rain ? ' · rain' : ''); }
+  else if (k === 'h') city.visible = !city.visible;
+  else if (k === 'g') terrain.material.wireframe = !terrain.material.wireframe;
+  else if (k === 't') { traffic.enabled = !traffic.enabled; traffic.mesh.visible = traffic.enabled; }
+  else if (k === 'f') { if (ride.on) { ride.on = false; controls.enabled = true; $('ride').style.display = 'none'; }
+                        else startRide(); }
+  else if (e.key === '[') setTime(Math.max(-2, sun.alt - 3), sun.az, Math.max(0.6, sun.intensity - 0.2), 'custom');
+  else if (e.key === ']') setTime(Math.min(88, sun.alt + 3), sun.az, Math.min(5.0, sun.intensity + 0.2), 'custom');
+  else keysDown[k] = true;
+});
+addEventListener('keyup', e => { keysDown[e.key.toLowerCase()] = false; });
+function flyFly(dt) {
+  if (ride.on) return;
+  const boost = keysDown['shift'] ? 1100 : 220;
+  const f = new THREE.Vector3(), r = new THREE.Vector3(), d = new THREE.Vector3();
+  camera.getWorldDirection(f);
+  r.crossVectors(f, camera.up).normalize();
+  if (keysDown['w']) d.add(f);
+  if (keysDown['s']) d.sub(f);
+  if (keysDown['d']) d.add(r);
+  if (keysDown['a']) d.sub(r);
+  if (keysDown['e']) d.y += 1;
+  if (keysDown['q']) d.y -= 1;
+  if (d.lengthSq() > 0) {
+    d.normalize().multiplyScalar(boost * dt);
+    camera.position.add(d);
+    controls.target.add(d);
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Build and run
+// ---------------------------------------------------------------------------
+let terrain = null, water = null, streets = null, city = null, landmarks = null;
+const clock = new THREE.Clock();
+let fpsAcc = 0, fpsFrames = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.08);
+  flyFly(dt);
+  updateRide(dt);
+  if (controls.enabled) controls.update();
+  sky.position.copy(camera.position);
+  if (rain) {
+    rain.position.set(camera.position.x, 0, camera.position.z);
+    rainUni.uTime.value += dt;
+    rainUni.uOpacity.value += ((weather.rain ? 0.95 : 0.0) - rainUni.uOpacity.value) * 0.04;
+  }
+  if (water) {
+    water.uni.uTime.value += dt;
+    water.uni.uSwell.value += ((weather.monsoon ? 1.9 : 0.45) - water.uni.uSwell.value) * 0.02;
+  }
+  // Wet surfaces: roughness down, albedo down, specular up - the screen-space
+  // wetness buffer in the native renderer does this per-pixel; here it is per
+  // material, driven by the same weather state.
+  const wetTarget = (weather.rain ? 1.0 : 0.0);
+  weather.wetness += (wetTarget - weather.wetness) * dt * 0.25;
+  const wet = weather.wetness;
+  if (city) { city.material.roughness = 0.78 - wet * 0.62; city.material.metalness = 0.05 + wet * 0.22; }
+  if (terrain) { terrain.material.roughness = 0.95 - wet * 0.55; terrain.material.metalness = wet * 0.25; }
+  if (streets) { streets.material.opacity = 0.45 + wet * 0.35; }
+  updateTraffic(dt);
+  renderer.render(scene, camera);
+
+  fpsAcc += dt; fpsFrames++;
+  if (fpsAcc > 0.45) {
+    $('s-fps').textContent = (fpsFrames / fpsAcc).toFixed(0) + ' · ' +
+                             (renderer.info.render.triangles / 1e6).toFixed(2) + 'M';
+    $('s-pos').textContent = camera.position.x.toFixed(0) + ', ' +
+                             camera.position.y.toFixed(0) + ', ' + camera.position.z.toFixed(0);
+    fpsAcc = 0; fpsFrames = 0;
+  }
+}
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+try {
+  await loadWorld();
+  terrain = buildTerrain(2);
+  setProgress(0.5, 'sea and sky…');
+  water = buildWater();
+  streets = buildStreets();
+  setProgress(0.65, 'structures…');
+  await new Promise(r => setTimeout(r, 0));
+  city = buildCity();
+  landmarks = buildLandmarks();
+  setProgress(0.85, 'traffic…');
+  buildTraffic();
+  buildRain();
+  setTime(4.2, 288, 3.2, 'golden hour');
+  presets['4']();
+  setProgress(1, 'ready');
+  $('loading').style.opacity = '0';
+  setTimeout(() => { $('loading').style.display = 'none'; }, 750);
+  animate();
+} catch (e) {
+  fail('Viewer error: ' + (e && e.message ? e.message : e));
+  console.error(e);
+}
+</script>
+</body>
+</html>

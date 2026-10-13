@@ -1,0 +1,19 @@
+# ---- Build outputs ----
+build/
+*.o
+*.a
+
+# ---- Generated world data (regenerate with `make world`) ----
+data/processed/
+data/raw/
+
+# ---- Node / viewer ----
+node_modules/
+npm-debug.log*
+.viewer-cache/
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+*.swp
+.DS_Store

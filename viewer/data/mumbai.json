@@ -1,0 +1,1255 @@
+{
+ "buildings": {
+  "count": 164057,
+  "offset": 1896450,
+  "stride": 14
+ },
+ "edges": {
+  "count": 127235,
+  "offset": 5720068,
+  "stride": 12
+ },
+ "extent": {
+  "maxX": 9216,
+  "maxZ": 45056,
+  "minX": -13312,
+  "minZ": 2048,
+  "seaLevel": 0
+ },
+ "format": "mumbai-viewer-scene",
+ "formatVersion": 1,
+ "generated": "mumbai_pipeline",
+ "hero": {
+  "indexCount": 44208,
+  "indexOffset": 8182312,
+  "vertexCount": 29232,
+  "vertexOffset": 7246888,
+  "vertexStride": 32
+ },
+ "landmarks": [
+  {
+   "lat": 18.922,
+   "lon": 72.8347,
+   "name": "Gateway of India",
+   "x": 6433.23334,
+   "z": 3645.20935
+  },
+  {
+   "lat": 18.9216,
+   "lon": 72.8332,
+   "name": "Taj Mahal Palace",
+   "x": 6275.20506,
+   "z": 3600.99194
+  },
+  {
+   "lat": 18.9398,
+   "lon": 72.8355,
+   "name": "Chhatrapati Shivaji Maharaj Terminus",
+   "x": 6518.22576,
+   "z": 5615.48356
+  },
+  {
+   "lat": 19.035,
+   "lon": 72.818,
+   "name": "Bandra-Worli Sea Link",
+   "x": 4679.8597,
+   "z": 16154.1278
+  },
+  {
+   "lat": 18.943,
+   "lon": 72.8225,
+   "name": "Marine Drive",
+   "x": 5149.09284,
+   "z": 5970.24694
+  }
+ ],
+ "materials": [
+  {
+   "b": 0,
+   "g": 0,
+   "id": 0,
+   "metallic": 0,
+   "name": "unknown",
+   "r": 0,
+   "roughness": 0,
+   "wetness": 0
+  },
+  {
+   "b": 0.0920000002,
+   "g": 0.0879999995,
+   "id": 1,
+   "metallic": 0,
+   "name": "asphalt_smooth",
+   "r": 0.0850000009,
+   "roughness": 0.620000005,
+   "wetness": 0.949999988
+  },
+  {
+   "b": 0.109999999,
+   "g": 0.112000003,
+   "id": 2,
+   "metallic": 0,
+   "name": "asphalt_patched",
+   "r": 0.115000002,
+   "roughness": 0.779999971,
+   "wetness": 0.920000017
+  },
+  {
+   "b": 0.0799999982,
+   "g": 0.075000003,
+   "id": 3,
+   "metallic": 0,
+   "name": "asphalt_sealink",
+   "r": 0.0719999969,
+   "roughness": 0.550000012,
+   "wetness": 0.949999988
+  },
+  {
+   "b": 0.414999992,
+   "g": 0.419999987,
+   "id": 4,
+   "metallic": 0,
+   "name": "concrete_road",
+   "r": 0.419999987,
+   "roughness": 0.720000029,
+   "wetness": 0.850000024
+  },
+  {
+   "b": 0.319999993,
+   "g": 0.340000004,
+   "id": 5,
+   "metallic": 0,
+   "name": "paver_block",
+   "r": 0.360000014,
+   "roughness": 0.800000012,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.254999995,
+   "g": 0.280000001,
+   "id": 6,
+   "metallic": 0,
+   "name": "gravel",
+   "r": 0.300000012,
+   "roughness": 0.899999976,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.159999996,
+   "g": 0.204999998,
+   "id": 7,
+   "metallic": 0,
+   "name": "dirt",
+   "r": 0.25,
+   "roughness": 0.939999998,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.215000004,
+   "g": 0.224999994,
+   "id": 8,
+   "metallic": 0,
+   "name": "rock",
+   "r": 0.230000004,
+   "roughness": 0.819999993,
+   "wetness": 0.550000012
+  },
+  {
+   "b": 0.144999996,
+   "g": 0.189999998,
+   "id": 9,
+   "metallic": 0,
+   "name": "earth",
+   "r": 0.234999999,
+   "roughness": 0.920000017,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.469999999,
+   "g": 0.584999979,
+   "id": 10,
+   "metallic": 0,
+   "name": "sand",
+   "r": 0.639999986,
+   "roughness": 0.850000024,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.0900000036,
+   "g": 0.135000005,
+   "id": 11,
+   "metallic": 0,
+   "name": "wetland_mud",
+   "r": 0.119999997,
+   "roughness": 0.879999995,
+   "wetness": 0.899999976
+  },
+  {
+   "b": 0.300000012,
+   "g": 0.319999993,
+   "id": 12,
+   "metallic": 0,
+   "name": "reclamation_fill",
+   "r": 0.330000013,
+   "roughness": 0.879999995,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.115000002,
+   "g": 0.254999995,
+   "id": 13,
+   "metallic": 0,
+   "name": "grass",
+   "r": 0.180000007,
+   "roughness": 0.899999976,
+   "wetness": 0.600000024
+  },
+  {
+   "b": 0.560000002,
+   "g": 0.660000026,
+   "id": 14,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.720000029,
+   "roughness": 0.860000014,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.379999995,
+   "g": 0.479999989,
+   "id": 15,
+   "metallic": 0,
+   "name": "stone_ashlar",
+   "r": 0.560000002,
+   "roughness": 0.800000012,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.310000002,
+   "g": 0.354999989,
+   "id": 16,
+   "metallic": 0,
+   "name": "stone_rubble",
+   "r": 0.400000006,
+   "roughness": 0.879999995,
+   "wetness": 0.720000029
+  },
+  {
+   "b": 0.25999999,
+   "g": 0.239999995,
+   "id": 17,
+   "metallic": 0.349999994,
+   "name": "curtain_wall_glass",
+   "r": 0.180000007,
+   "roughness": 0.0799999982,
+   "wetness": 0.349999994
+  },
+  {
+   "b": 0.170000002,
+   "g": 0.245000005,
+   "id": 18,
+   "metallic": 0,
+   "name": "brick_exposed",
+   "r": 0.469999999,
+   "roughness": 0.879999995,
+   "wetness": 0.779999971
+  },
+  {
+   "b": 0.344999999,
+   "g": 0.330000013,
+   "id": 19,
+   "metallic": 0.550000012,
+   "name": "corrugated_metal",
+   "r": 0.330000013,
+   "roughness": 0.550000012,
+   "wetness": 0.850000024
+  },
+  {
+   "b": 0.449999988,
+   "g": 0.469999999,
+   "id": 20,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.479999989,
+   "roughness": 0.850000024,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.5,
+   "g": 0.514999986,
+   "id": 21,
+   "metallic": 0,
+   "name": "kerb_concrete",
+   "r": 0.519999981,
+   "roughness": 0.850000024,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.460000008,
+   "g": 0.474999994,
+   "id": 22,
+   "metallic": 0,
+   "name": "sidewalk_concrete",
+   "r": 0.479999989,
+   "roughness": 0.870000005,
+   "wetness": 0.819999993
+  },
+  {
+   "b": 0.439999998,
+   "g": 0.449999988,
+   "id": 23,
+   "metallic": 0,
+   "name": "median_barrier",
+   "r": 0.449999988,
+   "roughness": 0.839999974,
+   "wetness": 0.779999971
+  },
+  {
+   "b": 0.129999995,
+   "g": 0.109999999,
+   "id": 24,
+   "metallic": 0,
+   "name": "water_surface",
+   "r": 0.0500000007,
+   "roughness": 0.0500000007,
+   "wetness": 0.200000003
+  },
+  {
+   "b": 0.100000001,
+   "g": 0.119999997,
+   "id": 25,
+   "metallic": 0,
+   "name": "inland_water",
+   "r": 0.075000003,
+   "roughness": 0.119999997,
+   "wetness": 0.25
+  },
+  {
+   "b": 0.209999993,
+   "g": 0.219999999,
+   "id": 26,
+   "metallic": 0,
+   "name": "rail_ballast",
+   "r": 0.230000004,
+   "roughness": 0.920000017,
+   "wetness": 0.649999976
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.400000006,
+   "id": 27,
+   "metallic": 0.899999976,
+   "name": "rail_steel",
+   "r": 0.400000006,
+   "roughness": 0.349999994,
+   "wetness": 0.449999988
+  },
+  {
+   "b": 0.239999995,
+   "g": 0.270000011,
+   "id": 28,
+   "metallic": 0,
+   "name": "rail_sleeper",
+   "r": 0.300000012,
+   "roughness": 0.899999976,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.230000004,
+   "g": 0.25999999,
+   "id": 29,
+   "metallic": 0,
+   "name": "water_tank_plastic",
+   "r": 0.180000007,
+   "roughness": 0.449999988,
+   "wetness": 0.400000006
+  },
+  {
+   "b": 0.610000014,
+   "g": 0.620000005,
+   "id": 30,
+   "metallic": 0.300000012,
+   "name": "ac_unit",
+   "r": 0.620000005,
+   "roughness": 0.600000024,
+   "wetness": 0.550000012
+  },
+  {
+   "b": 0.230000004,
+   "g": 0.219999999,
+   "id": 31,
+   "metallic": 0.850000024,
+   "name": "metal_railing",
+   "r": 0.219999999,
+   "roughness": 0.449999988,
+   "wetness": 0.5
+  },
+  {
+   "b": 0.25,
+   "g": 0.600000024,
+   "id": 32,
+   "metallic": 0,
+   "name": "signage_painted",
+   "r": 0.699999988,
+   "roughness": 0.800000012,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.0850000009,
+   "g": 0.189999998,
+   "id": 33,
+   "metallic": 0,
+   "name": "tree_foliage",
+   "r": 0.115000002,
+   "roughness": 0.920000017,
+   "wetness": 0.400000006
+  },
+  {
+   "b": 0.104999997,
+   "g": 0.140000001,
+   "id": 34,
+   "metallic": 0,
+   "name": "tree_bark",
+   "r": 0.180000007,
+   "roughness": 0.949999988,
+   "wetness": 0.550000012
+  },
+  {
+   "b": 0.294999987,
+   "g": 0.300000012,
+   "id": 35,
+   "metallic": 0.649999976,
+   "name": "streetlamp_pole",
+   "r": 0.300000012,
+   "roughness": 0.550000012,
+   "wetness": 0.550000012
+  },
+  {
+   "b": 0.620000005,
+   "g": 0.870000005,
+   "id": 36,
+   "metallic": 0,
+   "name": "streetlamp_glow",
+   "r": 1,
+   "roughness": 0.300000012,
+   "wetness": 0.200000003
+  },
+  {
+   "b": 0.430000007,
+   "g": 0.519999981,
+   "id": 37,
+   "metallic": 0,
+   "name": "hero_stone",
+   "r": 0.579999983,
+   "roughness": 0.779999971,
+   "wetness": 0.680000007
+  },
+  {
+   "b": 0.174999997,
+   "g": 0.245000005,
+   "id": 38,
+   "metallic": 0,
+   "name": "hero_terracotta",
+   "r": 0.430000007,
+   "roughness": 0.819999993,
+   "wetness": 0.620000005
+  },
+  {
+   "b": 0.504999995,
+   "g": 0.514999986,
+   "id": 39,
+   "metallic": 0,
+   "name": "hero_concrete",
+   "r": 0.519999981,
+   "roughness": 0.819999993,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.660000026,
+   "g": 0.699999988,
+   "id": 40,
+   "metallic": 0,
+   "name": "sea_link_pylon",
+   "r": 0.720000029,
+   "roughness": 0.699999988,
+   "wetness": 0.600000024
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.5,
+   "id": 41,
+   "metallic": 0.800000012,
+   "name": "sea_link_cable",
+   "r": 0.5,
+   "roughness": 0.400000006,
+   "wetness": 0.349999994
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 42,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.860000014,
+   "roughness": 0.898980021,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 43,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.860000014,
+   "roughness": 0.888980031,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 44,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.680000007,
+   "roughness": 0.955649436,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 45,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.680000007,
+   "roughness": 0.945649445,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 46,
+   "metallic": 0,
+   "name": "stone_ashlar",
+   "r": 0.720000029,
+   "roughness": 0.891889334,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 47,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.941889346,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 48,
+   "metallic": 0,
+   "name": "stone_ashlar",
+   "r": 0.720000029,
+   "roughness": 0.90554285,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 49,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.955542862,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 50,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.839999974,
+   "roughness": 0.915275812,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 51,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.839999974,
+   "roughness": 0.905275822,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 52,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.860000014,
+   "roughness": 0.919170201,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 53,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.860000014,
+   "roughness": 0.90917021,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 54,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.680000007,
+   "roughness": 0.907768071,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 55,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.680000007,
+   "roughness": 0.89776808,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 56,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.839999974,
+   "roughness": 0.960280538,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 57,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.839999974,
+   "roughness": 0.950280547,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 58,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.879999995,
+   "roughness": 0.915033698,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 59,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.879999995,
+   "roughness": 0.905033708,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 60,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.839999974,
+   "roughness": 0.944533825,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 61,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.839999974,
+   "roughness": 0.934533834,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 62,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.720000029,
+   "roughness": 0.948814094,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 63,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.938814104,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 64,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.839999974,
+   "roughness": 0.923328519,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 65,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.839999974,
+   "roughness": 0.913328528,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 66,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.680000007,
+   "roughness": 0.921721935,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 67,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.680000007,
+   "roughness": 0.911721945,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 68,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.860000014,
+   "roughness": 0.952898502,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 69,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.860000014,
+   "roughness": 0.942898512,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 70,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.879999995,
+   "roughness": 0.929628611,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 71,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.879999995,
+   "roughness": 0.91962862,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 72,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.720000029,
+   "roughness": 0.917548835,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 73,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.907548845,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 74,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.720000029,
+   "roughness": 0.926004767,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 75,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.916004777,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 76,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.680000007,
+   "roughness": 0.903024971,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 77,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.680000007,
+   "roughness": 0.893024981,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 78,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.860000014,
+   "roughness": 0.93652612,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 79,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.860000014,
+   "roughness": 0.926526129,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 80,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.720000029,
+   "roughness": 0.961550415,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 81,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.951550424,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 82,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.839999974,
+   "roughness": 0.899689317,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.419999987,
+   "g": 0.720000029,
+   "id": 83,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.839999974,
+   "roughness": 0.889689326,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 84,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.879999995,
+   "roughness": 0.947214961,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 85,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.879999995,
+   "roughness": 0.937214971,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 86,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.680000007,
+   "roughness": 0.94887054,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.850000024,
+   "g": 0.779999971,
+   "id": 87,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.680000007,
+   "roughness": 0.938870549,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.699999988,
+   "g": 0.699999988,
+   "id": 88,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.699999988,
+   "roughness": 0.886000037,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 89,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.879999995,
+   "roughness": 0.904616654,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 90,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.879999995,
+   "roughness": 0.894616663,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 91,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.720000029,
+   "roughness": 0.897312045,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.75999999,
+   "g": 0.860000014,
+   "id": 92,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.887312055,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 93,
+   "metallic": 0.550000012,
+   "name": "corrugated_metal",
+   "r": 0.550000012,
+   "roughness": 0.625481188,
+   "wetness": 0.850000024
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 94,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.550000012,
+   "roughness": 0.9254812,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 95,
+   "metallic": 0.550000012,
+   "name": "corrugated_metal",
+   "r": 0.550000012,
+   "roughness": 0.650057077,
+   "wetness": 0.850000024
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 96,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.550000012,
+   "roughness": 0.95005703,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.699999988,
+   "g": 0.699999988,
+   "id": 97,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.699999988,
+   "roughness": 0.886000037,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 98,
+   "metallic": 0.550000012,
+   "name": "corrugated_metal",
+   "r": 0.550000012,
+   "roughness": 0.617734969,
+   "wetness": 0.850000024
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 99,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.550000012,
+   "roughness": 0.917734981,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 100,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.879999995,
+   "roughness": 0.955093026,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.579999983,
+   "g": 0.660000026,
+   "id": 101,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.879999995,
+   "roughness": 0.945093036,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 102,
+   "metallic": 0,
+   "name": "stone_ashlar",
+   "r": 0.720000029,
+   "roughness": 0.856315076,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 103,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.906315088,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 104,
+   "metallic": 0,
+   "name": "stone_ashlar",
+   "r": 0.720000029,
+   "roughness": 0.875448406,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 105,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.720000029,
+   "roughness": 0.925448418,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 106,
+   "metallic": 0,
+   "name": "plaster_painted",
+   "r": 0.860000014,
+   "roughness": 0.925290763,
+   "wetness": 0.75
+  },
+  {
+   "b": 0.680000007,
+   "g": 0.810000002,
+   "id": 107,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.860000014,
+   "roughness": 0.915290773,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 108,
+   "metallic": 0.550000012,
+   "name": "corrugated_metal",
+   "r": 0.550000012,
+   "roughness": 0.664250433,
+   "wetness": 0.850000024
+  },
+  {
+   "b": 0.569999993,
+   "g": 0.550000012,
+   "id": 109,
+   "metallic": 0,
+   "name": "concrete_raw",
+   "r": 0.550000012,
+   "roughness": 0.964250445,
+   "wetness": 0.800000012
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 110,
+   "metallic": 0,
+   "name": "stone_ashlar",
+   "r": 0.720000029,
+   "roughness": 0.864043534,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.519999981,
+   "g": 0.639999986,
+   "id": 111,
+   "metallic": 0,
+   "name": "stone_ashlar",
+   "r": 0.720000029,
+   "roughness": 0.844860315,
+   "wetness": 0.699999988
+  },
+  {
+   "b": 0.657448053,
+   "g": 0.593786478,
+   "id": 112,
+   "metallic": 0.349999994,
+   "name": "curtain_wall_glass",
+   "r": 0.444710582,
+   "roughness": 0.0953266099,
+   "wetness": 0.349999994
+  },
+  {
+   "b": 0.650197864,
+   "g": 0.610884607,
+   "id": 113,
+   "metallic": 0.349999994,
+   "name": "curtain_wall_glass",
+   "r": 0.467194229,
+   "roughness": 0.0864400417,
+   "wetness": 0.349999994
+  },
+  {
+   "b": 0.68761152,
+   "g": 0.546281695,
+   "id": 114,
+   "metallic": 0.349999994,
+   "name": "curtain_wall_glass",
+   "r": 0.518428564,
+   "roughness": 0.0928120315,
+   "wetness": 0.349999994
+  },
+  {
+   "b": 0.646457195,
+   "g": 0.544050574,
+   "id": 115,
+   "metallic": 0.349999994,
+   "name": "curtain_wall_glass",
+   "r": 0.505424142,
+   "roughness": 0.0967360809,
+   "wetness": 0.349999994
+  }
+ ],
+ "nodes": {
+  "count": 254470,
+  "offset": 4193248,
+  "stride": 6
+ },
+ "qa": {
+  "counters": 68,
+  "failures": 0,
+  "passed": true,
+  "warnings": 0
+ },
+ "stats": {
+  "buildings": 164057,
+  "chunks": 924,
+  "navEdges": 127235,
+  "navNodes": 254470
+ },
+ "terrain": {
+  "bias": -32,
+  "height": 1345,
+  "maxHeight": 91.356308,
+  "minHeight": -13.5,
+  "offset": 0,
+  "span": 192,
+  "step": 32,
+  "width": 705
+ }
+}

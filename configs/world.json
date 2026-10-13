@@ -1,0 +1,44 @@
+{
+  "_comment": "MUMBAI 1:1 EXACT — world build configuration. Deterministic: the same inputs and this file always produce byte-identical chunks.",
+
+  "rawDir": "data/raw",
+  "authoredDir": "data/authored",
+  "outDir": "data/processed",
+  "seed": 20251013,
+
+  "terrain": {
+    "resolutionMetres": 24.0,
+    "detailAmplitude": 2.4,
+    "seaLevel": 0.0,
+    "_note": "Resolution is the heightfield grid; per-chunk render meshes are generated at 32 m (LOD0), 64 m (LOD1) and 128 m (LOD2) with exact 1024 m tiling."
+  },
+
+  "zoning": {
+    "resolutionMetres": 100.0
+  },
+
+  "simplify": {
+    "footprintMetres": 0.35,
+    "roadMetres": 0.5
+  },
+
+  "minBuildingAreaMetres": 12.0,
+
+  "stages": {
+    "terrain": true,
+    "roads": true,
+    "buildings": true,
+    "props": true,
+    "heroAssets": true,
+    "verifyChunks": true
+  },
+
+  "runtime": {
+    "lod0RadiusMetres": 500,
+    "lod1RadiusMetres": 2000,
+    "impostorRadiusMetres": 12000,
+    "targetFps": 30,
+    "maxRenderRadiusMetres": 4096,
+    "_note": "maxRenderRadius is the precision guard from DOCS/04_RUNTIME.md: beyond 4096 m the f32 render-space ulp exceeds 0.5 mm."
+  }
+}
