@@ -34,6 +34,12 @@ constexpr f64 kFilterClearance = 0.9;      // m, clearance to a flank
 constexpr f64 kStopLineMargin = 0.5;       // m, in front of the stop line
 constexpr f64 kVisualRange = 40.0;         // m, how far a two-wheeler looks ahead
 constexpr u32 kBucketsPerEdge = 16;        // 16 x 20 m of spatial hash for Boids
+// The population device.  kTrailGrace is how far clear of the disc a vehicle may
+// get before it is called back; kRecyclePerTick bounds the work one tick can do,
+// and a failed placement ends the sweep for that tick: a full device will refuse
+// the rest of the queue too, and asking is the most expensive thing a tick does.
+constexpr f64 kTrailGrace = 120.0;
+constexpr u32 kRecyclePerTick = 8;
 constexpr f64 kLateralKp = 3.0;            // lane-keeping spring
 constexpr f64 kLateralKd = 2.0 * 1.7320508075688772;   // critically damped
 
@@ -191,13 +197,7 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
 
     if (m_edges.empty() || !fleet) return;
 
-    m_denseEdges.clear();
-    for (u32 i = 0; i < m_edges.size(); ++i) {
-        const Vec2d mid = (m_edges[i].a + m_edges[i].b) * 0.5;
-        if ((mid - m_denseAnchor).lengthSq() <= m_denseRadius * m_denseRadius) m_denseEdges.push_back(i);
-    }
-    if (m_denseEdges.empty())
-        for (u32 i = 0; i < m_edges.size(); ++i) m_denseEdges.push_back(i);
+    setDenseAnchor(m_denseAnchor, m_denseRadius);
 
     // Fleet mix: two-wheeler country first, then autos, taxis, cars, and a few
     // BEST double-deckers.  A signal at Andheri looks like these proportions.
@@ -289,13 +289,31 @@ void Traffic::placeHeld(Vehicle& veh, const SimEdge& e, u16 lane, f64 limit) {
     // is not, the held vehicle takes the small forward overshoot instead.  (An
     // earlier version simply placed it at `limit - 0.05`, which drove it into its
     // own follower whenever the queue behind was tight.)
-    f64 s = limit - 0.05;
+    // Two positions, and the vehicle takes the forward-most: just short of the
+    // edge end (where a hold wants it, so that it is no longer an arrival and does
+    // not re-run the junction every tick), and clear of the body behind it.  The
+    // floor term uses MY length, not the follower's — the gap is measured from the
+    // rear face of the vehicle being placed — and it is what keeps the pull-back
+    // from being a push-back into the queue, which was the last sub-floor pair the
+    // diagnostic found.
+    f64 want = limit - 0.05;
     for (u32 other : e.laneVehicles[lane]) {
         const Vehicle& o = m_vehicles[other];
         if (o.s >= veh.s) continue;
-        s = std::max(s, o.s + o.length + kMinGap);
+        want = std::max(want, o.s + veh.length + kMinGap + kEntryMargin);
     }
-    veh.s = std::min(s, limit + 2.0);
+    // A body may stand in the junction it is waiting for, but never further than
+    // its own length, or a long hold would walk into the crossing street.  When
+    // the cap binds the vehicle is stopped outright and the event is counted: the
+    // queue behind it gives way instead (its correction runs against this fixed
+    // position on the next tick), and a hold that had to stop is a number the
+    // validation reports rather than an error it hides.
+    const f64 cap = limit + veh.length;
+    if (want > cap) {
+        ++m_holdCaps;
+        veh.v = 0.0;
+    }
+    veh.s = std::min(want, cap);
 }
 
 bool Traffic::laneEntryClear(const SimEdge& e, u16 lane, f64 s, f64 length, f64 width) const {
@@ -318,13 +336,17 @@ bool Traffic::laneEntryClear(const SimEdge& e, u16 lane, f64 s, f64 length, f64 
                 0.5 * (width + archetypeSpec(o.kind).width) + 0.4;
             if (std::fabs(o.lateral - myLateral) > lateralClear) continue;
             if (o.s > s) {
-                if (o.s - o.length - s < kMinGap) return false;
+                if (o.s - o.length - s < kMinGap + kEntryMargin) return false;
                 // And it must have cleared the box: following a long vehicle onto
                 // an edge while its tail still lies across the junction is how a
                 // body ends up straddling a boundary.
                 if (o.s < o.length) return false;
             } else {
-                if (s - length - o.s < kMinGap) return false;
+                // A body behind: the entrant's rear face must leave it the floor.
+                // Where that body could be pushed back TO is not the question — a
+                // queue spills across the junction without limit — so the distance
+                // is measured to where it actually is.
+                if (s - length - o.s < kMinGap + kEntryMargin) return false;
             }
         }
     }
@@ -353,7 +375,8 @@ void Traffic::leadersAndSignals() {
     // Lane leaders.  Two-wheelers are deliberately excluded: they hold no lane,
     // and their longitudinal reference is found by the lateral-aware search
     // below, which sees the whole carriageway.
-    for (SimEdge& e : m_edges) {
+    for (u32 ei : m_activeEdges) {
+        SimEdge& e = m_edges[ei];
         for (u16 l = 0; l < e.lanes; ++l) {
             const std::vector<u32>& list = e.laneVehicles[l];
             for (size_t k = 0; k < list.size(); ++k) {
@@ -361,6 +384,7 @@ void Traffic::leadersAndSignals() {
                 if (archetypeSpec(veh.kind).twoWheeler) continue;
                 veh.obstruction = 1e18;
                 veh.leaderV = veh.v;
+                veh.atRedLine = false;
                 // The first vehicle ahead that is actually IN THE WAY: lane
                 // registration is bookkeeping, lateral footprint is physics.  A
                 // vehicle halfway through a lane change is still out there in the
@@ -382,7 +406,8 @@ void Traffic::leadersAndSignals() {
     // Order every edge's vehicles by s.  The lane lists are each sorted, so the
     // merged order is a merge of sorted runs; a sort of the concatenation is
     // cheap at this population and keeps the code obvious.
-    for (SimEdge& e : m_edges) {
+    for (u32 ei : m_activeEdges) {
+        SimEdge& e = m_edges[ei];
         // A two-wheeler that filters past a lane holder overtakes it inside the
         // same lane list.  Repair the order when that happens: every correction
         // below assumes the list runs front to back.
@@ -411,6 +436,7 @@ void Traffic::leadersAndSignals() {
         if (!archetypeSpec(veh.kind).twoWheeler) continue;
         const std::vector<u32>& order = m_edgeOrder[veh.edge];
         veh.obstruction = 1e18;          // found afresh every tick
+        veh.atRedLine = false;
         // Scan forward along the road, and take the first body whose lateral
         // footprint overlaps this rider's line.  A machine riding clear of a bus
         // is not following it; a machine riding into the bus's flank is, and the
@@ -458,6 +484,10 @@ void Traffic::leadersAndSignals() {
                     veh.obstruction = e.length - kStopLineMargin;
                     veh.gap = std::max(0.0, toLine);
                     veh.leaderV = 0.0;
+                    // Held by the aspect, not by another vehicle: a queue behind a
+                    // queue is a junction problem, a queue behind a red light is a
+                    // signal doing its job.  The two are counted apart.
+                    veh.atRedLine = toLine <= kStopLineHold;
                 }
             }
         }
@@ -485,7 +515,20 @@ void Traffic::longitudinal(f64 dt) {
         veh.s += veh.v * dt;
     }
 
-    // 2. One descending-s sweep per edge, front of the queue to back.  Each
+}
+
+// -----------------------------------------------------------------------------
+//  Corrections — the exact pass that holds the floor
+// -----------------------------------------------------------------------------
+// Run once per tick, AFTER everything that can move a body: the integrator, the
+// lane changes, the Boids field and the lateral tracker.  It cannot run earlier,
+// because the floor is a property of the lateral footprint and a two-wheeler that
+// slides under the vehicle in front of it would otherwise leave a pair closer than
+// the floor with the sweep already behind it.  Nothing moves a body's s after
+// this: the only later writes of s are admissions, and every admission tests the
+// floor (laneEntryClear) before it takes the space.
+void Traffic::corrections() {
+    // 1. One descending-s sweep per edge, front of the queue to back.  Each
     //    vehicle's constraint is the tighter of its obstruction (a stop line, or
     //    the body a two-wheeler is riding up behind) and the real rear of the
     //    vehicle listed in front of it in the lane it is registered in.  Because
@@ -494,7 +537,7 @@ void Traffic::longitudinal(f64 dt) {
     //    then obstruction) let the second undo the first: a motorcycle that was
     //    pushed back by its own leader after the car behind it had already been
     //    corrected left a 0.29 m gap where the floor asks for 0.5 m.
-    for (u32 ei = 0; ei < m_edges.size(); ++ei) {
+    for (u32 ei : m_activeEdges) {
         const SimEdge& e = m_edges[ei];
         for (u16 l = 0; l < e.lanes; ++l) {
             const std::vector<u32>& list = e.laneVehicles[l];
@@ -518,11 +561,17 @@ void Traffic::longitudinal(f64 dt) {
                 const f64 target = constraint - kMinGap;
                 if (veh.s > target) {
                     // A queue that runs out of edge spills BACK over the junction
-                    // behind it: s may go negative by up to the vehicle's own
-                    // length plus the tolerance, which is geometrically the tail of
-                    // the previous edge — what a Mumbai queue does at a blocked
-                    // junction.  Clamping at zero instead stacked bodies.
-                    veh.s = std::max(-(veh.length + kHangBehind), target);
+                    // behind it, as far as the queue reaches: s goes negative and
+                    // the body is drawn on the edge behind, which is where it truly
+                    // is.  There is no floor on that spill, and there must not be:
+                    // a floor is a position every pushed-back body can occupy, so a
+                    // long queue stacks on it — clamping at zero put two motorcycles
+                    // at the same s, and half a metre of tolerance only moved the
+                    // stack a metre.  Nothing else can clamp this vehicle either:
+                    // the sweep runs front to back, so each body stops behind the
+                    // one already corrected and the order is preserved by
+                    // construction.
+                    veh.s = target;
                     veh.v = std::min(veh.v, leaderV);
                     ++m_hardBrakes;
                 }
@@ -530,13 +579,14 @@ void Traffic::longitudinal(f64 dt) {
         }
     }
 
-    // 4. Report the honest number: the smallest longitudinal gap between two
+    // 2. Report the honest number: the smallest longitudinal gap between two
     //    bodies whose lateral footprints overlap, measured on the settled state.
     //    A gap measured before the corrections is not the gap the world has, and
     //    a pair riding abreast is not a pair following.
     for (Vehicle& veh : m_vehicles) veh.gap = std::min(1e9, veh.obstruction - veh.s);
     m_minGap = 1e9;
-    for (const SimEdge& e : m_edges) {
+    for (u32 ei : m_activeEdges) {
+        const SimEdge& e = m_edges[ei];
         for (u16 l = 0; l < e.lanes; ++l) {
             const std::vector<u32>& list = e.laneVehicles[l];
             for (size_t k = 1; k < list.size(); ++k) {
@@ -550,6 +600,21 @@ void Traffic::longitudinal(f64 dt) {
         }
     }
     if (m_minGap > 1e8) m_minGap = 1e9;      // nobody is following anybody
+}
+
+// -----------------------------------------------------------------------------
+//  The active set
+// -----------------------------------------------------------------------------
+// Which edges hold a vehicle this tick.  Every sweep that used to walk the whole
+// graph walks this instead; it is rebuilt from the fleet (a few hundred entries
+// against ~170k edges) and sorted so the sweeps stay deterministic.
+void Traffic::collectActiveEdges() {
+    m_activeEdges.clear();
+    m_activeEdges.reserve(m_vehicles.size());
+    for (const Vehicle& veh : m_vehicles) m_activeEdges.push_back(veh.edge);
+    std::sort(m_activeEdges.begin(), m_activeEdges.end());
+    m_activeEdges.erase(std::unique(m_activeEdges.begin(), m_activeEdges.end()),
+                        m_activeEdges.end());
 }
 
 // -----------------------------------------------------------------------------
@@ -782,8 +847,8 @@ void Traffic::advanceEdges() {
     // lists only after the vehicle is recorded keeps the lists consistent while
     // they are being walked.
     m_arrived.clear();
-    for (SimEdge& e : m_edges) {
-        const u32 edgeIndex = static_cast<u32>(&e - m_edges.data());
+    for (u32 edgeIndex : m_activeEdges) {
+        SimEdge& e = m_edges[edgeIndex];
         for (u16 l = 0; l < e.lanes; ++l) {
             std::vector<u32>& list = e.laneVehicles[l];
             for (size_t k = 0; k < list.size();) {
@@ -835,23 +900,12 @@ void Traffic::advanceEdges() {
         // inventing an origin-destination matrix.
         if (!m_denseEdges.empty() &&
             (node.p - m_denseAnchor).lengthSq() > m_denseRadius * m_denseRadius) {
-            const u32 reentry = m_denseEdges[m_turn++ % m_denseEdges.size()];
-            SimEdge& re = m_edges[reentry];
-            const f64 spare = re.length - veh.length - 3.0;
-            const u16 lane = static_cast<u16>(m_turn % re.lanes);
-            const f64 cand = kLaneWidth * 0.5 + static_cast<f64>((m_turn % 5) * kLaneWidth);
-            if (spare > 0.5 && cand <= spare &&
-                laneEntryClear(re, lane, cand, veh.length, archetypeSpec(veh.kind).width)) {
-                veh.edge = reentry;
-                veh.lane = lane;
-                veh.lateral = laneOffset(lane, re.lanes);
-                veh.lateralVel = 0.0;
-                veh.latAccelCommand = 0.0;
-                veh.s = cand;
-                veh.v = std::min(veh.v, 8.0);
-                insertSorted(re.laneVehicles[lane], a.idx);
-                continue;
-            }
+            // A departure that is beyond the disc is traffic that has left the
+            // camera's neighbourhood: it is replaced by an arrival inside it.  A
+            // failure is counted — a population device that cannot place a
+            // departure has to say so rather than quietly change its scenario.
+            if (recycle(a.idx, false)) continue;
+            ++m_recycleFailures;
         }
 
         // Junction choice: round-robin over the arms, refusing the reversal of
@@ -876,7 +930,7 @@ void Traffic::advanceEdges() {
         if (!laneEntryClear(ne, lane, entry, veh.length, archetypeSpec(veh.kind).width)) {
             placeHeld(veh, src, a.lane, from.length);  // hold at the junction
             veh.v = std::min(veh.v, 1.0);
-            ++m_signalStops;
+            ++m_junctionHolds;
             insertSorted(src.laneVehicles[a.lane], a.idx);
             continue;
         }
@@ -992,17 +1046,171 @@ void Traffic::deriveSignals() {
     }
 }
 
+void Traffic::removeFromLane(u32 edge, u16 lane, u32 idx) {
+    std::vector<u32>& list = m_edges[edge].laneVehicles[lane];
+    for (size_t k = 0; k < list.size(); ++k) {
+        if (list[k] != idx) continue;
+        list.erase(list.begin() + static_cast<long>(k));
+        return;
+    }
+}
+
+bool Traffic::recycle(u32 idx, bool preferAhead) {
+    if (m_denseEdges.empty()) return false;
+    Vehicle& veh = m_vehicles[idx];
+    const std::vector<u32>* rings[2] = {&m_denseEdges, &m_denseRing};
+    for (int ring = 0; ring < 2; ++ring) {
+        const std::vector<u32>& cands = *rings[ring];
+        if (cands.empty()) continue;
+        const size_t tries = std::min<size_t>(ring == 0 ? 256 : 48, cands.size());
+        const f64 lim = ring == 0 ? m_denseRadius : m_denseRadius * 4.0;
+        // Two passes when the caller wants the arrival put ahead of the camera:
+        // behind is where the disc is sweeping traffic out of, so a vehicle placed
+        // there is swept out again immediately.  The second pass relaxes that, and
+        // exists so that a disc with no road ahead of the camera still fills.
+        const int passes = (preferAhead && m_denseHasDir) ? 2 : 1;
+        for (int pass = 0; pass < passes; ++pass) {
+            for (size_t t = 0; t < tries; ++t) {
+                const size_t pick = static_cast<size_t>(m_turn) + t;
+                const u32 reentry = cands[pick % cands.size()];
+                SimEdge& re = m_edges[reentry];
+                const f64 spare = re.length - veh.length - 3.0;
+                if (spare < 0.5) continue;
+                const u16 lane = static_cast<u16>(pick % re.lanes);
+                // Entrances are spread along the edge instead of stacked at its
+                // mouth: a long bridge deck holds a whole population if they are
+                // not all asked to stand in the same sixteen metres.
+                const f64 cand = kLaneWidth * 0.5 + static_cast<f64>(pick % 48) * 8.0;
+                if (cand > spare) continue;
+                // The point, not the edge, has to lie inside the disc.  An edge
+                // whose midpoint is a kilometre away can still cross the disc, and
+                // a long edge that begins inside it can leave: the criterion counts
+                // vehicles around the camera, not edges.
+                const Vec2d entry = re.a + re.dir * cand;
+                const Vec2d off = entry - m_denseAnchor;
+                if (off.lengthSq() > lim * lim) continue;
+                if (pass == 0 &&
+                    off.x * m_denseDir.x + off.y * m_denseDir.y < -0.25 * m_denseRadius)
+                    continue;
+                if (!laneEntryClear(re, lane, cand, veh.length,
+                                    archetypeSpec(veh.kind).width))
+                    continue;
+                veh.edge = reentry;
+                veh.lane = lane;
+                veh.lateral = laneOffset(lane, re.lanes);
+                veh.lateralVel = 0.0;
+                veh.latAccelCommand = 0.0;
+                veh.s = cand;
+                veh.v = std::min(veh.v, 8.0);
+                veh.obstruction = 1e18;
+                veh.atRedLine = false;
+                veh.redStopped = false;
+                veh.changedLaneThisStep = false;
+                insertSorted(re.laneVehicles[lane], idx);
+                m_turn += t + 1;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void Traffic::maintainDensePopulation(f64 dt) {
+    if (m_denseEdges.empty()) return;
+    // The camera drives at ~86 km/h and the fleet at city speed, so traffic is
+    // continuously swept out of the disc from behind.  A vehicle is called back as
+    // soon as it is clear of the disc rather than when it happens to finish an
+    // edge — which is the difference between a population that follows the camera
+    // and one that trails it.
+    const f64 lim = m_denseRadius + kTrailGrace;
+    u32 budget = kRecyclePerTick;   // a tick's worth of teleports, not the whole queue
+    for (u32 i = 0; i < m_vehicles.size() && budget; ++i) {
+        Vehicle& veh = m_vehicles[i];
+        if (veh.recycleIn > 0.0) { veh.recycleIn -= dt; continue; }
+        if ((positionOf(veh) - m_denseAnchor).lengthSq() <= lim * lim) continue;
+        --budget;
+        const u32 oldEdge = veh.edge;
+        const u16 oldLane = veh.lane;
+        // Leave the lane before asking for a new one.  A vehicle that is moved
+        // onto the edge it already occupies — a long edge that crosses the disc —
+        // must not end up listed twice, and a vehicle that cannot be placed at all
+        // must go back exactly where it was.
+        removeFromLane(oldEdge, oldLane, i);
+        if (!recycle(i, true)) {
+            // The device is full — every candidate in the disc and in the ring
+            // around it refused the vehicle.  Asking again for the rest of the
+            // queue this tick cannot succeed either, and is the most expensive
+            // thing the tick can do, so the sweep stops here and the queue waits.
+            ++m_recycleFailures;
+            veh.recycleIn = 1.0;
+            insertSorted(m_edges[oldEdge].laneVehicles[oldLane], i);
+            break;
+        }
+    }
+}
+
+void Traffic::setDenseAnchor(const Vec2d& anchor, f64 radius) {
+    // The camera's own direction: what "ahead" means when a recycled vehicle is
+    // placed, and the only sense in which the population device has a flow.
+    const Vec2d moved = anchor - m_denseLast;
+    if (moved.lengthSq() > 25.0) {
+        const Vec2d d = moved.normalized();
+        if (!m_denseHasDir || m_denseDir.x * d.x + m_denseDir.y * d.y < 0.0) {
+            m_denseDir = d;
+            m_denseHasDir = true;
+        } else {
+            const Vec2d blended{m_denseDir.x * 0.7 + d.x * 0.3, m_denseDir.y * 0.7 + d.y * 0.3};
+            if (blended.lengthSq() > 1e-9) m_denseDir = blended.normalized();
+        }
+        m_denseLast = anchor;
+    }
+    m_denseAnchor = anchor;
+    m_denseRadius = radius;
+    m_denseEdges.clear();
+    m_denseRing.clear();
+    const f64 ring = radius * 4.0;
+    const f64 inner2 = radius * radius, ring2 = ring * ring;
+    for (u32 i = 0; i < m_edges.size(); ++i) {
+        const Vec2d mid = (m_edges[i].a + m_edges[i].b) * 0.5;
+        const f64 d2 = (mid - anchor).lengthSq();
+        if (d2 <= inner2) m_denseEdges.push_back(i);
+        else if (d2 <= ring2) m_denseRing.push_back(i);
+    }
+    // A disc that contains no road cannot hold a population: over open water it
+    // holds none, and on a bridge deck a handful of long edges.  When there is
+    // nothing inside it, the ring stands in for it; when there is nothing at all,
+    // the whole loaded corridor does, so that a departure is never lost.
+    if (m_denseEdges.empty()) m_denseEdges = m_denseRing;
+    if (m_denseEdges.empty())
+        for (u32 i = 0; i < m_edges.size(); ++i) m_denseEdges.push_back(i);
+}
+
 // -----------------------------------------------------------------------------
 //  Public step
 // -----------------------------------------------------------------------------
 void Traffic::step(f64 dt) {
+    collectActiveEdges();
     leadersAndSignals();
     longitudinal(dt);
     laneChanges(dt);
     twoWheelerField(dt);
     lateralDynamics(dt);
+    // Kerb pull-ins and hail timers last, because a taxi pulling to the kerb
+    // writes the same lateral the tracker just settled — and then the corrections
+    // run over whatever line everybody ended up taking.
     faresAndQueues(dt);
+    corrections();
+    // A stop at the line is a state change, counted once: the tick the vehicle
+    // actually comes to rest while the aspect is against it.
+    for (Vehicle& veh : m_vehicles) {
+        if (veh.atRedLine && veh.v < 0.35) {
+            if (!veh.redStopped) { ++m_signalStops; veh.redStopped = true; }
+        } else if (!veh.atRedLine) {
+            veh.redStopped = false;
+        }
+    }
     advanceEdges();
+    maintainDensePopulation(dt);
     m_time += dt;
 }
 
@@ -1016,11 +1224,39 @@ void Traffic::audit(f64 minX, f64 maxX, f64 minZ, f64 maxZ) {
             for (size_t k = 1; k < list.size(); ++k) {
                 const Vehicle& behind = m_vehicles[list[k - 1]];
                 const Vehicle& ahead = m_vehicles[list[k]];
-                if (ahead.s < behind.s) { ++m_laneViolations; continue; }
+                // Lane registration is bookkeeping, lateral footprint is physics —
+                // the same rule the model itself uses.  Two riders abreast are not
+                // in each other's way however the list happens to be ordered; two
+                // bodies whose footprints overlap are, and then there is no gap to
+                // speak of.
                 if (std::fabs(ahead.lateral - behind.lateral) >
                     0.5 * (archetypeSpec(ahead.kind).width + archetypeSpec(behind.kind).width))
-                    continue;                      // riding abreast, not in the way
-                if (ahead.s - ahead.length - behind.s < kMinGap - 1e-6) ++m_laneViolations;
+                    continue;
+                if (ahead.s < behind.s) {
+                    ++m_laneViolations;
+#if defined(MUMBAI_TRAFFIC_DIAG)
+                    std::fprintf(stderr,
+                                 "  order: edge %zu lane %u  idx %u s %.3f (%s len %.2f lat %.3f) "
+                                 "listed before idx %u s %.3f (%s len %.2f lat %.3f)  t %.3f\n",
+                                 static_cast<size_t>(&e - m_edges.data()), l, list[k], ahead.s,
+                                 archetypeSpec(ahead.kind).name, ahead.length, ahead.lateral,
+                                 list[k - 1], behind.s, archetypeSpec(behind.kind).name,
+                                 behind.length, behind.lateral, m_time);
+#endif
+                    continue;
+                }
+                if (ahead.s - ahead.length - behind.s < kMinGap - 1e-6) {
+                    ++m_laneViolations;
+#if defined(MUMBAI_TRAFFIC_DIAG)
+                    std::fprintf(stderr,
+                                 "  gap:   edge %zu lane %u  idx %u %s s %.3f len %.2f lat %.3f "
+                                 "(front %.3f)  ahead of idx %u %s s %.3f lat %.3f  gap %.4f  t %.3f\n",
+                                 static_cast<size_t>(&e - m_edges.data()), l, list[k],
+                                 archetypeSpec(ahead.kind).name, ahead.s, ahead.length, ahead.lateral,
+                                 ahead.s - ahead.length, list[k - 1], archetypeSpec(behind.kind).name,
+                                 behind.s, behind.lateral, ahead.s - ahead.length - behind.s, m_time);
+#endif
+                }
             }
         }
     }
@@ -1051,6 +1287,10 @@ TrafficMetrics Traffic::metrics(const Vec2d& camera, f64 radius) const {
         if (v.v < 1.4) ++crawl;
         ++m.archetypeCount[static_cast<int>(v.kind)];
         if ((positionOf(v) - camera).lengthSq() <= r2) ++m.nearCamera;
+        if (!m_denseEdges.empty() &&
+            (positionOf(v) - m_denseAnchor).lengthSq() >
+                (m_denseRadius + kTrailGrace) * (m_denseRadius + kTrailGrace))
+            ++m.stranded;
     }
     m.meanSpeedKph = m_vehicles.empty() ? 0.0 : sum / m_vehicles.size() * 3.6;
     m.crawlShare = m_vehicles.empty() ? 0.0 : static_cast<f64>(crawl) / m_vehicles.size();
@@ -1060,7 +1300,10 @@ TrafficMetrics Traffic::metrics(const Vec2d& camera, f64 radius) const {
     m.laneChangeRefusals = m_laneChangeRefusals;
     m.edgeCompletions = m_edgeCompletions;
     m.signalStops = m_signalStops;
+    m.junctionHolds = m_junctionHolds;
+    m.holdCaps = m_holdCaps;
     m.signalCrossings = m_signalCrossings;
+    m.recycleFailures = m_recycleFailures;
     m.boidsUpdates = m_boidsUpdates;
     m.separationEvents = m_separationEvents;
     m.tipLimits = m_tipLimits;

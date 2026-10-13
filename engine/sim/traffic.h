@@ -126,6 +126,11 @@ struct Vehicle {
     bool hailing = false;
     bool changedLaneThisStep = false;
     bool lateralCapped = false;   // this manoeuvre hit the rollover limit
+    bool atRedLine = false;       // held by a red or amber phase this tick
+    bool redStopped = false;      // ...and has actually come to rest there
+    // A vehicle the population device could not place waits this long before it
+    // is tried again: a jammed disc must cost nothing to stay jammed.
+    f64 recycleIn = 0.0;
 };
 
 // -----------------------------------------------------------------------------
@@ -166,6 +171,7 @@ struct TrafficMetrics {
     size_t signals = 0;
     size_t reverseEdges = 0;       // two-way segments materialised as both edges
     size_t derivedSignals = 0;     // phases the runtime had to derive itself
+    size_t stranded = 0;           // vehicles clear of the disc and not yet placed
     f64 meanSpeedKph = 0.0;
     f64 minGap = 1e9;
     f64 crawlShare = 0.0;          // fraction below 1.4 m/s
@@ -173,8 +179,11 @@ struct TrafficMetrics {
     u64 laneChangeRefusals = 0;
     u64 edgeCompletions = 0;
     u64 deadEndHolds = 0;
-    u64 signalStops = 0;
-    u64 signalCrossings = 0;
+    u64 signalStops = 0;           // came to rest at a red or amber line
+    u64 junctionHolds = 0;         // turned away because the junction was full
+    u64 holdCaps = 0;              // holds stopped at the junction-box limit
+    u64 signalCrossings = 0;       // cleared a signalised edge (so: on green)
+    u64 recycleFailures = 0;       // departures with nowhere to re-enter
     u64 boidsUpdates = 0;
     u64 separationEvents = 0;
     u64 tipLimits = 0;
@@ -216,6 +225,19 @@ public:
     // Simulated seconds since construction.
     f64 time() const { return m_time; }
 
+    // How many edges the dense disc currently offers as re-entry points.  A
+    // population device that cannot place a departure has to say so, and this is
+    // how the harness sees it.
+    size_t denseEdgeCount() const { return m_denseEdges.size(); }
+    size_t denseRingEdgeCount() const { return m_denseRing.size(); }
+
+    // Moves the dense disc.  This is the harness's population device, not a
+    // traffic behaviour: the specification's fleet is a peak-hour population
+    // *around the camera*, and a disc fixed at the construction point empties as
+    // the camera drives away from it.  It changes only where a recycled vehicle
+    // reappears — the disc is a place, never a behaviour.
+    void setDenseAnchor(const Vec2d& anchor, f64 radius = 500.0);
+
     // Places one vehicle of a given archetype at an exact point on an exact
     // edge.  Used by the harness for scripted scenarios and by the validation
     // suite to build a fleet by hand.  Returns kNoVehicle if the point is
@@ -229,11 +251,20 @@ public:
 private:
     void leadersAndSignals();
     void longitudinal(f64 dt);
+    void corrections();
     void laneChanges(f64 dt);
     void twoWheelerField(f64 dt);
     void lateralDynamics(f64 dt);
     void faresAndQueues(f64 dt);
     void advanceEdges();
+    // Moves one vehicle back into the disc around the camera.  Returns false if
+    // the disc (and then the ring around it) has nowhere to put it.  The caller
+    // owns the lane lists: the departure path has already unregistered the
+    // vehicle, the maintenance path has not.
+    bool recycle(u32 idx, bool preferAhead);
+    void removeFromLane(u32 edge, u16 lane, u32 idx);
+    void maintainDensePopulation(f64 dt);
+    void collectActiveEdges();
     void deriveSignals();
     void addDerivedPhase(u32 edge, const Vec2d& axis);
     u32 nodeAt(const Vec2d& p, bool* created = nullptr);
@@ -254,7 +285,11 @@ private:
 
     Vec2d m_denseAnchor{0, 0};
     f64 m_denseRadius = 400.0;
-    std::vector<u32> m_denseEdges;
+    std::vector<u32> m_denseEdges;   // inside the disc: where a departure reappears
+    std::vector<u32> m_denseRing;    // the widened ring of last resort
+    Vec2d m_denseDir{1, 0};          // the direction the camera is travelling
+    Vec2d m_denseLast{0, 0};         // where it was when that was measured
+    bool m_denseHasDir = false;
 
     f64 m_time = 0.0;
     f64 m_boidsAccum = 0.0;
@@ -265,13 +300,20 @@ private:
     u64 m_laneChanges = 0, m_laneChangeRefusals = 0;
     u64 m_nodesMerged = 0, m_nodesMergedAcrossChunks = 0;
     u64 m_derivedSignals = 0, m_deadEndUTurns = 0;
-    u64 m_signalStops = 0, m_signalCrossings = 0, m_edgeCompletions = 0, m_deadEndHolds = 0;
+    u64 m_signalStops = 0, m_junctionHolds = 0, m_signalCrossings = 0, m_holdCaps = 0;
+    u64 m_edgeCompletions = 0, m_deadEndHolds = 0, m_recycleFailures = 0;
     u64 m_laneTick = 0;
     u64 m_boidsUpdates = 0, m_separationEvents = 0;
     u64 m_tipLimits = 0, m_hailStops = 0, m_hardBrakes = 0;
     u64 m_badState = 0, m_badSpeed = 0, m_badPosition = 0, m_laneViolations = 0;
     // Scratch reused every tick so that no tick allocates.
     std::vector<std::vector<u32>> m_edgeOrder;    // vehicles per edge, sorted by s
+    // The edges that hold a vehicle this tick.  The city graph has ~170k edges
+    // and the fleet is a few hundred vehicles, so every per-edge sweep walks
+    // this list rather than the graph: the difference is three orders of
+    // magnitude of work per tick, and it is what lets the 60-minute validation
+    // run the real model on the real network instead of a corridor subset.
+    std::vector<u32> m_activeEdges;
     std::vector<std::vector<u32>> m_buckets;      // 16 s-buckets per edge
     struct Arrival { u32 idx; u32 edge; u16 lane; };
     std::vector<Arrival> m_arrived;              // vehicles that finished an edge
@@ -289,13 +331,23 @@ private:
 // Minimum bumper-to-bumper separation the safety projection enforces.  A floor,
 // not a target: IDM normally holds 2-15 m.
 inline constexpr f64 kMinGap = 0.5;
+// Admissions — a vehicle joining a lane, whether it drove in, changed into it, or
+// was placed there by the population device — are held to the floor plus this
+// margin, so that corrections, which hold exactly the floor, always have slack to
+// work in and the invariant is never decided by the last bit of a double.
+inline constexpr f64 kEntryMargin = 0.02;
+// Within this distance of a stop line, a red or amber aspect is what is holding a
+// vehicle — as opposed to the tail of a queue that happens to be near the line.
+// The two are counted apart, because one is a signal working and the other is a
+// junction working, and a validation that conflates them measures neither.
+inline constexpr f64 kStopLineHold = 12.0;
 
-// How far a vehicle may hang back over the junction it has just crossed, beyond
-// its own length, before the lane is called full.  A queue that runs out of edge
-// spills backwards across the junction — Mumbai queues do exactly this — and
-// clamping the spill at zero instead stacked bodies on the boundary (the
-// diagnostic this replaced caught a motorcycle inside a bus).  Half a metre of
-// tolerance keeps the intrusion into the edge behind a tolerance.
-constexpr f64 kHangBehind = 0.5;
+// The spill of a queue that runs out of edge is NOT bounded by a floor.  Two
+// floors were tried and both stacked bodies: clamping at s >= 0 stacked them at
+// the edge mouth, and clamping at s >= -(length + 0.5) stacked them a metre
+// later, because a floor is a position every pushed-back vehicle can reach and
+// therefore a position they can all reach at once.  The correction clamps to the
+// distance from the leader it can see and nothing else, which is monotone down the
+// queue and can never put two bodies in the same place.
 
 }  // namespace mumbai::sim

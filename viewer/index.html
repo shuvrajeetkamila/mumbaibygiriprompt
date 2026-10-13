@@ -298,7 +298,10 @@ function decodeStreets() {
   const nx = new Float32Array(nodeCount), nz = new Float32Array(nodeCount), ny = new Float32Array(nodeCount);
   for (let i = 0; i < nodeCount; ++i) {
     const o = N.offset + i * 6;
-    nx[i] = dv.getInt16(o, true); nz[i] = dv.getInt16(o + 2, true); ny[i] = dv.getInt16(o + 4, true);
+    // x and z are unsigned extent-relative metres (the payload is clipped to the
+    // extent, and an i16 would fold the northern third of a 43 km world onto one
+    // line); y is signed metres of elevation.
+    nx[i] = dv.getUint16(o, true); nz[i] = dv.getUint16(o + 2, true); ny[i] = dv.getInt16(o + 4, true);
   }
   const from = new Uint32Array(edgeCount), to = new Uint32Array(edgeCount);
   const lanes = new Uint16Array(edgeCount), cls = new Uint8Array(edgeCount), dir = new Uint8Array(edgeCount);

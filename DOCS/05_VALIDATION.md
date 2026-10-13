@@ -42,38 +42,58 @@ covers the parts a wrong answer stays quiet about:
 ### 2. Runtime validation — `build/bin/mumbai_sim`
 
 A 60-minute, 60 Hz drive from Colaba to Borivali over the *real* world in
-`data/processed`, with a 620-vehicle fleet:
+`data/processed`, driving the shipped traffic layer (`engine/sim/`, D-030) on the
+city's own nav graph — 119 chunks, 31,345 nodes, 85,956 edges, 302 signal phases
+— with a 620-vehicle fleet:
 
 | measurement | value |
 |---|---|
 | simulated time | 60 min, 216,000 ticks |
-| vehicle steps | 131,112,000 |
-| vehicles live | **607** (620 requested; 13 could not be placed at legal spacing) |
-| mean speed | 5.1 km/h (72 % at a crawl — a real peak hour) |
-| **peak vehicles within 500 m of the camera** | **545** |
-| minimum gap held | 0.50 m floor, never violated (26.5 M safety projections) |
+| vehicle steps | 123,552,000 |
+| vehicles live | **572** (620 requested; 48 could not be placed at legal spacing) |
+| mean speed | 28.2 km/h (1 % at a crawl) |
+| **vehicles within 500 m of the camera** | median **451**, peak **547** over 360 samples |
+| minimum gap held | **2.55 m** against a 0.50 m floor; 0 lane violations in 216,000 audits |
 | macro-cell crossings | **105** |
-| worst shift cost | 0.0002 ms (budget: 1 ms) |
+| worst shift cost | 0.0004 ms (budget: 1 ms) |
 | worst camera-relative error across a shift | **0.00e+00 m** |
 | chunk loads / unloads | 256 / 364 |
 | hash failures | **0** |
-| frame cost (streaming + traffic, CPU) | mean 0.07 ms, p50 0.07 ms, p99 0.12 ms, worst 7.53 ms |
+| frame cost (solver + floating origin, CPU) | mean 0.37 ms, p50 0.08 ms, p99 4.38 ms, worst 14.74 ms |
+| streaming cost (separate, off-thread in the runtime) | 0.09 ms mean over 7,200 streaming frames, worst 9.19 ms |
+| traffic behaviour | 28,393 lane changes, 4,087,290 Boids updates, 94,530 separation events, 18,833 turnarounds |
+| signals | 301 stops at a line on red, 708 cleared on green, 72,825 turned away from a full junction |
+| population device | 14,587 re-entry attempts found no room (0.8 % of 1.8 M edge completions), 0 vehicles stranded |
+| junction holds stopped at the box limit | 2,710 of 72,825 (the one place the floor can be transiently compressed; no audit found a violation) |
 | invalid states | 0 non-finite, 0 out-of-envelope speeds, 0 out-of-extent positions |
-| verdict | **PASS** |
+| verdict | **PASS** (14 of 14 checks) |
+
+The harness holds the specification's fleet *around the camera* — a scenario
+device, not a behaviour — and reports what it cannot do: on the Sea Link deck the
+500 m disc contains a handful of long lane-segments and the density falls to zero,
+which is why the run reports the distribution and asserts the peak (D-030).
 
 ### 3. Independent payload verifier — `tests/verify_export.mjs`
 
 A Node verifier that re-derives everything from the offsets in
 `viewer/data/mumbai.json` and never trusts the pipeline's own counters:
-28 checks, **0 failing**. Measured: terrain 705 × 1345 at 32 m, 47.2 % land,
+**44 checks, 0 failing**. Measured: terrain 705 × 1345 at 32 m, 47.2 % land,
 y −13.5 … 91.4 m; 164,057 building records; 126.7 km² of footprint; heights
-p50/p90/p99 = 12/22/41 m; 254,470 nodes / 127,235 edges; hero 29,232 vertices;
+p50/p90/p99 = 12/22/41 m; **124,348 nodes / 167,145 edges** — the street graph
+clipped to the extent (2,550 nodes and 2,556 edges that lie outside the box are
+dropped), 100 % of the survivors reachable, median edge 29.7 m, longest 169 m,
+reaching x 22,527 of 22,528 m and z 43,005 of 43,008 m; hero 29,232 vertices;
 sea-link deck span 3.88 km; every vertex of a point-landmark material within
 400 m of its anchor (stone 54 m, terracotta 48 m, glass 82 m).
 
-The verifier has already earned its place twice: an earlier version added the
-extent origin twice and produced nonsense, and it is the check that caught the
-payload/console QA-count divergence (D-019).
+The verifier has earned its place three times.  An earlier version added the
+extent origin twice and produced nonsense.  It caught the payload/console QA-count
+divergence (D-019).  And it caught the payload's street graph being wired to the
+wrong array: the export wrote `nodeBase + remap[...]` where `remap` already held
+a global index, so every chunk after the first sent its edges to node indices
+that do not exist — 82,770 of 167,145, up to 248,518 for a 124,348-node array,
+50.5 % of the graph reachable, and none of it visible to anything that only reads
+the payload one record at a time, which is what the viewer does.
 
 ### 4. Artifact integrity — `tools/verify_artifacts.sh`
 
@@ -110,11 +130,11 @@ the pinned hashes).
 | 2 | roads within 2 m horizontal of OSM | met for surveyed ways | centrelines are used verbatim; resampling only inserts vertices. Authored corridors are published alignments (D-021) |
 | 3 | landmarks recognisable at 100 m, unlabelled | partly met | correct massing and, after the detail pass, 14,736 triangles across five assets (Gateway 1,750, Taj 4,500, CSMT 1,762, Sea Link 6,324, Marine Drive 400). The specification's budgets (500k / 800k / 1.2M / 300k per pylon / 50k per building) are unmet — declared, not concealed (D-022) |
 | 4 | zero vertex jitter at 4 corners + centre | **met** | unit test (1 mm survives, tol 2e-4) and 105 live crossings at 0.00e+00 m |
-| 5 | ≥500 vehicles in a 500 m radius at 30 FPS | CPU-side met | 545 measured; frame CPU p99 0.12 ms. The GPU frame is not measurable here |
+| 5 | ≥500 vehicles in a 500 m radius at 30 FPS | CPU-side met | 547 peak / 451 median within 500 m of the moving camera over 60 min; solver + origin CPU p99 4.38 ms against a 16.6 ms budget, with chunk I/O timed apart. The GPU frame is not measurable here |
 | 6 | weather and ocean valid | partly met | **monsoon hydrology is built and verified** (D-026): two design storms on a 705 × 1345 hydrology grid, mass balance closed to 10⁻¹⁰ relative, published peak-depth rasters for both storms, and the specification's own sites (Hindmata 289 mm, King's Circle 283 mm, Andheri subway 376 mm in the 2005 analogue; Marine Drive dry in both) flooding as an emergent consequence of the DEM. GPU rain, wetness shading, Gerstner ocean and scattering remain specified-not-built in `04_RUNTIME.md` |
 | 7 | 30 FPS worst case (monsoon + traffic + South Bombay) | **not verifiable here** | needs a device; no GPU in the build environment |
 | 8 | ≤160 GB installed | met at this tier | 686 MB of chunks for 968.9 km²; scales with hero density and texture budget, both of which are currently far below the specification's |
-| 9 | 60-minute continuous run, zero crashes | **met** | `mumbai_sim`, 216,000 ticks, exit 0 |
+| 9 | 60-minute continuous run, zero crashes | **met** | `mumbai_sim` driving `engine/sim/` over the city graph, 216,000 ticks, exit 0, 14/14 checks, 0 penetrations, 0 lane violations |
 
 ## What this proves, and what it does not
 

@@ -150,19 +150,26 @@ const B = meta.buildings;
   let linked = 0;
   for (let i = 0; i < N.count; ++i) linked += seen[i];
   const frac = linked / N.count;
-  console.log(`  street graph — ${N.count} nodes, ${Ed.count} edges, ` +
-              `${(frac * 100).toFixed(1)} % reachable`);
   check('every edge endpoint exists', bad === 0, `${bad} bad`);
   check('graph is mostly connected', frac > 0.6, `${(frac * 100).toFixed(1)} %`);
   check('edge count is city-scale', Ed.count > 50000, String(Ed.count));
-  // node coordinates must be extent-relative and inside the extent
-  let out = 0;
-  for (let i = 0; i < N.count; i += 97) {
+  // Node coordinates are extent-relative unsigned metres: the payload is clipped
+  // to the extent, so the sign bit is free, and the world is 43 km tall — as i16
+  // the northern third of the graph clamped onto a single line at 32,000 m.
+  let out = 0, far = 0, maxX = 0, maxZ = 0;
+  for (let i = 0; i < N.count; ++i) {
     const o = N.offset + i * 6;
-    const x = dv.getInt16(o, true), z = dv.getInt16(o + 2, true);
-    if (x < -1 || x > W + 1 || z < -1 || z > H + 1) ++out;
+    const x = dv.getUint16(o, true), z = dv.getUint16(o + 2, true);
+    if (x > W + 1 || z > H + 1) ++out;
+    if (i % 97 === 0 && (x < -1 || z < -1)) ++far;
+    if (x > maxX) maxX = x;
+    if (z > maxZ) maxZ = z;
   }
-  check('nav nodes sit inside the extent', out === 0, `${out} sampled outside`);
+  check('nav nodes sit inside the extent', out === 0 && far === 0, `${out} outside, ${far} sampled negative`);
+  check('street graph reaches the northern extent', maxZ > H - 4000, `max z = ${maxZ} of ${H}`);
+  check('street graph reaches the eastern extent', maxX > W - 4000, `max x = ${maxX} of ${W}`);
+  console.log(`  street graph — ${N.count} nodes, ${Ed.count} edges, ` +
+              `${(frac * 100).toFixed(1)} % reachable, reaching x ${maxX} / ${W}, z ${maxZ} / ${H}`);
 }
 
 // --- hero meshes: placed at their published anchors -------------------------

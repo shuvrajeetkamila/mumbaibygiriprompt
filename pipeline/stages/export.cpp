@@ -19,7 +19,11 @@
 //      buildings 14 B each    u16 x, u16 z (metres from extent min), u16 w, u16 d,
 //                             u16 h, u16 groundY (metres + 32), u8 materialId,
 //                             u8 yaw (256ths of a turn)
-//      nodes     6 B each     i16 x, i16 z, i16 y  (metres from extent min)
+//      nodes     6 B each     u16 x, u16 z, u16 y? (metres from extent min; x and z
+//                             are non-negative because the payload is clipped to
+//                             the extent, and the world is 43 km tall — an i16
+//                             would clamp the northern third of the street graph
+//                             onto one line)
 //      edges     12 B each    u32 from, u32 to, u16 lanes, u8 roadClass, u8 flags
 //      hero      32 B/vertex  f32 x, f32 y, f32 z, f32 nx, f32 ny, f32 nz,
 //                             u8 materialId, u8 zoneId, u16 pad   (indexed)
@@ -96,6 +100,8 @@ bool exportViewer(Context& ctx) {
     BinWriter buildings, nodes, edges, heroVerts, heroIdx;
     u64 cells = 0, buildingCount = 0, nodeCount = 0, edgeCount = 0, heroVertexCount = 0, heroIndexCount = 0;
     u64 fallbackCells = 0;
+    u64 clipNodes = 0, clipEdges = 0;
+    std::vector<u32> edgeFrom, remap;      // per chunk, reused so the export never allocates
     f64 terrainMin = 1e30, terrainMax = -1e30;
 
     for (const Json& cell : root["cells"].items()) {
@@ -202,18 +208,55 @@ bool exportViewer(Context& ctx) {
             const NavNode* nn = reinterpret_cast<const NavNode*>(p + sizeof(NavGraphHeader));
             const NavEdge* ne = reinterpret_cast<const NavEdge*>(
                 p + sizeof(NavGraphHeader) + static_cast<size_t>(gh.nodeCount) * sizeof(NavNode));
-            const u32 nodeBase = static_cast<u32>(nodeCount);
+            // Which node each edge leaves from.  A NavEdge names only where it
+            // goes — the record is deliberately small — so its origin is the node
+            // whose out-range contains it.  Writing the edge's own index into that
+            // field, which is what this stage did at first, is right only by
+            // accident; the payload verifier caught the 3,683 edges where it was
+            // not, 3,631 of them feeding straight back into themselves.
+            //
+            // remap holds *global* indices into the payload's node array, which is
+            // why the writes below use it directly and add nothing to it: as
+            // `nodeBase + remap[...]` the same value was counted twice, and the
+            // second and later chunks sent two fifths of the graph's edges to
+            // node indices that do not exist (max 248,518 for 124,348 nodes).
+            edgeFrom.assign(gh.edgeCount, 0xFFFFFFFFu);
             for (u32 i = 0; i < gh.nodeCount; ++i) {
-                nodes.i16v(static_cast<i16>(std::lround(std::max(-32000.0f, std::min(32000.0f,
-                                       static_cast<f32>(cellOX) + nn[i].x - static_cast<f32>(minX))))));
-                nodes.i16v(static_cast<i16>(std::lround(std::max(-32000.0f, std::min(32000.0f,
-                                       static_cast<f32>(cellOZ) + nn[i].z - static_cast<f32>(minZ))))));
-                nodes.i16v(static_cast<i16>(std::lround(std::max(-32000.0f, std::min(32000.0f, nn[i].y)))));
+                for (u32 k = 0; k < nn[i].edgeCount; ++k) {
+                    const u32 idx = nn[i].firstEdge + k;
+                    if (idx < gh.edgeCount) edgeFrom[idx] = i;
+                }
+            }
+            // Clip to the extent.  The payload is the world the viewer draws, and
+            // the world is the box the manifest publishes: 4,221 nodes of the
+            // source graph lie outside it (roads that arrive from the region
+            // beyond the box), and a node outside the canvas has no place on it.
+            // Their edges go with them, which is why the edges are remapped rather
+            // than renumbered in place.
+            remap.assign(gh.nodeCount, 0xFFFFFFFFu);
+            for (u32 i = 0; i < gh.nodeCount; ++i) {
+                const f64 wx = cellOX + static_cast<f64>(nn[i].x);
+                const f64 wz = cellOZ + static_cast<f64>(nn[i].z);
+                if (wx < minX - 1.0 || wx > maxX + 1.0 || wz < minZ - 1.0 || wz > maxZ + 1.0) {
+                    ++clipNodes;
+                    continue;
+                }
+                remap[i] = static_cast<u32>(nodeCount);
+                nodes.u16v(static_cast<u16>(std::lround(std::clamp(wx - minX, 0.0, 65535.0))));
+                nodes.u16v(static_cast<u16>(std::lround(std::clamp(wz - minZ, 0.0, 65535.0))));
+                nodes.i16v(static_cast<i16>(std::lround(std::clamp(static_cast<f64>(nn[i].y), -32768.0, 32767.0))));
                 ++nodeCount;
             }
             for (u32 i = 0; i < gh.edgeCount; ++i) {
-                edges.u32v(nodeBase + i);                      // from = the edge's own node
-                edges.u32v(nodeBase + ne[i].toNode);
+                const u32 from = edgeFrom[i];
+                const u32 to = ne[i].toNode;
+                if (from >= gh.nodeCount || to >= gh.nodeCount ||
+                    remap[from] == 0xFFFFFFFFu || remap[to] == 0xFFFFFFFFu) {
+                    ++clipEdges;
+                    continue;
+                }
+                edges.u32v(remap[from]);
+                edges.u32v(remap[to]);
                 edges.u16v(ne[i].laneCount);
                 edges.u8v(static_cast<u8>(std::min<u32>(255, ne[i].roadClass)));
                 edges.u8v(static_cast<u8>(ne[i].direction));
@@ -460,11 +503,16 @@ bool exportViewer(Context& ctx) {
               (unsigned long long)cells, (unsigned long long)buildingCount,
               (unsigned long long)nodeCount, (unsigned long long)edgeCount,
               TW, TH, out.size() / 1e6);
+    if (clipNodes || clipEdges)
+        MLOG_INFO("viewer export: clipped %llu nodes and %llu edges outside the extent",
+                  (unsigned long long)clipNodes, (unsigned long long)clipEdges);
     MLOG_INFO("viewer export: %zu materials, %llu hero vertices", materials.size(),
               (unsigned long long)heroVertexCount);
     ctx.qa.add("viewer.exportBuildings", static_cast<f64>(buildingCount));
     ctx.qa.add("viewer.exportFallbackCells", static_cast<f64>(fallbackCells));
     ctx.qa.add("viewer.exportBytes", static_cast<f64>(out.size()));
+    ctx.qa.add("viewer.exportClippedNodes", static_cast<f64>(clipNodes));
+    ctx.qa.add("viewer.exportClippedEdges", static_cast<f64>(clipEdges));
     ctx.qa.add("viewer.exportFloodWetCells", static_cast<f64>(floodWet));
     ctx.qa.add("viewer.exportFloodPeakCm", floodPeakCm);
     MLOG_INFO("viewer export: flood rasters — severe %llu wet cells / peak %.0f cm, "

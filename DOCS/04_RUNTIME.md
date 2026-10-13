@@ -65,30 +65,40 @@ phases. The lane vectors and signal timings the specification asks for are
 carried on the edge/phase records; consumption by the traffic layer is the next
 increment.
 
-## Traffic (implemented, one increment at a time)
+## Traffic (implemented)
 
-`mumbai_sim` implements the longitudinal layer over the real graph:
+`engine/sim/` is the shipped layer, and `mumbai_sim` drives it — there is no
+second model in the harness (D-030). One tick is:
 
-* **IDM** with per-class parameters — two-wheeler 1.9 m / 12 m/s, taxi 3.6 m,
-  car 4.6 m, BEST bus 12 m / 16 t class with the longest headway;
-* a **hard safety projection** at a 0.5 m gap floor, applied behind the leader
-  (never by pushing a follower forward), so contact is impossible by
-  construction rather than by tuning (D-015);
-* an **inflow boundary** holding the peak-hour population in the busy corridor;
-* **junction admission** so a vehicle only enters an edge with room, which
-  produces queueing rather than teleportation.
+1. **`collectActiveEdges()`** — the ~572 edges that hold a vehicle, against the
+   ~86,000 the loaded corridor carries. Every per-edge sweep below walks this
+   list; only `audit()` and `metrics()` walk the graph, and they run every 10
+   seconds from the harness, outside the frame budget.
+2. **`leadersAndSignals()`** — one obstruction per vehicle: the rear face of the
+   nearest body that overlaps its path laterally (a two-wheeler scans the whole
+   carriageway, which is what lets it filter past a bus), or the stop line when
+   the aspect is red or amber.
+3. **`longitudinal()`** — IDM with per-class parameters from `archetypeSpec`.
+4. **`laneChanges()`** — MOBIL (politeness 0.2, safe brake −3.0 m/s², threshold
+   0.2 m/s²) on a four-phase stagger, for everything that holds a lane.
+5. **`twoWheelerField()`** — Boids every 200 ms on a 20 m broadphase: separation
+   strong (gated on longitudinal overlap, so it moves bodies apart rather than
+   queuing them), alignment present, cohesion ≈ 0.
+6. **`lateralDynamics()`** — one integrator for everybody's line, clamped by the
+   archetype's rollover limit (an auto-rickshaw tips at 0.36 g).
+7. **`faresAndQueues()`** — hail timers and the kerb pull-in.
+8. **`corrections()`** — the exact pass that holds the 0.5 m floor, front of the
+   queue to back, after everything that can move a body (D-030).
+9. **`advanceEdges()`** — leave the edge, choose an arm (never the reversal of
+   the one just travelled while another exists), enter only if
+   `laneEntryClear`, otherwise hold at the junction; then the population device.
+10. **`maintainDensePopulation()`** — the harness's scenario device (D-030).
 
-Measured on a 60-minute run: 131,112,000 vehicle-steps, 607 vehicles live,
-mean speed 5.1 km/h with 72 % at a crawl (an actual peak hour), minimum gap
-0.50 m held, 545 vehicles within 500 m of the camera, 0 non-finite states,
-0 out-of-envelope speeds, 0 out-of-extent positions.
-
-**Specified, not yet built:** MOBIL lane changes for cars and buses, and the
-Boids flow field for two-wheelers (200 ms updates, 20 m broadphase, strong
-separation, alignment, weak cohesion). Both need the graph, streaming and
-origin systems above and nothing else; they are the next increment of the
-traffic layer, and the vehicle data model in the harness maps one-to-one onto
-the flecs archetypes in the specification.
+Measured on the 60-minute validation run (D-030, `DOCS/05_VALIDATION.md`),
+over the real 119-chunk city graph: 123,552,000 vehicle-steps, 572 vehicles
+live, mean 28.2 km/h, minimum gap 2.55 m, 0 penetrations and 0 lane-discipline
+events in 216,000 audits, median 451 vehicles within 500 m of the camera (peak
+547), solver + origin p99 4.38 ms with chunk I/O timed separately.
 
 ## Viewer (implemented)
 

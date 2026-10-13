@@ -5,8 +5,8 @@
   "stride": 14
  },
  "edges": {
-  "count": 169701,
-  "offset": 4954636,
+  "count": 167145,
+  "offset": 4939336,
   "stride": 12
  },
  "extent": {
@@ -19,7 +19,7 @@
  "flood": {
   "cellsOver50cm": 128907,
   "height": 1345,
-  "offset": 8103304,
+  "offset": 8057332,
   "peakCm": 255,
   "storm": "severe",
   "units": "cm",
@@ -29,7 +29,7 @@
  "floodModerate": {
   "cellsOver50cm": 14628,
   "height": 1345,
-  "offset": 9051529,
+  "offset": 9005557,
   "peakCm": 255,
   "storm": "moderate",
   "units": "cm",
@@ -41,9 +41,9 @@
  "generated": "mumbai_pipeline",
  "hero": {
   "indexCount": 44208,
-  "indexOffset": 7926472,
+  "indexOffset": 7880500,
   "vertexCount": 29232,
-  "vertexOffset": 6991048,
+  "vertexOffset": 6945076,
   "vertexStride": 32
  },
  "landmarks": [
@@ -1246,12 +1246,12 @@
   }
  ],
  "nodes": {
-  "count": 126898,
+  "count": 124348,
   "offset": 4193248,
   "stride": 6
  },
  "qa": {
-  "counters": 162,
+  "counters": 164,
   "failures": 0,
   "passed": true,
   "warnings": 0
@@ -1259,8 +1259,8 @@
  "stats": {
   "buildings": 164057,
   "chunks": 924,
-  "navEdges": 169701,
-  "navNodes": 126898
+  "navEdges": 167145,
+  "navNodes": 124348
  },
  "terrain": {
   "bias": -32,

@@ -712,6 +712,126 @@ still be signalled — the arms open on two axes and never both at once.
 
 ---
 
+## D-030 — The validation drives the shipped layer, and the population device
+
+**Decided.** `engine/app/sim_main.cpp` no longer carries its own traffic model.
+The 60-minute run constructs `mumbai::sim::Traffic` over the chunks the drive
+actually streams (`streamer.cellsAlongRoute`), so the layer the tests exercise
+and the layer the long run measures are the same code, on the city's own nav
+graph (119 chunks, ~31,300 nodes, ~86,000 edges, 302 signal phases) rather than
+on a hand-built corridor.  The harness keeps exactly one thing of its own: the
+*population device*, which is a scenario, not a behaviour.
+
+**Why.** Before this, `mumbai_sim` ran a single-lane IDM over a synthetic
+corridor.  Its numbers — a "fleet" of 620 with a "peak of 545 within 500 m" —
+were produced by code that no test covered and that no longer existed anywhere
+else.  A validation that measures a second implementation measures nothing.
+
+**The population device.** The specification's fleet is a peak-hour population
+*around the camera*: ≥500 vehicles in a 500 m radius.  Two facts force a device
+rather than an origin–destination matrix:
+
+* the camera drives at 24 m/s and the fleet at 8 m/s (city speed), so a disc
+  fixed to the camera is swept clean from behind in about twenty seconds — the
+  traffic physically cannot keep up with the disc;
+* a 500 m disc over the western suburbs contains a few hundred lane-kilometres,
+  but the same disc on the Bandra–Worli Sea Link contains about eight
+  lane-segments of bridge deck.
+
+So the harness moves the disc with the camera (every 2 s — a lag of less than one
+edge) and holds the fleet inside it: a vehicle more than `radius + 120 m` from
+the anchor is called back to a re-entry point inside the disc, at most 8 per
+tick, with a 1 s retry gate after a failed attempt.  It changes only *where* a
+vehicle reappears; it never changes how one drives.  It counts its own failures
+and reports them (`population device: N re-entry attempts found no room`),
+because a device that cannot hold its scenario has to say so rather than quietly
+change it.
+
+**Placement.** A candidate re-entry must satisfy `laneEntryClear` (the physical
+admission test), and its *point* — not its edge — must lie inside the disc: an
+edge whose midpoint is a kilometre away can still cross the disc, and a long edge
+that begins inside it can leave.  Entrances are spread 8 m apart along the edge
+instead of stacked at its mouth, which is what lets a bridge deck hold a
+population at all.  When the caller wants the arrival put ahead of the camera,
+a first pass requires it; a second relaxes that, so a disc with no road ahead of
+the camera still fills.
+
+**The density criterion is a peak load test.** The run reports the distribution
+over 360 samples along the drive (minimum / median / peak) and asserts the peak
+≥ 500 — the criterion — plus a median floor of 400, which is evidence that the
+device holds through the drive rather than that one moment happened to pass.
+
+**Also decided in this pass, each one found by a diagnostic rather than by
+review:**
+
+* **No floor on a queue's spill.**  A correction clamps a vehicle to the distance
+  from the body in front of it and to nothing else: `s` may go negative, which is
+  a queue standing in the junction it has not yet cleared — what a Mumbai queue
+  does.  Two floors were tried and both stacked bodies, because a floor is a
+  position that every pushed-back body can reach and therefore a position they
+  can all reach at once: clamping at `s ≥ 0` put two motorcycles at the same `s`
+  at an edge mouth, and clamping at `s ≥ -(length + 0.5)` merely moved the stack
+  a metre.  Nothing else can stack them either: the sweep runs front to back, so
+  each body stops behind the one already corrected.
+* **Corrections run last.**  The floor is a property of the *lateral* footprint,
+  so the descending-`s` sweep runs after everything that can move a body — the
+  integrator, MOBIL, the Boids field, the lane tracker and the kerb pull-in.
+  Otherwise a two-wheeler sliding up beside the vehicle in front, or a taxi
+  pulling to the kerb for a fare, leaves a pair closer than the floor with the
+  sweep already behind it; the diagnostic caught one such pair at 0.297 m.
+* **Admissions carry a 2 cm margin** (`kEntryMargin`): `laneEntryClear` demands
+  `kMinGap + 0.02`, the corrections hold exactly `kMinGap`.  Two constraints that
+  are each exactly tight leave the invariant to the last bit of a double.
+* **Chunk I/O is timed apart from the frame.**  Streaming is a job on another
+  thread in the real runtime; folding a 40 ms file read into the same percentile
+  would hide the number the frame criterion is about.  Both are reported.
+* **Signal stops are two different events**: a vehicle held at a stop line on red
+  (`signalStops`) and a vehicle turned away because the junction is full
+  (`junctionHolds`).  A validation that conflates them measures neither.
+* **The payload's street graph is clipped to the world.**  The export was
+  feeding the viewer a graph with roads outside the extent (x to 30,663 m in a
+  22,528 m box) and a node record that clamped: 31,571 nodes — a quarter of the
+  graph, the whole northern third of the city — sat at exactly z = 32,000 m,
+  which is the clamp, not a road.  Nodes outside the extent are dropped and their
+  edges with them (2,550 nodes, 2,556 edges), and the surviving coordinates are
+  written as `u16` because the payload is now non-negative by construction and the
+  world is 43 km tall.
+* **An edge column that names the wrong array is invisible to a reader that
+  reads one record at a time.**  `viewer/index.html` drew the graph happily: it
+  looks up node *i* for edge *j* and gets a coordinate, any coordinate.  The
+  export added the chunk's node base to a value that was already a global node
+  index, so 82,770 of 167,145 edges pointed at indices that do not exist (max
+  248,518 for a 124,348-node array) and only the first chunk's edges were real.
+  The verifier now asks for every endpoint and for the extent the graph reaches.
+* **`NodeAt` jointing and `reverseEdges` are reported**, because the runtime
+  materialises the opposing approach of every two-way segment and therefore
+  roughly doubles the out-degree the pipeline emitted: runtime totals are *not*
+  chunk totals, and a metrics reader has to know that.
+
+**Result (60 min, 216,000 ticks, `mumbai_sim --minutes 60`).**  123,552,000
+vehicle-steps over the real 119-chunk city graph, 572 vehicles live, mean 28.2
+km/h, 1 % at a crawl.  Minimum gap **2.55 m** (floor 0.50 m), **0** lane
+violations in 216,000 audits, 0 non-finite states, 0 out-of-envelope speeds,
+0 out-of-extent positions.  Density within 500 m of the camera over 360 samples:
+minimum 0 (on the Sea Link deck), **median 451**, peak **547**.  Solver +
+floating origin: mean 0.37 ms, p50 0.08 ms, **p99 4.38 ms**, worst 14.74 ms
+against a 16.6 ms budget, with chunk I/O timed separately (0.09 ms mean, 9.19 ms
+worst, 7,200 streaming frames).  105 macro-cell crossings, worst shift 0.0004 ms,
+worst camera-relative error 0.00e+00 m.  256 chunk loads, 364 unloads, 0 hash
+failures.  Signals: 301 stops at the line on red, 708 cleared on green, 302
+phases.  Population device: 14,587 re-entry attempts found no room (0.8 % of
+1.8 M edge completions), 0 vehicles stranded clear of the disc.  2,710 of the
+72,825 junction holds stopped at the box limit — the one place the floor can be
+transiently compressed, counted and reported rather than hidden; the audit found
+no violation at any of them.
+
+**Not claimed.**  The GPU frame is not measured (no GPU here); this is CPU cost
+with streaming on the same thread, and the runtime moves streaming to a job.
+The 30 FPS worst case on an Adreno 730 / Mali-G710 remains unverifiable in this
+environment (D-019).
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies
