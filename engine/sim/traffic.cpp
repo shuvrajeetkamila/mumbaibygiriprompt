@@ -1,0 +1,920 @@
+// =============================================================================
+//  MUMBAI 1:1 EXACT — engine/sim/traffic.cpp
+//
+//  Conventions used throughout:
+//    * `s` is the position of the vehicle's FRONT bumper, measured from the
+//      start of its edge; a vehicle leaves the edge when s >= edge.length.
+//    * `gap` is therefore (leader.s - leader.length) - s, the distance from this
+//      front bumper to the leader's rear bumper.  A signal or a junction that a
+//      vehicle must hold for is presented as a stopped leader at that point, so
+//      one longitudinal law covers car-following, stop lines and junction
+//      blocking.
+//    * `lateral` is metres to the right of the edge centreline.  Anything that
+//      holds a lane sits at (lane - (lanes-1)/2) * 3.5 m and eases between lane
+//      centres; a two-wheeler holds no lane and is steered by the Boids field,
+//      which is the whole point of the two-wheeler model.
+//    * Nothing here allocates per tick, and nothing reads the clock: identical
+//      input gives bit-identical output, which the validation suite checks.
+// =============================================================================
+#include "engine/sim/traffic.h"
+
+#include <algorithm>
+#include <cmath>
+#include <unordered_map>
+
+namespace mumbai::sim {
+namespace {
+
+constexpr f64 kLaneWidth = 3.5;            // m, centre to centre
+constexpr f64 kLaneChangeInterval = 0.4;   // s between MOBIL evaluations per vehicle
+constexpr f64 kMobilPoliteness = 0.2;      // MOBIL p: how much the others count
+constexpr f64 kMobilThreshold = 0.2;       // m/s^2 of incentive before changing
+constexpr f64 kMobilSafeBrake = -3.0;      // m/s^2 the new follower must stay above
+constexpr f64 kFilterClearance = 0.9;      // m, clearance to a flank
+constexpr f64 kStopLineMargin = 0.5;       // m, in front of the stop line
+constexpr f64 kVisualRange = 40.0;         // m, how far a two-wheeler looks ahead
+constexpr u32 kBucketsPerEdge = 16;        // 16 x 20 m of spatial hash for Boids
+constexpr f64 kLateralKp = 3.0;            // lane-keeping spring
+constexpr f64 kLateralKd = 2.0 * 1.7320508075688772;   // critically damped
+
+// name, length, mass, width, comfort accel, comfort brake, max accel, max brake,
+// top speed, two-wheeler, hails, can tip, tip lateral g
+const ArchetypeSpec kSpecs[] = {
+    {"motorcycle",         1.95,   135.0,  0.75, 0.05, 0.80, 3.0, 4.0, 80.0, true,  false, false, 0.0},
+    {"auto-rickshaw",      2.60,   400.0,  1.40, 0.20, 0.70, 1.5, 3.0, 55.0, false, false, true,  0.36},
+    {"kaali-peeli taxi",   3.90,  1150.0,  1.65, 0.40, 0.60, 2.5, 3.5, 85.0, false, true,  false, 0.0},
+    {"car",                4.40,  1400.0,  1.75, 0.45, 0.55, 2.6, 3.6, 85.0, false, false, false, 0.0},
+    {"BEST double-decker", 11.90, 16000.0, 2.55, 0.90, 0.30, 1.2, 2.0, 60.0, false, false, false, 0.0},
+};
+static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == static_cast<size_t>(Archetype::Count),
+              "one archetype spec per enum value");
+
+f64 laneOffset(u16 lane, u16 lanes) {
+    return (static_cast<f64>(lane) - (static_cast<f64>(lanes) - 1.0) * 0.5) * kLaneWidth;
+}
+
+f64 idmAccel(f64 v, f64 v0, f64 gap, f64 leaderV, f64 a, f64 b, f64 T, f64 s0) {
+    const f64 dv = v - leaderV;
+    const f64 sStar = s0 + std::max(0.0, v * T + v * dv / (2.0 * std::sqrt(std::max(1e-6, a * b))));
+    const f64 free = 1.0 - std::pow(v / std::max(2.0, v0), 4.0);
+    const f64 inter = (gap < 1e8) ? std::pow(sStar / std::max(0.1, gap), 2.0) : 0.0;
+    return a * (free - inter);
+}
+
+}  // namespace
+
+const ArchetypeSpec& archetypeSpec(Archetype a) {
+    const size_t i = std::min(static_cast<size_t>(a), static_cast<size_t>(Archetype::Count) - 1);
+    return kSpecs[i];
+}
+
+SignalState signalStateAt(const SignalPhase& p, f64 t) {
+    const f64 cycle = SignalPhase::kCycleSeconds;
+    f64 local = std::fmod(t - p.greenStart, cycle);
+    if (local < 0.0) local += cycle;
+    if (local < p.greenSeconds) return SignalState::Green;
+    if (local < p.greenSeconds + SignalPhase::kAmberSeconds) return SignalState::Amber;
+    return SignalState::Red;
+}
+
+// -----------------------------------------------------------------------------
+//  Construction: assemble the graph from the world, then populate it
+// -----------------------------------------------------------------------------
+Traffic::Traffic(const std::vector<std::string>& chunkFiles,
+                 const std::vector<Vec2d>& route,
+                 const Vec2d& denseAnchor, u64 fleet, u64 seed)
+    : m_denseAnchor(denseAnchor), m_rngState(seed ? seed : 0x5EED1234ull) {
+    (void)route;
+    std::unordered_map<u64, u32> nodeMap;
+    for (const std::string& file : chunkFiles) {
+        ChunkReader r;
+        std::string err;
+        if (!r.open(file, &err)) continue;
+        const ChunkReader::NavGraphView graph = r.navGraph();
+        if (!graph.valid()) continue;
+        const u32 nodeCount = graph.header->nodeCount;
+        const NavNode* nodes = graph.nodes;
+        const NavEdge* edges = graph.edges;
+        const f64 ox = static_cast<f64>(r.header().cellX) * MACRO_CELL_SIZE;
+        const f64 oz = static_cast<f64>(r.header().cellZ) * MACRO_CELL_SIZE;
+        const u64 cellKey = (static_cast<u64>(r.header().cellX + 1) << 16) ^
+                            static_cast<u64>(r.header().cellZ + 1);
+        // Local edge index -> global edge index, so a signal phase can name the
+        // edge it governs without re-deriving topology.
+        std::vector<u32> localToGlobal(graph.header->edgeCount, kNoSignal);
+
+        for (u32 i = 0; i < nodeCount; ++i) {
+            const Vec2d p{ox + nodes[i].x, oz + nodes[i].z};
+            nodeMap[(cellKey << 32) | i] = static_cast<u32>(m_nodes.size());
+            m_nodes.push_back(SimNode{p, {}});
+        }
+        for (u32 i = 0; i < nodeCount; ++i) {
+            const NavNode& n = nodes[i];
+            const u32 from = nodeMap[(cellKey << 32) | i];
+            for (u32 k = 0; k < n.edgeCount; ++k) {
+                if (n.firstEdge + k >= graph.header->edgeCount) break;
+                const NavEdge& e2 = edges[n.firstEdge + k];
+                if (e2.toNode >= nodeCount) continue;
+                auto it = nodeMap.find((cellKey << 32) | e2.toNode);
+                if (it == nodeMap.end()) continue;
+                SimEdge se;
+                se.from = from;
+                se.to = it->second;
+                se.length = e2.length > 0.5f ? e2.length : 10.0f;
+                se.limit = e2.speedLimitKph > 1.0f ? e2.speedLimitKph : 25.0f;
+                se.lanes = std::max<u16>(1, e2.laneCount);
+                se.cls = static_cast<u8>(e2.roadClass);
+                se.a = m_nodes[se.from].p;
+                se.b = m_nodes[se.to].p;
+                const Vec2d d = se.b - se.a;
+                if (d.lengthSq() < 0.01) continue;
+                se.dir = d.normalized();
+                se.normal = Vec2d{-se.dir.y, se.dir.x};
+                se.laneVehicles.assign(se.lanes, {});
+                localToGlobal[n.firstEdge + k] = static_cast<u32>(m_edges.size());
+                m_nodes[se.from].out.push_back(static_cast<u32>(m_edges.size()));
+                m_edges.push_back(std::move(se));
+            }
+        }
+
+        // Signal phases: the world has carried a green window per edge since the
+        // format was defined.
+        for (u32 s = 0; s < graph.header->signalCount; ++s) {
+            const NavSignalPhase& sp = graph.signals[s];
+            if (sp.edgeIndex >= graph.header->edgeCount) continue;
+            const u32 gi = localToGlobal[sp.edgeIndex];
+            if (gi == kNoSignal) continue;
+            SignalPhase p;
+            p.edge = gi;
+            p.greenStart = static_cast<f64>(sp.startGreenDeciseconds) * 0.1;
+            p.greenSeconds = static_cast<f64>(sp.greenDeciseconds) * 0.1;
+            if (p.greenSeconds <= 0.0) continue;
+            m_signals.push_back(p);
+        }
+    }
+
+    m_signalOfEdge.assign(m_edges.size(), kNoSignal);
+    for (u32 s = 0; s < m_signals.size(); ++s) m_signalOfEdge[m_signals[s].edge] = s;
+    m_edgeOrder.assign(m_edges.size(), {});
+    m_buckets.assign(m_edges.size() * kBucketsPerEdge, {});
+
+    if (m_edges.empty() || !fleet) return;
+
+    m_denseEdges.clear();
+    for (u32 i = 0; i < m_edges.size(); ++i) {
+        const Vec2d mid = (m_edges[i].a + m_edges[i].b) * 0.5;
+        if ((mid - m_denseAnchor).lengthSq() <= m_denseRadius * m_denseRadius) m_denseEdges.push_back(i);
+    }
+    if (m_denseEdges.empty())
+        for (u32 i = 0; i < m_edges.size(); ++i) m_denseEdges.push_back(i);
+
+    // Fleet mix: two-wheeler country first, then autos, taxis, cars, and a few
+    // BEST double-deckers.  A signal at Andheri looks like these proportions.
+    m_vehicles.reserve(fleet);
+    for (u64 i = 0; i < fleet; ++i) {
+        const bool inDense = (i % 10) != 0;
+        const u32 k = rng(100);
+        Archetype kind = Archetype::Car;
+        if (k < 46) kind = Archetype::Motorcycle;
+        else if (k < 60) kind = Archetype::AutoRickshaw;
+        else if (k < 74) kind = Archetype::Taxi;
+        else if (k < 93) kind = Archetype::Car;
+        else kind = Archetype::Bus;
+        const ArchetypeSpec& spec = archetypeSpec(kind);
+        for (int attempt = 0; attempt < 24; ++attempt) {
+            const u32 e = inDense ? m_denseEdges[rng(static_cast<u32>(m_denseEdges.size()))]
+                                  : rng(static_cast<u32>(m_edges.size()));
+            const SimEdge& edge = m_edges[e];
+            const f64 spare = edge.length - spec.length - 3.0;
+            if (spare < 0.5) continue;
+            const u16 lane = static_cast<u16>(rng(edge.lanes));
+            bool placed = false;
+            for (f64 cand = kLaneWidth * 0.5; cand <= spare && !placed; cand += kLaneWidth) {
+                bool clear = true;
+                for (u32 other : edge.laneVehicles[lane])
+                    if (std::fabs(m_vehicles[other].s - cand) < spec.length + 3.0) { clear = false; break; }
+                if (!clear) continue;
+                spawn(kind, e, lane, cand, spec.topSpeedKph / 3.6 * 0.75 * 0.35);
+                placed = true;
+            }
+            if (placed) break;
+        }
+    }
+    m_spawned = m_vehicles.size();
+}
+
+u32 Traffic::spawn(Archetype kind, u32 edge, u16 lane, f64 s, f64 v) {
+    const ArchetypeSpec& spec = archetypeSpec(kind);
+    Vehicle veh;
+    veh.kind = kind;
+    veh.edge = std::min<u32>(edge, static_cast<u32>(m_edges.size() ? m_edges.size() - 1 : 0));
+    if (m_edges.empty()) return 0;
+    SimEdge& e = m_edges[veh.edge];
+    veh.lane = std::min<u16>(lane, static_cast<u16>(e.lanes - 1));
+    veh.length = spec.length;
+    veh.a = spec.maxAccel * spec.comfortAccel;
+    veh.b = spec.maxBrake * spec.comfortBrake;
+    veh.T = spec.twoWheeler ? 0.9 : (kind == Archetype::Bus ? 1.8 : 1.2);
+    veh.s0 = spec.twoWheeler ? 1.2 : 2.2;
+    veh.v0 = std::min(spec.topSpeedKph / 3.6 * 0.75, e.limit / 3.6 * 1.05);
+    veh.lateral = laneOffset(veh.lane, e.lanes);
+    if (spec.twoWheeler) {
+        // Never on a lane centre: scattered across the carriageway, which is
+        // where a two-wheeler actually rides.
+        const f64 half = e.lanes * kLaneWidth * 0.5 - 0.5;
+        veh.lateral = std::clamp(veh.lateral + (rng01() - 0.5) * 2.4, -half, half);
+    }
+    if (spec.canHail) veh.hailTimer = rng01() * 600.0;
+    veh.s = std::clamp(s, 0.0, std::max(0.0, e.length - veh.length - 0.05));
+    // Never create a vehicle inside another one: a spawn point that is occupied
+    // is refused, loudly, rather than silently overlapped and then pushed apart
+    // by the next tick's corrections.
+    for (u32 other : e.laneVehicles[veh.lane]) {
+        const Vehicle& o = m_vehicles[other];
+        const bool overlaps = (veh.s < o.s + o.length + kMinGap) && (o.s < veh.s + veh.length + kMinGap);
+        if (overlaps) return kNoVehicle;
+    }
+    veh.v = std::clamp(v, 0.0, veh.v0 * 1.3);
+    m_vehicles.push_back(veh);
+    const u32 idx = static_cast<u32>(m_vehicles.size() - 1);
+    std::vector<u32>& list = e.laneVehicles[veh.lane];
+    list.insert(std::lower_bound(list.begin(), list.end(), idx,
+                                 [this](u32 a, u32 b) { return m_vehicles[a].s < m_vehicles[b].s; }),
+                idx);
+    return idx;
+}
+
+void Traffic::insertSorted(std::vector<u32>& list, u32 idx) {
+    list.insert(std::lower_bound(list.begin(), list.end(), idx,
+                                 [this](u32 a, u32 b) { return m_vehicles[a].s < m_vehicles[b].s; }),
+                idx);
+}
+
+void Traffic::placeHeld(Vehicle& veh, const SimEdge& e, u16 lane, f64 limit) {
+    // A vehicle held at the end of its edge — because the junction will not take
+    // it, or because the road simply ends — must still be behind nothing and in
+    // front of everything.  Its own follower is the constraint: holding it at the
+    // edge end is only safe if the vehicle behind is far enough back, and when it
+    // is not, the held vehicle takes the small forward overshoot instead.  (An
+    // earlier version simply placed it at `limit - 0.05`, which drove it into its
+    // own follower whenever the queue behind was tight.)
+    f64 s = limit - 0.05;
+    for (u32 other : e.laneVehicles[lane]) {
+        const Vehicle& o = m_vehicles[other];
+        if (o.s >= veh.s) continue;
+        s = std::max(s, o.s + o.length + kMinGap);
+    }
+    veh.s = std::min(s, limit + 2.0);
+}
+
+bool Traffic::laneEntryClear(const SimEdge& e, u16 lane, f64 s, f64 length, f64 width) const {
+    // Space on a carriageway is a PHYSICAL question, not a bookkeeping one: the
+    // check covers every vehicle on the edge whose lateral footprint overlaps
+    // where this one is going, because a two-wheeler that has filtered across two
+    // lanes is still registered in the lane it entered by, and a vehicle may join
+    // at `s` only if its front bumper would leave the vehicle ahead a gap of at
+    // least the floor and its rear bumper would leave the vehicle behind the same.
+    // (Demanding a fixed absolute clearance instead throttled every junction to
+    // one vehicle per few seconds; checking only the target lane let a car be
+    // created inside a machine that had drifted into its path.)
+    const f64 myLateral = laneOffset(lane, e.lanes);
+    for (u16 l = 0; l < e.lanes; ++l) {
+        for (u32 other : e.laneVehicles[l]) {
+            const Vehicle& o = m_vehicles[other];
+            // Lateral footprint: bodies that cannot touch are not each other's
+            // problem, however their bookkeeping lanes are arranged.
+            const f64 lateralClear =
+                0.5 * (width + archetypeSpec(o.kind).width) + 0.4;
+            if (std::fabs(o.lateral - myLateral) > lateralClear) continue;
+            if (o.s > s) {
+                if (o.s - o.length - s < kMinGap) return false;
+                // And it must have cleared the box: following a long vehicle onto
+                // an edge while its tail still lies across the junction is how a
+                // body ends up straddling a boundary.
+                if (o.s < o.length) return false;
+            } else {
+                if (s - length - o.s < kMinGap) return false;
+            }
+        }
+    }
+    return true;
+}
+
+u32 Traffic::rng(u32 bound) {
+    m_rngState += 0x9E3779B97F4A7C15ull;
+    u64 z = m_rngState;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return static_cast<u32>((z ^ (z >> 31)) % (bound ? bound : 1));
+}
+
+f64 Traffic::rng01() { return static_cast<f64>(rng(1u << 20)) / static_cast<f64>(1u << 20); }
+
+Vec2d Traffic::positionOf(const Vehicle& v) const {
+    const SimEdge& e = m_edges[v.edge];
+    return e.a + e.dir * v.s + e.normal * v.lateral;
+}
+
+// -----------------------------------------------------------------------------
+//  Leaders, the two-wheeler field, and signal heads
+// -----------------------------------------------------------------------------
+void Traffic::leadersAndSignals() {
+    // Lane leaders.  Two-wheelers are deliberately excluded: they hold no lane,
+    // and their longitudinal reference is found by the lateral-aware search
+    // below, which sees the whole carriageway.
+    for (SimEdge& e : m_edges) {
+        for (u16 l = 0; l < e.lanes; ++l) {
+            const std::vector<u32>& list = e.laneVehicles[l];
+            for (size_t k = 0; k < list.size(); ++k) {
+                Vehicle& veh = m_vehicles[list[k]];
+                if (archetypeSpec(veh.kind).twoWheeler) continue;
+                veh.obstruction = 1e18;
+                veh.leaderV = veh.v;
+                // The first vehicle ahead that is actually IN THE WAY: lane
+                // registration is bookkeeping, lateral footprint is physics.  A
+                // vehicle halfway through a lane change is still out there in the
+                // lane it is leaving.
+                for (size_t j = k + 1; j < list.size(); ++j) {
+                    const Vehicle& lead = m_vehicles[list[j]];
+                    if (std::fabs(lead.lateral - veh.lateral) >
+                        0.5 * (archetypeSpec(veh.kind).width + archetypeSpec(lead.kind).width))
+                        continue;
+                    veh.obstruction = lead.s - lead.length;
+                    veh.leaderV = lead.v;
+                    break;
+                }
+                veh.gap = std::min(1e9, veh.obstruction - veh.s);
+            }
+        }
+    }
+
+    // Order every edge's vehicles by s.  The lane lists are each sorted, so the
+    // merged order is a merge of sorted runs; a sort of the concatenation is
+    // cheap at this population and keeps the code obvious.
+    for (SimEdge& e : m_edges) {
+        // A two-wheeler that filters past a lane holder overtakes it inside the
+        // same lane list.  Repair the order when that happens: every correction
+        // below assumes the list runs front to back.
+        for (u16 l = 0; l < e.lanes; ++l) {
+            std::vector<u32>& list = e.laneVehicles[l];
+            bool ordered = true;
+            for (size_t k = 1; k < list.size() && ordered; ++k)
+                if (m_vehicles[list[k]].s < m_vehicles[list[k - 1]].s) ordered = false;
+            if (!ordered)
+                std::sort(list.begin(), list.end(),
+                          [this](u32 a, u32 b) { return m_vehicles[a].s < m_vehicles[b].s; });
+        }
+        std::vector<u32>& order = m_edgeOrder[static_cast<u32>(&e - m_edges.data())];
+        order.clear();
+        for (u16 l = 0; l < e.lanes; ++l)
+            order.insert(order.end(), e.laneVehicles[l].begin(), e.laneVehicles[l].end());
+        std::sort(order.begin(), order.end(),
+                  [this](u32 a, u32 b) { return m_vehicles[a].s < m_vehicles[b].s; });
+    }
+
+    // A two-wheeler follows the nearest vehicle ahead whose body overlaps its own
+    // line, wherever on the carriageway that is.  This is what lets a bike filter
+    // past a bus: the bus is not in its path, so it is not its leader.
+    for (u32 i = 0; i < m_vehicles.size(); ++i) {
+        Vehicle& veh = m_vehicles[i];
+        if (!archetypeSpec(veh.kind).twoWheeler) continue;
+        const std::vector<u32>& order = m_edgeOrder[veh.edge];
+        veh.obstruction = 1e18;          // found afresh every tick
+        // Scan forward along the road, and take the first body whose lateral
+        // footprint overlaps this rider's line.  A machine riding clear of a bus
+        // is not following it; a machine riding into the bus's flank is, and the
+        // obstruction is the bus's real rear bumper, not a nominal one.
+        f64 best = 1e9, bestV = veh.v, bestLen = 0.0;
+        bool found = false;
+        for (size_t k = 0; k < order.size() && !found; ++k) {
+            const u32 j = order[k];
+            if (j == i) continue;
+            const Vehicle& other = m_vehicles[j];
+            if (other.s <= veh.s) continue;                  // behind
+            if (other.s - veh.s > kVisualRange) break;       // sorted: nothing nearer
+            const f64 lateralClear = kFilterClearance + archetypeSpec(other.kind).width * 0.5;
+            if (std::fabs(other.lateral - veh.lateral) > lateralClear) continue;
+            best = other.s;
+            bestV = other.v;
+            bestLen = other.length;
+            found = true;
+        }
+        if (found) {
+            const f64 rear = best - bestLen;
+            if (rear - kMinGap < veh.s || rear < 1e17) {
+                veh.obstruction = rear;
+                veh.leaderV = bestV;
+            }
+        }
+        veh.gap = std::min(1e9, veh.obstruction - veh.s);
+    }
+
+    // Signal heads.  A phase that is not green presents a stopped leader at the
+    // stop line, so vehicles queue, creep and hold — which is what a junction is.
+    // Amber is stop-if-you-can.
+    for (const SignalPhase& p : m_signals) {
+        const SignalState st = signalStateAt(p, m_time);
+        if (st == SignalState::Green) continue;
+        const SimEdge& e = m_edges[p.edge];
+        const bool amber = (st == SignalState::Amber);
+        for (u16 l = 0; l < e.lanes; ++l) {
+            for (u32 vi : e.laneVehicles[l]) {
+                Vehicle& veh = m_vehicles[vi];
+                const f64 toLine = e.length - kStopLineMargin - veh.s;
+                if (toLine <= 0.0) continue;                 // past the line: committed
+                if (amber && veh.v > 4.0 && toLine > veh.v * 1.2 + 2.0) continue;
+                if (toLine < veh.obstruction - veh.s) {
+                    veh.obstruction = e.length - kStopLineMargin;
+                    veh.gap = std::max(0.0, toLine);
+                    veh.leaderV = 0.0;
+                }
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Longitudinal model
+// -----------------------------------------------------------------------------
+void Traffic::longitudinal(f64 dt) {
+    // 1. Integrate.  IDM is asymptotically safe, but a single step can overshoot
+    //    while a platoon compresses, so the integration is followed by exact
+    //    corrections rather than by trusting the ODE.
+    for (Vehicle& veh : m_vehicles) {
+        if (veh.hailing) {
+            // A taxi that has been hailed stops at the kerb, comfortably, and
+            // the queue behind it forms for real.
+            veh.v = std::max(0.0, veh.v - veh.b * dt);
+            veh.s += veh.v * dt;
+            continue;
+        }
+        const f64 v0 = std::max(2.0, veh.v0);
+        const f64 acc = idmAccel(veh.v, v0, veh.gap, veh.leaderV, veh.a, veh.b, veh.T, veh.s0);
+        veh.v = std::clamp(veh.v + acc * dt, 0.0, v0 * 1.3);
+        veh.s += veh.v * dt;
+    }
+
+    // 2. Lane discipline, exactly, front to back: a lane's leader is corrected
+    //    first, so the correction propagates down the queue in one pass.  This is
+    //    what makes contact impossible rather than merely unlikely.
+    for (const SimEdge& e : m_edges) {
+        for (u16 l = 0; l < e.lanes; ++l) {
+            const std::vector<u32>& list = e.laneVehicles[l];
+            for (size_t k = list.size(); k-- > 1;) {
+                Vehicle& veh = m_vehicles[list[k - 1]];
+                // Two-wheelers hold no lane: their constraint is the obstruction
+                // found in step 3, which knows they may be riding beside the
+                // vehicle whose lane list they appear in.
+                if (archetypeSpec(veh.kind).twoWheeler) continue;
+                const Vehicle& lead = m_vehicles[list[k]];
+                if (lead.s <= veh.s) continue;          // not actually ahead
+                if (std::fabs(lead.lateral - veh.lateral) >
+                    0.5 * (archetypeSpec(veh.kind).width + archetypeSpec(lead.kind).width))
+                    continue;                           // side by side, not in the way
+                const f64 target = lead.s - lead.length - kMinGap;
+                if (veh.s > target) {
+                    veh.s = std::max(0.0, target);
+                    veh.v = std::min(veh.v, lead.v);
+                    ++m_hardBrakes;
+                }
+            }
+        }
+    }
+
+    // 3. Every obstruction — a stop line, or the body a two-wheeler is riding
+    //    up behind — checked in descending s so each correction is final before
+    //    the vehicle behind it is examined.  Two-wheelers need this because they
+    //    stand outside lane discipline entirely.
+    for (const SimEdge& e : m_edges) {
+        const std::vector<u32>& order = m_edgeOrder[static_cast<u32>(&e - m_edges.data())];
+        for (size_t k = order.size(); k-- > 0;) {
+            Vehicle& veh = m_vehicles[order[k]];
+            if (veh.obstruction >= 1e17) continue;
+            const f64 target = veh.obstruction - kMinGap;
+            if (veh.s > target) {
+                veh.s = std::max(0.0, target);
+                veh.v = std::min(veh.v, veh.leaderV);
+                ++m_hardBrakes;
+            }
+        }
+    }
+
+    // 4. Report the honest number: the smallest gap anyone is actually running,
+    //    not the smallest gap the floor permits.
+    m_minGap = 1e9;
+    for (Vehicle& veh : m_vehicles) {
+        veh.gap = std::min(1e9, veh.obstruction - veh.s);
+        if (veh.obstruction < 1e17) m_minGap = std::min(m_minGap, veh.gap);
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  MOBIL lane changes (everything that holds a lane)
+// -----------------------------------------------------------------------------
+void Traffic::laneChanges(f64 dt) {
+    m_laneAccum += dt;
+    if (m_laneAccum < kLaneChangeInterval) return;
+    m_laneAccum = 0.0;
+    ++m_laneTick;
+
+    for (Vehicle& veh : m_vehicles) {
+        veh.changedLaneThisStep = false;
+        if (archetypeSpec(veh.kind).twoWheeler) continue;    // two-wheelers do not use lanes
+        SimEdge& e = m_edges[veh.edge];
+        if (e.lanes < 2) continue;
+        // One vehicle in four evaluates per interval, staggered deterministically.
+        // (The rotation must be a tick counter, not a function of the clock: a
+        // phase derived from m_time advances by exactly one interval's worth per
+        // interval and is therefore constant for each vehicle forever.)
+        if ((static_cast<u32>(&veh - m_vehicles.data()) + static_cast<u32>(m_laneTick)) % 4u) continue;
+
+        const u32 self = static_cast<u32>(&veh - m_vehicles.data());
+        const f64 aNow = idmAccel(veh.v, std::max(2.0, veh.v0), veh.gap, veh.leaderV,
+                                  veh.a, veh.b, veh.T, veh.s0);
+        for (int side = 0; side < 2 && !veh.changedLaneThisStep; ++side) {
+            const i32 target = static_cast<i32>(veh.lane) + (side == 0 ? -1 : 1);
+            if (target < 0 || target >= static_cast<i32>(e.lanes)) continue;
+
+            f64 gapLead = 1e9, leadV = veh.v, gapFollow = 1e9;
+            u32 followIdx = 0xFFFFFFFFu;
+            for (u32 other : e.laneVehicles[static_cast<u16>(target)]) {
+                const Vehicle& o = m_vehicles[other];
+                if (o.s > veh.s) {
+                    const f64 g = o.s - o.length - veh.s;
+                    if (g < gapLead) { gapLead = g; leadV = o.v; }
+                } else {
+                    const f64 g = veh.s - veh.length - o.s;
+                    if (g < gapFollow) { gapFollow = g; followIdx = other; }
+                }
+            }
+            if (gapLead < kMinGap || gapFollow < kMinGap) continue;   // no room at all
+
+            const f64 aAfter = idmAccel(veh.v, std::max(2.0, veh.v0), gapLead, leadV,
+                                        veh.a, veh.b, veh.T, veh.s0);
+            f64 followBefore = 0.0, followAfter = 0.0;
+            if (followIdx != 0xFFFFFFFFu) {
+                const Vehicle& f = m_vehicles[followIdx];
+                followBefore = idmAccel(f.v, std::max(2.0, f.v0), gapFollow, veh.v,
+                                        f.a, f.b, f.T, f.s0);
+                const f64 newGap = std::max(0.05, veh.s - veh.length - f.s);
+                followAfter = idmAccel(f.v, std::max(2.0, f.v0), newGap, veh.v,
+                                       f.a, f.b, f.T, f.s0);
+            }
+            // MOBIL: my gain plus the politeness-weighted pain of whoever I cut
+            // in front of.
+            const f64 incentive = (aAfter - aNow) + kMobilPoliteness * (followAfter - followBefore);
+            const bool safe = (followIdx == 0xFFFFFFFFu) || followAfter > kMobilSafeBrake;
+            if (safe && incentive > kMobilThreshold) {
+                e.laneVehicles[veh.lane].erase(
+                    std::remove(e.laneVehicles[veh.lane].begin(), e.laneVehicles[veh.lane].end(), self),
+                    e.laneVehicles[veh.lane].end());
+                veh.lane = static_cast<u16>(target);
+                // The lateral offset eases across in `lateralDynamics`, rate-limited
+                // by the vehicle's rollover geometry.
+                veh.lateralCapped = false;
+                e.laneVehicles[veh.lane].push_back(self);
+                std::sort(e.laneVehicles[veh.lane].begin(), e.laneVehicles[veh.lane].end(),
+                          [this](u32 a, u32 b) { return m_vehicles[a].s < m_vehicles[b].s; });
+                // Corrections go through the target-lane leader next tick.
+                ++m_laneChanges;
+                veh.changedLaneThisStep = true;
+            } else {
+                ++m_laneChangeRefusals;
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Lateral dynamics: one integrator for everybody's line
+// -----------------------------------------------------------------------------
+void Traffic::lateralDynamics(f64 dt) {
+    for (Vehicle& veh : m_vehicles) {
+        const ArchetypeSpec& spec = archetypeSpec(veh.kind);
+        const SimEdge& e = m_edges[veh.edge];
+        const f64 leanCap = m_boids.lateralMaxG * 9.81;
+        const f64 cap = spec.canTip ? std::min(leanCap, spec.tipLateralG * 9.81) : leanCap;
+        f64 a = 0.0;
+        if (spec.twoWheeler) {
+            // The Boids field commands a lateral acceleration every 200 ms;
+            // between updates the lean is simply held, as a rider does.
+            a = veh.latAccelCommand;
+            veh.lateralVel *= 0.9;                       // settling
+            veh.lateralVel += a * dt;
+        } else {
+            const f64 target = laneOffset(veh.lane, e.lanes);
+            const f64 err = target - veh.lateral;
+            a = kLateralKp * err - kLateralKd * veh.lateralVel;
+            if (std::fabs(err) > 0.05) {
+                if (std::fabs(a) > cap && !veh.lateralCapped) {
+                    // A vehicle that would have to lean past its own rollover
+                    // limit to complete the manoeuvre takes the manoeuvre slowly.
+                    veh.lateralCapped = true;
+                    ++m_tipLimits;
+                }
+            }
+            veh.lateralVel += std::clamp(a, -cap, cap) * dt;
+        }
+        const f64 aEff = std::clamp(a, -cap, cap);
+        m_maxLateralG = std::max(m_maxLateralG, std::fabs(aEff) / 9.81);
+        veh.lateral += veh.lateralVel * dt;
+        if (!spec.twoWheeler && std::fabs(veh.latAccelCommand) > 0.0) veh.latAccelCommand = 0.0;
+        const f64 half = e.lanes * kLaneWidth * 0.5 - 0.2;
+        veh.lateral = std::clamp(veh.lateral, -half, half);
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Two-wheeler flow field (Boids: separation strong, alignment present,
+//  cohesion ~ 0) on a 200 ms update with a 20 m broadphase
+// -----------------------------------------------------------------------------
+void Traffic::twoWheelerField(f64 dt) {
+    m_boidsAccum += dt;
+    if (m_boidsAccum < m_boids.updateSeconds) return;
+    m_boidsAccum = 0.0;
+
+    // Broadphase: 16 x 20 m buckets per edge, reused every update so that the
+    // field never allocates while the city is running.
+    for (std::vector<u32>& b : m_buckets) b.clear();
+    for (u32 i = 0; i < m_vehicles.size(); ++i) {
+        const Vehicle& v = m_vehicles[i];
+        const u32 cell = static_cast<u32>(std::max<f64>(0.0, v.s) / m_boids.broadphaseMetres);
+        m_buckets[v.edge * kBucketsPerEdge + std::min(cell, kBucketsPerEdge - 1)].push_back(i);
+    }
+
+    for (u32 i = 0; i < m_vehicles.size(); ++i) {
+        Vehicle& veh = m_vehicles[i];
+        const ArchetypeSpec& spec = archetypeSpec(veh.kind);
+        if (!spec.twoWheeler) continue;
+        const SimEdge& e = m_edges[veh.edge];
+        const u32 home = std::min(static_cast<u32>(std::max<f64>(0.0, veh.s) / m_boids.broadphaseMetres),
+                                  kBucketsPerEdge - 1);
+
+        f64 sepLateral = 0.0, align = 0.0, cohesion = 0.0;
+        u32 n = 0;
+        for (i32 c = -1; c <= 1; ++c) {
+            const i64 cell = static_cast<i64>(home) + c;
+            if (cell < 0 || cell >= static_cast<i64>(kBucketsPerEdge)) continue;
+            for (u32 j : m_buckets[veh.edge * kBucketsPerEdge + static_cast<u32>(cell)]) {
+                if (j == i) continue;
+                const Vehicle& other = m_vehicles[j];
+                const f64 ds = other.s - veh.s;
+                const f64 dl = other.lateral - veh.lateral;
+                const f64 d2 = ds * ds + dl * dl;
+                if (d2 > m_boids.broadphaseMetres * m_boids.broadphaseMetres) continue;
+                // Separation is about bodies riding side by side: it applies
+                // when the two machines overlap lengthwise, and it pushes them
+                // apart laterally.  A machine 40 m up the road is not a
+                // separation problem, however close its lane is.
+                const f64 lonReach = 0.5 * (veh.length + other.length) + 1.5;
+                if (std::fabs(ds) < lonReach) {
+                    const f64 want = 0.5 * (spec.width + archetypeSpec(other.kind).width) + 0.9;
+                    if (std::fabs(dl) < want) {
+                        sepLateral += -((dl >= 0.0) ? 1.0 : -1.0) * ((want - std::fabs(dl)) / want);
+                        ++m_separationEvents;
+                    }
+                }
+                align += other.v;
+                cohesion += dl;
+                ++n;
+            }
+        }
+
+        const f64 limit = std::max(4.0, static_cast<f64>(e.limit) / 3.6);
+        f64 steer = 0.0;
+        if (n > 0) {
+            steer = m_boids.separation * (sepLateral / static_cast<f64>(n)) +
+                    m_boids.alignment * ((align / static_cast<f64>(n)) - veh.v) / limit * 0.5 +
+                    m_boids.cohesion * (cohesion / static_cast<f64>(n));
+        }
+        // Hold them inside the carriageway: a two-wheeler may use the whole
+        // width of the road, and no more.
+        const f64 half = e.lanes * kLaneWidth * 0.5 - 0.7;
+        if (std::fabs(veh.lateral) > half)
+            steer += (veh.lateral > 0.0 ? -1.0 : 1.0) * m_boids.boundary * 0.6;
+        // A derivative term: without it the field oscillates around its wanted
+        // separation instead of settling on a line.
+        veh.latAccelCommand = steer * 6.0 - veh.lateralVel * 0.6;
+        ++m_boidsUpdates;
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Fares: a kaali-peeli stops when hailed
+// -----------------------------------------------------------------------------
+void Traffic::faresAndQueues(f64 dt) {
+    for (Vehicle& veh : m_vehicles) {
+        const ArchetypeSpec& spec = archetypeSpec(veh.kind);
+        if (!spec.canHail) continue;
+        const SimEdge& e = m_edges[veh.edge];
+        if (veh.hailing) {
+            veh.hailTimer -= dt;
+            // Pulled in to the kerb.  Mumbai drives on the left, so the kerb is
+            // to the left of the direction of travel.
+            veh.lateral = std::max(-(e.lanes * kLaneWidth * 0.5 - 0.6),
+                                   laneOffset(veh.lane, e.lanes) - 0.8);
+            if (veh.hailTimer <= 0.0) {
+                veh.hailing = false;
+                veh.hailTimer = 60.0 + rng01() * 540.0;    // cool-down
+            }
+            continue;
+        }
+        if (veh.hailTimer > 0.0) { veh.hailTimer -= dt; continue; }
+        // On average one hail per taxi per ten simulated minutes: 1/600 per
+        // second, drawn per tick at dt/600.
+        if (rng(1000000u) < static_cast<u32>(dt * 1000000.0 / 600.0)) {
+            veh.hailing = true;
+            veh.hailTimer = 6.0 + rng01() * 8.0;
+            ++m_hailStops;
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Leave edges, queue at junctions, and re-enter
+// -----------------------------------------------------------------------------
+void Traffic::advanceEdges() {
+    // Phase A: take out everything that finished its edge.  Erasing from the lane
+    // lists only after the vehicle is recorded keeps the lists consistent while
+    // they are being walked.
+    m_arrived.clear();
+    for (SimEdge& e : m_edges) {
+        const u32 edgeIndex = static_cast<u32>(&e - m_edges.data());
+        for (u16 l = 0; l < e.lanes; ++l) {
+            std::vector<u32>& list = e.laneVehicles[l];
+            for (size_t k = 0; k < list.size();) {
+                if (m_vehicles[list[k]].s < e.length) { ++k; continue; }
+                m_arrived.push_back(Arrival{list[k], edgeIndex, l});
+                list.erase(list.begin() + static_cast<long>(k));
+            }
+        }
+    }
+
+    // Phase B: send each arrival somewhere.  A junction that cannot accept it
+    // holds it at the end of its edge — which is what a blocked junction does to
+    // a city.
+    for (const Arrival& a : m_arrived) {
+        Vehicle& veh = m_vehicles[a.idx];
+        const SimEdge& from = m_edges[a.edge];
+        SimEdge& src = m_edges[a.edge];
+        ++m_edgeCompletions;
+        if (m_signalOfEdge[a.edge] != kNoSignal) ++m_signalCrossings;
+        const SimNode& node = m_nodes[from.to];
+
+        if (node.out.empty()) {
+            // A dead end.  Hold at the end of the edge, unless the far end of the
+            // same edge is clear, in which case the arrival re-enters there: a
+            // closed corridor keeps circulating, which is a population device and
+            // is documented as one (the pipeline's nav graph is a set of chains
+            // until junction connectivity lands, so every chain end is a dead end
+            // today).
+            bool clear = true;
+            for (u32 other : src.laneVehicles[a.lane])
+                if (m_vehicles[other].s < veh.length + 3.0) { clear = false; break; }
+            if (clear) {
+                veh.s = kMinGap;
+                veh.v = std::min(veh.v, 6.0);
+                veh.obstruction = 1e18;
+                veh.lateral = laneOffset(veh.lane, src.lanes);
+                if (archetypeSpec(veh.kind).twoWheeler) veh.lateral += (rng01() - 0.5) * 2.0;
+                insertSorted(src.laneVehicles[a.lane], a.idx);
+            } else {
+                placeHeld(veh, src, a.lane, from.length);
+                ++m_deadEndHolds;
+                insertSorted(src.laneVehicles[a.lane], a.idx);
+            }
+            continue;
+        }
+
+        // Demand-fixed population: a vehicle that leaves the dense corridor is
+        // replaced by an arrival at its far end, which holds the fleet without
+        // inventing an origin-destination matrix.
+        if (!m_denseEdges.empty() &&
+            (node.p - m_denseAnchor).lengthSq() > m_denseRadius * m_denseRadius) {
+            const u32 reentry = m_denseEdges[m_turn++ % m_denseEdges.size()];
+            SimEdge& re = m_edges[reentry];
+            const f64 spare = re.length - veh.length - 3.0;
+            const u16 lane = static_cast<u16>(m_turn % re.lanes);
+            const f64 cand = kLaneWidth * 0.5 + static_cast<f64>((m_turn % 5) * kLaneWidth);
+            if (spare > 0.5 && cand <= spare &&
+                laneEntryClear(re, lane, cand, veh.length, archetypeSpec(veh.kind).width)) {
+                veh.edge = reentry;
+                veh.lane = lane;
+                veh.lateral = laneOffset(lane, re.lanes);
+                veh.lateralVel = 0.0;
+                veh.latAccelCommand = 0.0;
+                veh.s = cand;
+                veh.v = std::min(veh.v, 8.0);
+                insertSorted(re.laneVehicles[lane], a.idx);
+                continue;
+            }
+        }
+
+        const u32 next = node.out[m_turn++ % node.out.size()];
+        SimEdge& ne = m_edges[next];
+        const u16 lane = static_cast<u16>(std::min<u32>(a.lane, ne.lanes - 1));
+        const f64 entry = std::max(0.0, veh.s - from.length);
+        if (!laneEntryClear(ne, lane, entry, veh.length, archetypeSpec(veh.kind).width)) {
+            placeHeld(veh, src, a.lane, from.length);  // hold at the junction
+            veh.v = std::min(veh.v, 1.0);
+            ++m_signalStops;
+            insertSorted(src.laneVehicles[a.lane], a.idx);
+            continue;
+        }
+        veh.edge = next;
+        veh.lane = lane;
+        veh.lateral = laneOffset(lane, ne.lanes);
+        veh.lateralVel = 0.0;
+        veh.latAccelCommand = 0.0;
+        if (archetypeSpec(veh.kind).twoWheeler) {
+            const f64 half = ne.lanes * kLaneWidth * 0.5 - 0.5;
+            veh.lateral = std::clamp(veh.lateral + (rng01() - 0.5) * 2.0, -half, half);
+        }
+        veh.s = entry;
+        insertSorted(ne.laneVehicles[lane], a.idx);
+    }
+}
+
+// -----------------------------------------------------------------------------
+//  Public step
+// -----------------------------------------------------------------------------
+void Traffic::step(f64 dt) {
+    leadersAndSignals();
+    longitudinal(dt);
+    laneChanges(dt);
+    twoWheelerField(dt);
+    lateralDynamics(dt);
+    faresAndQueues(dt);
+    advanceEdges();
+    m_time += dt;
+}
+
+void Traffic::audit(f64 minX, f64 maxX, f64 minZ, f64 maxZ) {
+    // Structural invariants, checked against the world rather than trusted: no
+    // two vehicles in one lane may sit closer than the floor, and every vehicle
+    // must be inside the world's extent.
+    for (const SimEdge& e : m_edges) {
+        for (u16 l = 0; l < e.lanes; ++l) {
+            const std::vector<u32>& list = e.laneVehicles[l];
+            for (size_t k = 1; k < list.size(); ++k) {
+                const Vehicle& behind = m_vehicles[list[k - 1]];
+                const Vehicle& ahead = m_vehicles[list[k]];
+                if (ahead.s < behind.s) { ++m_laneViolations; continue; }
+                if (std::fabs(ahead.lateral - behind.lateral) >
+                    0.5 * (archetypeSpec(ahead.kind).width + archetypeSpec(behind.kind).width))
+                    continue;                      // riding abreast, not in the way
+                if (ahead.s - ahead.length - behind.s < kMinGap - 1e-6) ++m_laneViolations;
+            }
+        }
+    }
+    for (const Vehicle& veh : m_vehicles) {
+        if (!std::isfinite(veh.s) || !std::isfinite(veh.v) || !std::isfinite(veh.lateral)) {
+            ++m_badState;
+            continue;
+        }
+        const ArchetypeSpec& spec = archetypeSpec(veh.kind);
+        if (veh.v < -0.01 || veh.v > spec.topSpeedKph / 3.6 * 1.4 + 0.5) { ++m_badSpeed; continue; }
+        const Vec2d p = positionOf(veh);
+        if (p.x < minX - 1 || p.x > maxX + 1 || p.y < minZ - 1 || p.y > maxZ + 1) ++m_badPosition;
+    }
+}
+
+TrafficMetrics Traffic::metrics(const Vec2d& camera, f64 radius) const {
+    TrafficMetrics m;
+    m.vehicles = m_vehicles.size();
+    m.edges = m_edges.size();
+    m.nodes = m_nodes.size();
+    m.signals = m_signals.size();
+    for (const SimEdge& e : m_edges) m.lanesTotal += e.lanes;
+    f64 sum = 0.0;
+    size_t crawl = 0;
+    const f64 r2 = radius * radius;
+    for (const Vehicle& v : m_vehicles) {
+        sum += v.v;
+        if (v.v < 1.4) ++crawl;
+        ++m.archetypeCount[static_cast<int>(v.kind)];
+        if ((positionOf(v) - camera).lengthSq() <= r2) ++m.nearCamera;
+    }
+    m.meanSpeedKph = m_vehicles.empty() ? 0.0 : sum / m_vehicles.size() * 3.6;
+    m.crawlShare = m_vehicles.empty() ? 0.0 : static_cast<f64>(crawl) / m_vehicles.size();
+    m.minGap = m_minGap;
+    m.deadEndHolds = m_deadEndHolds;
+    m.laneChanges = m_laneChanges;
+    m.laneChangeRefusals = m_laneChangeRefusals;
+    m.edgeCompletions = m_edgeCompletions;
+    m.signalStops = m_signalStops;
+    m.signalCrossings = m_signalCrossings;
+    m.boidsUpdates = m_boidsUpdates;
+    m.separationEvents = m_separationEvents;
+    m.tipLimits = m_tipLimits;
+    m.hailStops = m_hailStops;
+    m.hardBrakes = m_hardBrakes;
+    m.badState = m_badState;
+    m.badSpeed = m_badSpeed;
+    m.badPosition = m_badPosition;
+    m.laneViolations = m_laneViolations;
+    m.maxLateralG = m_maxLateralG;
+    return m;
+}
+
+}  // namespace mumbai::sim
