@@ -448,3 +448,124 @@ TEST(openBoundaryKeepsTheDomainEdgeFromPonding) {
     CHECK(edgeOutlets > 0);
     CHECK_NEAR(s.filled[10 * 20 + 10], 2.0 + 9 * 1.5, 1e-3);   // centre untouched
 }
+
+TEST(aSlopeShedsItsRainInsteadOfHoldingIt) {
+    // The counterpart to the ponding test, and the one the monsoon model needed
+    // most: ground that slopes must get rid of its water.  A city where every
+    // slope holds its rainfall is not a city with bad drainage, it is a model
+    // with no conveyance, and it shows up as half a metre of water on the
+    // ridges during a burst — which is exactly what the real Mumbai run did
+    // before the routing was sub-stepped.
+    //
+    // 2.5 % down to the east edge, no drains, no tide: everything that falls
+    // must reach the boundary, because that is the only thing that can happen.
+    // The whole grid stays well above the water plane on purpose — land below
+    // it is a different case (a polder that cannot drain into a higher sea), and
+    // mixing the two is how a test stops measuring what it claims to.
+    const terrain::Heightfield hf = makeGrid(40, 40, kStep, [](u32 i, u32) {
+        return 12.0 - i * 0.025 * kStep * 0.5;    // 12.0 m down to 2.25 m
+    });
+    hydro::SurfaceOptions opt;
+    opt.openBoundaries = true;
+    const hydro::Surface s = hydro::buildSurface(hf, opt);
+
+    hydro::LandSpec land;
+    land.resize(s.cellCount(), 0.55f);            // half-paved suburb, no drains
+    hydro::StormSpec storm;
+    storm.name = "slope-test";
+    storm.rainMmPerHour.assign(6, 90.0);          // a monsoon burst, 90 mm/h
+    storm.tideAmplitude = 0.0;
+    storm.stepSeconds = 300.0;
+    storm.initialLossMm = 0.0;
+    const hydro::FloodResult r = hydro::simulate(s, land, storm, {});
+
+    // Runoff leaves the domain and is booked as outfall, so the water that is
+    // still on the ground at the end is what the surface failed to shed.
+    const f64 retained = r.storedM3 / std::max(1.0, r.rainfallM3);
+    f64 deepest = 0.0;
+    for (size_t k = 0; k < r.maxDepth.size(); ++k)
+        deepest = std::max(deepest, static_cast<f64>(r.maxDepth[k]));
+
+    CHECK(r.rainfallM3 > 0.0);
+    CHECK(r.outfallM3 > r.rainfallM3 * 0.9);      // it drains, and promptly
+    CHECK(retained < 0.05);                       // under 5 % left standing
+    CHECK(deepest < 0.05);                        // never more than a thin spate
+
+    // Report the numbers when this fails: "how much water, how deep" is the
+    // whole diagnosis, and a bare false tells the next reader nothing.
+    if (!(retained < 0.05) || !(deepest < 0.05)) {
+        size_t at = 0, over = 0;
+        for (size_t k = 0; k < r.maxDepth.size(); ++k) {
+            if (r.maxDepth[k] > r.maxDepth[at]) at = k;
+            if (r.maxDepth[k] > 0.15f) ++over;
+        }
+        std::printf("      retained %.4f (%.1f of %.1f m3), deepest %.3f m at (%u,%u) "
+                    "ground %.2f, %zu cells over 15 cm; outfall %.1f m3, drained %.1f m3\n",
+                    retained, r.storedM3, r.rainfallM3, deepest,
+                    static_cast<u32>(at % 40), static_cast<u32>(at / 40),
+                    static_cast<double>(s.ground[at]), over, r.outfallM3, r.drainedM3);
+    }
+}
+
+TEST(pavedStreetsCarryWaterThatRoughGroundHolds) {
+    // The decision behind the flood model's conveyance term (D-026): a street is
+    // graded to its kerb line and connected to a drain, so even a nearly flat
+    // street moves water that open ground of the same slope holds.  Two runs on
+    // the same almost-flat shelf, differing only in whether the middle row is a
+    // paved street: the paved case must shed measurably more.
+    const auto shelf = []() {
+        return makeGrid(30, 30, kStep, [](u32 i, u32) {
+            return 9.0 - i * 0.0002 * kStep;      // 0.02 % fall to the east
+        });
+    };
+    hydro::SurfaceOptions opt;
+    opt.openBoundaries = true;
+    const hydro::Surface s = hydro::buildSurface(shelf(), opt);
+
+    const auto run = [&](bool paved) {
+        hydro::LandSpec land;
+        land.resize(s.cellCount(), 0.45f);
+        for (size_t k = 0; k < land.roughness.size(); ++k)
+            land.roughness[k] = 0.10f;                    // open ground
+        if (paved) {
+            for (u32 i = 0; i < s.width; ++i) {
+                const size_t k = 15 * s.width + i;        // the street row
+                land.roughness[k] = 0.016f;               // asphalt with gutters
+                land.drainNetwork[k] = 1;
+                land.designFlow[k] = 0.002f;              // m3/s of design flow
+            }
+        }
+        hydro::StormSpec storm;
+        storm.name = paved ? "paved" : "rough";
+        storm.rainMmPerHour.assign(4, 120.0);
+        storm.tideAmplitude = 0.0;
+        storm.stepSeconds = 300.0;
+        storm.initialLossMm = 0.0;
+        return hydro::simulate(s, land, storm, {});
+    };
+
+    const hydro::FloodResult rough = run(false);
+    const hydro::FloodResult paved = run(true);
+    CHECK(rough.storedM3 > 0.0);
+
+    // Two measurements, and the sign of the first is the whole point: a street
+    // with a drain is a *conduit*, so the street row runs deeper than open
+    // ground does — that is what concentrating flow means — while the shelf as a
+    // whole holds less water.  (Measured: 0.042 m in the street against 0.035 m
+    // on the same row of rough ground, with 8,571 m³ left on the shelf against
+    // 9,397 m³.)  A test that expected the street itself to be drier would be
+    // testing the wrong model.
+    const auto rowMean = [](const hydro::FloodResult& r) {
+        f64 sum = 0.0;
+        for (u32 i = 0; i < 30; ++i) sum += r.maxDepth[15 * 30 + i];
+        return sum / 30.0;
+    };
+    const f64 roughRow = rowMean(rough), pavedRow = rowMean(paved);
+    if (!(paved.storedM3 < rough.storedM3))
+        std::printf("      street row mean depth: rough %.4f m, paved %.4f m; "
+                    "stored rough %.0f m3, paved %.0f m3\n",
+                    roughRow, pavedRow, rough.storedM3, paved.storedM3);
+    CHECK(pavedRow > roughRow);                        // the street carries the flow
+    CHECK(paved.storedM3 < rough.storedM3);            // so the shelf holds less
+    CHECK(paved.outfallM3 > rough.outfallM3);
+}

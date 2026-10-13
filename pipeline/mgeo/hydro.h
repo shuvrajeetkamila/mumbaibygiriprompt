@@ -88,7 +88,10 @@ struct Surface {
     // that is under water twice a day, and it hides the real signal behind it.
     std::vector<u8>  isTidalInlet;
 
-    std::vector<u32> order;       // priority-flood settling order (outlet = 0)
+    std::vector<u32> order;
+    // How many cells were raised by DEM conditioning, for the QA record.
+    u64 pitsCarved = 0;
+    f64 pitFillMaxM = 0.0;       // priority-flood settling order (outlet = 0)
 
     size_t cellCount() const { return static_cast<size_t>(width) * height; }
     i64 indexOf(f64 x, f64 z) const {
@@ -107,6 +110,21 @@ struct Surface {
 
 struct SurfaceOptions {
     f64 seaLevel = 0.0;
+    // --- DEM conditioning ----------------------------------------------------
+    // Priority-flood fill, then carve out the pits that needed less than this
+    // much fill.  A 32 m sampling of a real city surface is full of closed
+    // micro-depressions: the terrain synthesis carries 2.4 m of fractal detail,
+    // and sampling that at 32 m leaves thousands of pits of a few decimetres,
+    // each of which holds a pond for ever.  Measured on the 26 July 2005
+    // analogue: 128 of 149 km² of ground above 10 m was under more than 15 cm of
+    // water, spread evenly over the city instead of pooling in the low ground —
+    // the signature of a model drowning in its own noise.  Filling shallow pits
+    // is standard hydrological conditioning and it is what makes the *authored*
+    // depressions (below) the only places that hold water on high ground.
+    f64 pitFillDepth = 0.0;        // 0 disables; the city run sets 2.0 m
+    // A depression that is known to exist is never conditioned away.  The
+    // terrain's authored bowls (ControlPoint::flat) assert themselves here.
+    std::function<bool(const Vec2d&)> keepDepression;
     // Height at least this far below the water plane marks open water.  The
     // value is not arbitrary: buildTerrain floors *land* at seaLevel - 0.75 and
     // deepens open water from seaLevel - 1.5 downwards, so 1.1 m is the

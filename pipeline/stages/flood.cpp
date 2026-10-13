@@ -151,6 +151,19 @@ bool buildFloodModel(Context& ctx) {
                                                ctx.extent.min.y + j * step);
 
     hydro::SurfaceOptions sopt;
+    // Condition the DEM before routing it (D-026).  Shallow closed depressions
+    // are an artefact of sampling a rough surface at 32 m — each one holds a
+    // pond for ever, and together they were putting 128 km² of the 149 km² of
+    // ground above 10 m under water in the 2005 analogue, spread evenly over
+    // the city instead of pooling in its low ground.  The four authored
+    // depressions are exempt: those are the places the city actually floods.
+    sopt.pitFillDepth = ctx.cfg.pitFillDepth;
+    sopt.keepDepression = [&ctx](const Vec2d& p) {
+        for (const terrain::ControlPoint& cp : ctx.controlPoints) {
+            if (cp.flat && (p - cp.position).length() <= cp.radius) return true;
+        }
+        return false;
+    };
     sopt.seaLevel = ctx.cfg.seaLevel;
     sopt.openBoundaries = true;
     const hydro::Surface surface = hydro::buildSurface(hf, sopt);
@@ -160,6 +173,10 @@ bool buildFloodModel(Context& ctx) {
             if (!surface.isSea[k] && !surface.isBoundary[k]) ++landCells;
         ctx.stats.landAreaKm2 = landCells * surface.cellArea() / 1e6;
     }
+    MLOG_INFO("flood: DEM conditioned — %llu cells raised (deepest %.2f m)",
+              (unsigned long long)surface.pitsCarved, surface.pitFillMaxM);
+    ctx.qa.add("flood.pitsCarved", static_cast<f64>(surface.pitsCarved));
+    ctx.qa.add("flood.pitFillMaxM", surface.pitFillMaxM);
     MLOG_INFO("flood: surface %u x %u, %zu sea cells, %zu channel cells, %zu shore cells",
               surface.width, surface.height,
               static_cast<size_t>(std::count(surface.isSea.begin(), surface.isSea.end(), (u8)1)),

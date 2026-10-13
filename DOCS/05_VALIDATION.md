@@ -14,7 +14,7 @@ the last full run.
 
 ### 1. Unit suite — `build/bin/mumbai_tests`
 
-35 cases, 469 checks, **0 failing**. It brings its own harness (D-014) and
+37 cases, 477 checks, **0 failing**. It brings its own harness (D-014) and
 covers the parts a wrong answer stays quiet about:
 
 * the projection frame (0.001° latitude = 110.70 m, longitude = 105.28 m at
@@ -27,13 +27,17 @@ covers the parts a wrong answer stays quiet about:
   detection (the test flips a byte at `section.offset + section.size/2` — a
   flip inside alignment padding would prove nothing);
 * winding, polygon-with-holes behaviour, JSON;
-* the monsoon hydrology (10 cases): priority flooding puts every interior
+* the monsoon hydrology (12 cases): priority flooding puts every interior
   minimum at its spill level; watersheds partition the terrain; a depression
   ponds instead of draining; rainfall + tide flood closes against drainage +
   outfall + stored film to 10⁻⁹; a spring tide is worse than a neap one for the
-  same rain; and **the sea wall holds the open coast while the creek mouths
-  admit the tide** — the boundary condition that keeps the model from drowning
-  the city twice a day.
+  same rain; **a slope sheds its rain instead of holding it** (the case that was
+  failing when the routing was throttled by its own time step); **a paved street
+  carries water that the same ground holds when it is rough** (measured on the
+  street row: 0.042 m of flowing water against 0.035 m standing, and 8,571 m³
+  left on the shelf against 9,397 m³); and **the sea wall holds the open coast
+  while the creek mouths admit the tide** — the boundary condition that keeps the
+  model from drowning the city twice a day.
 
 ### 2. Runtime validation — `build/bin/mumbai_sim`
 
@@ -107,7 +111,7 @@ the pinned hashes).
 | 3 | landmarks recognisable at 100 m, unlabelled | partly met | correct massing and, after the detail pass, 14,736 triangles across five assets (Gateway 1,750, Taj 4,500, CSMT 1,762, Sea Link 6,324, Marine Drive 400). The specification's budgets (500k / 800k / 1.2M / 300k per pylon / 50k per building) are unmet — declared, not concealed (D-022) |
 | 4 | zero vertex jitter at 4 corners + centre | **met** | unit test (1 mm survives, tol 2e-4) and 105 live crossings at 0.00e+00 m |
 | 5 | ≥500 vehicles in a 500 m radius at 30 FPS | CPU-side met | 545 measured; frame CPU p99 0.12 ms. The GPU frame is not measurable here |
-| 6 | weather and ocean valid | partly met | **monsoon hydrology is built and verified** (D-026): two design storms on a 705 × 1345 hydrology grid, mass balance closed to 8 × 10⁻³ m³ on 2.3 × 10⁸ m³ of rain, published peak-depth rasters, and the specification's own sites (Hindmata, King's Circle, Andheri subway) flooding as an emergent consequence of the DEM. GPU rain, wetness shading, Gerstner ocean and scattering remain specified-not-built in `04_RUNTIME.md` |
+| 6 | weather and ocean valid | partly met | **monsoon hydrology is built and verified** (D-026): two design storms on a 705 × 1345 hydrology grid, mass balance closed to 10⁻¹⁰ relative, published peak-depth rasters for both storms, and the specification's own sites (Hindmata 289 mm, King's Circle 283 mm, Andheri subway 376 mm in the 2005 analogue; Marine Drive dry in both) flooding as an emergent consequence of the DEM. GPU rain, wetness shading, Gerstner ocean and scattering remain specified-not-built in `04_RUNTIME.md` |
 | 7 | 30 FPS worst case (monsoon + traffic + South Bombay) | **not verifiable here** | needs a device; no GPU in the build environment |
 | 8 | ≤160 GB installed | met at this tier | 686 MB of chunks for 968.9 km²; scales with hero density and texture budget, both of which are currently far below the specification's |
 | 9 | 60-minute continuous run, zero crashes | **met** | `mumbai_sim`, 216,000 ticks, exit 0 |
@@ -138,12 +142,15 @@ hardware this environment does not have (D-001).
    longitudinal layer they build on is implemented and validated (D-015).
 4. **Terrain accuracy** is bounded by the authored control points until a real
    DEM is supplied (D-006).
-5. **Flood depths at named sites are uncalibrated.** The DEM is synthesised from
-   published control points (D-006), so the depths are the shape of the event,
-   not a survey: the model reproduces *where* and *in what order* Mumbai floods
-   at 32 m resolution, and its absolute depths carry that resolution's error.
-   Calibration would need gauge records and a real DEM, both outside this
-   environment. The GPU weather stack (rain, wetness, ocean) is still design.
+5. **Flood depths are uncalibrated and the conveyance is parameterised.** The
+   DEM is synthesised from published control points (D-006), so the site depths
+   in D-026 are the shape of the event, not a survey, and at 32 m a diffusive
+   sheet stands in for a pipe network that in reality moves much more water per
+   unit width. What the model does claim, and what the suite checks, is *where*
+   and *in what order* Mumbai floods: the low ground floods, the hills do not,
+   and the named sites fill and empty in the right sequence. Calibration would
+   need gauge records and a real DEM via `--dem`. The GPU weather stack (rain,
+   wetness, ocean) is still design.
 6. **Building footprint counts (164k)** are dominated by synthetic parcels
    (163,909 synthetic against 148 OSM structures); the surveyed/synthetic tags
    keep them separable, but the real building count for Mumbai is ~200k+ and

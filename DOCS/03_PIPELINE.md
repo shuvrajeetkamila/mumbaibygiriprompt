@@ -22,7 +22,7 @@ mumbai_pipeline --report data/processed/world_manifest.json     # print a finish
 | 8 | `buildBuildings` | `fabric.cpp` | zone grammar over every footprint: height from tags or ward rule, shops band, walls, roof/parapet, LOD1/2/3, collision box(es), AO | `cd.buildings[4]`, `cd.collision`, `cd.proxies` |
 | 9 | `buildProps` | `fabric.cpp` | rooftop tanks and AC units, cable tangles, streetlamps along the nav graph, trees in green polygons, parked two-wheelers | `cd.instances` |
 | 10 | `buildHeroAssets` | `hero.cpp` | Gateway of India, Taj Mahal Palace, CSMT, Bandra–Worli Sea Link, Marine Drive | `cd.hero` |
-| 10b | `buildFloodModel` | `stages/flood.cpp` + `mgeo/hydro.cpp` | the monsoon flood model (D-026): builds the hydrology surface from the terrain grid (sea, boundary, shore, tidal inlet, D8, accumulation, watershed, channels), rasterises coverage from the nav graph, building proxies and landuse, then runs the moderate and severe design storms and publishes both peak-depth rasters | `ctx.floodSevere`, `ctx.floodModerate`, `flood.*` QA counters |
+| 10b | `buildFloodModel` | `stages/flood.cpp` + `mgeo/hydro.cpp` | the monsoon flood model (D-026): conditions the DEM, builds the hydrology surface (sea, boundary, shore, tidal inlet, D8, accumulation, watershed, channels), rasterises coverage from the nav graph, building proxies and landuse, then runs the routine and the 2005-analogue design storms and publishes both peak-depth rasters | `ctx.floodSevere`, `ctx.floodModerate`, `flood.*` QA counters |
 | 11 | `writeChunks` | `output.cpp` | serialises every cell, hashes every section, re-opens every file and verifies | 924 chunks + QA counters |
 | 12 | `writeManifest` | `output.cpp` | the machine-readable build record: extent, projection, cell list, totals, zones, surfaces, drainage basins, QA | `world_manifest.json` |
 | 13 | `exportViewer` + `finaliseQa` | `export.cpp` | re-reads every chunk through the runtime reader and packs the viewer payload; then publishes the finished QA report to both JSON files | `viewer/data/mumbai.{bin,json}` |
@@ -142,7 +142,7 @@ floats off a roof.
 ## QA
 
 `QaReport` collects named counters, warnings and failures; a failure makes the
-process exit non-zero. The last build reports **153 counters, 0 warnings,
+process exit non-zero. The last build reports **155 counters, 0 warnings,
 0 failures**. Counters are the build's public record: geometry totals,
 per-stage timings, per-asset triangle counts, synthetic-versus-surveyed
 counts, and the corridor/hero self-descriptions (for example

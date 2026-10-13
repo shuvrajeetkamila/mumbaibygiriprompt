@@ -33,6 +33,9 @@ struct BuildConfig {
     std::string authoredDir = "data/authored";
     std::string outDir      = "data/processed";
 
+    // DEM conditioning for the hydrology (D-026): closed depressions needing
+    // less than this much fill are fills of the grid, not places water stands.
+    f64 pitFillDepth      = 2.0;
     f64 terrainResolution = 24.0;     // metres per heightfield sample
     f64 zoningResolution  = 100.0;    // metres per zoning raster cell
     f64 seaLevel          = 0.0;

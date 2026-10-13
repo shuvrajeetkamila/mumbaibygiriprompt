@@ -27,6 +27,8 @@ BuildConfig BuildConfig::fromJson(const Json& j) {
         c.seaLevel          = t["seaLevel"].asNumber(c.seaLevel);
     }
     if (j.has("zoning")) c.zoningResolution = j["zoning"]["resolutionMetres"].asNumber(c.zoningResolution);
+    // Hydrology: DEM conditioning depth for the flood model (D-026).
+    if (j.has("flood")) c.pitFillDepth = j["flood"]["pitFillDepth"].asNumber(c.pitFillDepth);
     if (j.has("seed")) c.seed = static_cast<u64>(j["seed"].asInt(static_cast<i64>(c.seed)));
     if (j.has("simplify")) {
         c.footprintSimplify = j["simplify"]["footprintMetres"].asNumber(c.footprintSimplify);

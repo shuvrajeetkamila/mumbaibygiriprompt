@@ -452,104 +452,126 @@ recovery path is printed by the guard itself.
 
 ---
 
-## D-026 — Monsoon hydrology: a level-controlled sea, a walled coast, and a
-## drainage network with a capacity
+## D-026 — Monsoon hydrology: a walled coast, a conditioned DEM, and streets
+## that carry their catchment
 
 **Decided.** Section 3's flood model (`pipeline/mgeo/hydro.{h,cpp}`,
-`pipeline/stages/flood.cpp`) is a priority-flood-filled surface with D8 flow
-directions, Manning routing on a 32 m grid, two design storms and an explicit
-mass balance. Its boundary and conveyance choices:
+`pipeline/stages/flood.cpp`) rides on a hydrologically conditioned surface: a
+priority flood, D8 flow directions, accumulation, watersheds and channels, then
+two design storms routed with Manning's equation on a 32 m grid, with an
+explicit mass balance. The choices that determine the answer:
 
-1. **The sea is a level-controlled boundary, never a routing source.** Each
-   step the sea surface is set to the tide; the exchange is booked
-   (`tideExchangeM3`) and no flux ever leaves a sea cell. Routing from an
-   infinite reservoir with no storage limit behind it is unbounded, is
-   step-order dependent, and — measured — overshot cell depths by three orders
-   of magnitude in one step and pushed 2.5 × 10¹¹ m³ through the books.
-2. **The open coast is walled; the tide enters through creek mouths.** Mumbai's
-   sea face is an embankment from Colaba to Dahisar. A shore cell is lifted to
-   the tide only if it fronts a *narrow* water body — a creek, nullah or
-   backwater, detected as a sea fraction below 0.55 in a centred 9 × 9 window —
-   or if the tide exceeds the sea wall crest (`seawallCrest = 4.0 m`, MCGM's
-   post-2005 crown). Without this the whole western lowland is under water twice
-   a day, which is not a model of Mumbai but of an unprotected delta.
+1. **The sea is a level-controlled boundary, never a routing source.** Each step
+   the sea surface is set to the tide and the exchange is booked
+   (`tideExchangeM3`); no flux ever leaves a sea cell. Routing from an infinite
+   reservoir is unbounded and step-order dependent, and measured, it pushed
+   2.5 × 10¹¹ m³ through the books in a single storm.
+2. **The open coast is walled; the tide comes in through creek mouths.** Mumbai
+   is embanked from Colaba to Dahisar. A shore cell is lifted to the tide only if
+   it fronts a *narrow* water body — a creek, nullah or mangrove channel, taken
+   as a sea fraction below 0.55 in a centred 9 × 9 window — or if the tide
+   overtops the sea wall (`seawallCrest = 4.0 m`). Without this the whole western
+   lowland is under water twice a day, which models an unprotected delta, not
+   Mumbai.
 3. **Below-datum land is behind the shore line, not on it.** Cells the DEM holds
    at or below `landFloor = −0.75 m` (reclamation, docks, marsh) are exempt from
-   the tidal lift; they flood from rain and by gravity, not by being levelled to
-   the sea.
-4. **Streets are the drainage network, and they have a capacity.** Roads are
-   marked as network cells with a design flow (60/35/14/8 mm/h by class × cell
-   area). The imposed gutter gradient — a street is graded to its kerb line, so
-   a flat sheet still has somewhere to go — is applied *only* to network cells,
-   *only* downhill, *only* where the priority flood did not have to raise the
-   cell (an impounded cell's water must reach its spill level first), and only
-   up to the drain's design flow. Above the design flow, Manning on the real
-   head governs, because a street with a metre of water on it moves that water.
-5. **Rainfall reaches the gutter, not the puddle.** Runoff from a cell is booked
-   to the first network cell on its downhill path, within `maxOutletWalk = 3`
-   cells (~100 m), or to the sea if that is where the path ends. A roof or a
-   courtyard is connected; a hillside is not teleported two kilometres to a road.
-6. **Routing is sub-stepped 8× within each five-minute weather step.** The
-   explicit scheme caps a cell's outflow at half of what it holds per step,
-   which at 300 s and 32 m cells throttled conveyance far below what Manning's
-   equation gives. Measured effect: the severe storm's wetted area fell from
-   449 km² to 365 km² and its >50 cm area from 273 km² to 145 km², and the
-   ridges stopped holding half a metre of water. This was a time-step artefact,
-   and it was the single largest error in the first working version.
+   the tidal lift; they flood from rain and by gravity.
+4. **The DEM is conditioned before routing.** `pitFillDepth = 2.0 m` raises every
+   cell whose priority-flood fill need is that small — these are closed
+   micro-depressions of the grid, not places water can stand, and each one holds
+   a pond for ever. Measured on the 2005 analogue before conditioning: 128 of the
+   149 km² of ground above 10 m was under more than 15 cm, spread evenly across
+   the city. That is a model drowning in its own noise instead of pooling in its
+   low ground, and it is the single most visible thing a reader would have
+   noticed. Deeper basins are left alone, and the four authored depressions
+   (below) are exempt from conditioning entirely.
+5. **Streets are the drainage network.** Road cells are network cells with the
+   standard design intensities (60 / 35 / 14 / 8 mm/h, motorway to service) and a
+   *conveyance* sized by the rational method — design intensity × contributing
+   area, from the flow-accumulation grid — because a drain is sized by its
+   catchment, not by the 1024 m² of road it sits under. The imposed gutter
+   gradient (`minDrainSlope = 0.0015`) is applied only to network cells, only
+   downhill, only where the priority flood did not have to raise the cell (an
+   impounded cell's water must reach its spill level first), and only up to the
+   design flow. Above that, Manning on the real head governs: a street with a
+   metre of water on it moves that water.
+6. **Rainfall reaches the gutter, not the puddle.** A cell's runoff is booked to
+   the first network cell on its downhill path, within `maxOutletWalk = 3` cells
+   (~100 m), or to the sea if that is where the path ends. A roof or a courtyard
+   is connected; a hillside is not teleported two kilometres to a road, which is
+   what an unbounded search did.
+7. **Outfalls are tide-locked, and that is the city's flood mechanism.** A
+   gravity outfall flows at full rate until the sea submerges it: the removal
+   capacity is derated by `clamp(1 − (tide − outfallInvert) / outfallDesignHead,
+   0.05, 1)` about an invert of 0.6 m and a design head of 1.6 m. This is what
+   makes the *same* rainfall harmless at low water and catastrophic at high
+   water, and it is why the design storms carry a spring tide.
+8. **Routing is sub-stepped 8× inside each five-minute weather step.** The
+   explicit scheme caps a cell's outflow at half of what it holds per step, which
+   at 300 s and 32 m cells throttled conveyance far below what Manning gives.
+   Measured effect on the severe storm: wetted area 449 → 379 km², area over
+   50 cm 273 → 133 km², and the ridges stopped holding half a metre of water.
+   This was a time-step artefact and it was the largest error in the first
+   working version.
 
-**Why.** The specification demands that Hindmata, King's Circle and the Andheri
-subway flood *as an emergent consequence of the DEM*. They do: no cell is
-special-cased at simulation time, and the model's own controls are the terrain,
-the road class, the tide and the rain. The published sites, severe / moderate
-storm peak depths:
+**The DEM had to be shaped, and that is a data decision.** Four control points
+in `data/authored/terrain_control_points.json` are marked `flat`: Hindmata
+(a former tank bed), King's Circle, and the Andheri and Milan subway trenches.
+Each gets a bowl cut explicitly — floor at the stated elevation, rim 1.6 m
+higher at its radius — and fractal detail damped inside it. A depression known
+to the metre is not something an interpolator invents from its neighbours, and
+2.4 m of fractal relief in the floor of a 350 m bowl is a leak: with it the model
+drained Hindmata to 25 mm, the "model drains the puddle it must predict"
+failure. Marine Drive stays dry in both storms on its own — the sea wall holds
+and the promenade is at 3.5 m.
 
-| site | severe (2005 analogue) | moderate (80 mm day) |
+**Named sites** (published peak depth, severe / moderate storm):
+
+| site | 26 July 2005 analogue | routine monsoon day |
 |---|---|---|
-| Hindmata junction | 268 mm | 286 mm |
-| King's Circle | 265 mm | 268 mm |
-| Andheri subway | 371 mm | 340 mm |
-| Milan subway | 630 mm | 538 mm |
-| BKC | 1902 mm | 1096 mm |
-| Chembur | 1172 mm | 3 mm |
+| Hindmata junction | 289 mm | 277 mm |
+| King's Circle | 283 mm | 288 mm |
+| Andheri subway | 376 mm | 377 mm |
+| Milan subway | 758 mm | 635 mm |
+| BKC | 1,710 mm | 1,010 mm |
+| Chembur | 341 mm | 3 mm |
 | Marine Drive | 0 mm | 0 mm |
 
-**The DEM had to be shaped, and that is a data decision, not a modelling one.**
-Four control points in `data/authored/terrain_control_points.json` are marked
-`flat`: Hindmata (a former tank bed), King's Circle, the Andheri subway and the
-Milan subway (both trenches). Each gets a bowl cut explicitly — floor at the
-stated elevation, rim 1.6 m higher at its radius — and the fractal detail is
-damped inside it (12 % of nominal, blended out over the radius). A depression
-known to the metre is not something an interpolator invents from its neighbours,
-and 2.4 m of fractal relief in the floor of a 350 m bowl is a leak: with it the
-model drained Hindmata to 25 mm, which is precisely the "model drains the puddle
-it must predict" failure. The two subways were also placed by their real
-locations; Marine Drive stays dry in both storms, on its own, because the sea
-wall holds and the promenade is at 3.5 m.
+The sites are read as a person there would read them: the deepest water in the
+junction cell and its eight neighbours, never a single pixel that the rain might
+have skipped. They are asserted, not merely reported — Hindmata, King's Circle
+and the Andheri subway must exceed 50 mm in the severe storm or the build fails,
+and Marine Drive warns above 500 mm, because the promenade is the control case.
+
+**Aggregates** (459.6 km² of modelled land): the routine monsoon day puts more
+than 15 cm on 20.7 % of ground below 6 m and 3.9 % of ground above 25 m; the
+2005 analogue puts more than 15 cm on 70.1 % and 40.1 % respectively. The
+routine day is the check that matters, because that contrast *is* Mumbai's flood
+geography; the 2005 analogue is 944 mm-in-a-day weather and the whole city is its
+floodplain, so its bar is that the flats are still clearly worse off than the
+hills. Both rasters travel in the viewer payload (`flood`, `floodModerate`;
+centimetres, 705 × 1345) and are drawn as standing water at ground + depth.
 
 **Mass balance.** Rainfall + tide flood = drainage + outfall + stored + retired
-film, closed to **0.008 m³** on 2.3 × 10⁸ m³ of rain (relative error 3 × 10⁻¹¹),
-asserted at 10⁻⁸ of rainfall in the stage and at 10⁻⁹ in the unit suite. Two
-terms had to be booked explicitly rather than silently dropped: rain on
-open-boundary cells (a 0.4 % leak) and the sub-millimetre film retired when a
-drying cell is snapped below `minDepth` (up to 105,000 m³ per storm, 0.3 % of
-rainfall; audited separately and failed above 0.5 %).
+film, closed to 1.5 × 10⁻³ m³ and 7.1 × 10⁻³ m³ on 3.6 × 10⁷ and 2.3 × 10⁸ m³ of
+rain — a relative error of 10⁻¹⁰ — and asserted at 10⁻⁸ of rainfall. Three terms
+had to be booked rather than silently dropped: rain on open-boundary cells, the
+sub-millimetre film retired as drying cells are snapped below `minDepth`
+(96,550 m³ = 0.27 % of rainfall in the moderate storm, audited and failed above
+0.5 %), and the water that legitimately leaves the surface through an outfall.
 
-**Known limits, recorded rather than papered over.** The severe storm puts more
-than 15 cm of water on 72 % of the ground below 6 m *and* on 42 % of the ground
-above 25 m, because a 2005 analogue is a whole-city event that leaves sheet flow
-even on the ridges. The routine monsoon day is the discriminating case: 28.5 %
-of the ground below 6 m is over 15 cm, against 7.8 % above 25 m, and both
-rasters are checked for that structure in `tests/verify_export.mjs`. At 32 m a
-diffusive sheet cannot represent a kerb line, and the published depths at named
-sites carry the DEM's own uncertainty — they are the *shape* of the event, not a
-survey. BKC's 1.9 m is the marsh basin filling with no holding pond in the
-model. Real DEMs (Cartosat-1, MCGM LiDAR) bypass the whole synthesis path via
-`--dem`, which is where calibration against gauge data would begin.
+**Known limits, recorded rather than papered over.** A 32 m diffusive sheet is
+not a pipe network: real trunk mains and nullahs move an order of magnitude more
+water per unit width than a cell of overland flow, and the rational-method
+conveyance term is a parameterisation of that, not a hydraulic model of it. The
+absolute depths therefore carry the DEM's own uncertainty (D-006: the terrain is
+synthesised from published control points, not surveyed) and the site table above
+is the *shape* of the event, not a gauge reading. BKC's 1.7 m is its marsh basin
+filling with no holding pond in the model. Calibration against gauge records
+would begin with a real DEM via `--dem`.
 
-**Cost.** The flood stage takes ~150 s of the ~200 s pipeline run (two storms,
-8 sub-steps, 0.95 M cells, 2 cores). Both peak-depth rasters are exported to the
-viewer (`flood`, `floodModerate`, centimetre units, capped at 255) and drawn as
-standing water at ground + depth, cycled with the **L** key.
+**Cost.** The flood stage is ~150 s of the ~200 s pipeline run: two storms,
+8 sub-steps, 0.95 M cells, two cores.
 
 ---
 

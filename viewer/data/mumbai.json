@@ -17,23 +17,23 @@
   "seaLevel": 0
  },
  "flood": {
-  "cellsOver50cm": 140493,
+  "cellsOver50cm": 128436,
   "height": 1345,
   "offset": 8359144,
   "peakCm": 255,
   "storm": "severe",
   "units": "cm",
-  "wetCells": 391289,
+  "wetCells": 398467,
   "width": 705
  },
  "floodModerate": {
-  "cellsOver50cm": 17003,
+  "cellsOver50cm": 14460,
   "height": 1345,
   "offset": 9307369,
   "peakCm": 255,
   "storm": "moderate",
   "units": "cm",
-  "wetCells": 210696,
+  "wetCells": 254670,
   "width": 705
  },
  "format": "mumbai-viewer-scene",
@@ -1251,7 +1251,7 @@
   "stride": 6
  },
  "qa": {
-  "counters": 153,
+  "counters": 155,
   "failures": 0,
   "passed": true,
   "warnings": 0

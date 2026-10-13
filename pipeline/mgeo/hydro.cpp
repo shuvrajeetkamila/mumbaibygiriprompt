@@ -189,6 +189,33 @@ Surface buildSurface(const terrain::Heightfield& hf, const SurfaceOptions& opts)
         }
     }
 
+    // --- DEM conditioning ----------------------------------------------------
+    // Shallow closed depressions are an artefact of sampling a rough surface on
+    // a 32 m grid, not places water can stand.  Every one of them holds a pond
+    // for ever, and measured on the 2005 analogue they were holding 128 km² of
+    // the 149 km² of ground above 10 m — a sheet spread evenly over the whole
+    // city, which is the signature of a model drowning in its own noise rather
+    // than pooling in its low ground.  Filling pits shallower than the threshold
+    // is standard hydrological conditioning; deeper basins are real, and an
+    // authored depression is never conditioned away at all.
+    if (opts.pitFillDepth > 0.0) {
+        f64 deepest = 0.0;
+        for (u32 j = 0; j < s.height; ++j) {
+            for (u32 i = 0; i < s.width; ++i) {
+                const u32 k = j * s.width + i;
+                const f64 need = static_cast<f64>(s.filled[k]) - s.ground[k];
+                if (need <= 0.0 || need > opts.pitFillDepth) continue;
+                if (opts.keepDepression &&
+                    opts.keepDepression(Vec2d{s.originX + i * s.step, s.originZ + j * s.step}))
+                    continue;
+                s.ground[k] = s.filled[k];
+                ++s.pitsCarved;
+                deepest = std::max(deepest, need);
+            }
+        }
+        s.pitFillMaxM = deepest;
+    }
+
     // --- D8 flow directions --------------------------------------------------
     // Downstream is either a strictly lower neighbour (steepest descent) or, on
     // a priority-flood flat, the equal-height neighbour that was settled first —
@@ -376,12 +403,16 @@ LandSpec rasteriseLand(const Surface& s, const CoverageInput& in, const DrainSpe
             land.drainCapacity[k] = static_cast<f32>(mmPerHour / 1000.0 / 3600.0);   // m/s
             if (road) {
                 land.drainNetwork[k] = 1;
-                // ...and the street *conveys* at the same design rate it drains
-                // at.  Without this the imposed gutter gradient drove an unbounded
-                // flux — eight times the city's rainfall came round again through
-                // the network — and shallow water that the city is famous for
-                // holding drained away as if the streets were chutes.
-                land.designFlow[k] = static_cast<f32>(mmPerHour / 1000.0 / 3600.0 * s.cellArea());
+                // ...and the street *conveys* what its catchment delivers to it,
+                // not merely what falls on it.  A drain is sized by the rational
+                // method — design intensity times contributing area — so a street
+                // whose upstream path drains a hundred hectares carries the runoff
+                // of a hundred hectares.  Sizing it by its own 1024 m² made the
+                // conveyance term vanish (Manning on any real head already
+                // exceeded it), which is a mechanism that exists on paper only.
+                const f64 catchment = std::max<f64>(1.0, static_cast<f64>(s.accum[k]));
+                land.designFlow[k] = static_cast<f32>(
+                    mmPerHour / 1000.0 / 3600.0 * catchment * s.cellArea());
             }
 
             if (s.isChannel[k]) {
