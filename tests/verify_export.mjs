@@ -14,6 +14,7 @@
 //  Exit code 0 only when every check passes.
 // =============================================================================
 import { readFileSync } from 'node:fs';
+import { inflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -291,6 +292,110 @@ const B = meta.buildings;
     // the hills, not that the hills escape.
     check(`${key}: the ridges stay largely dry`, highFrac < hillLimit,
           `${highFrac.toFixed(1)} % of high ground over 15 cm`);
+  }
+}
+
+// --- material textures (A8) --------------------------------------------------
+// The atlas is the one artefact the viewer fetches at runtime and the one whose
+// failure mode is silent (a wrong grid, an off-by-one tile, a mean that does not
+// match: the city just looks slightly wrong).  So it is decoded here, with an
+// independent inflate, and every claim the shader relies on is held to the
+// pixels: tile geometry, the material -> tile mapping, and the published
+// `tileMean` — the divisor that makes a texture a detail layer rather than a
+// re-grade.
+{
+  const A = meta.atlas;
+  check('atlas is described by the manifest', !!A && A.count > 0 && !!A.url);
+  if (A && A.url) {
+    const file = join(dir, A.url);
+    const png = readFileSync(file);            // throws if the export did not copy it
+    check('atlas begins with a PNG signature',
+          png.readUInt32BE(0) === 0x89504e47 && png.readUInt32BE(4) === 0x0d0a1a0a);
+
+    // Minimal PNG decode: the writer emits 8-bit RGBA, filter types 0-4, and one
+    // zlib stream, so this is a faithful independent reader rather than a
+    // re-implementation of everything libpng does.
+    let off = 8, width = 0, height = 0, bitDepth = 0, colourType = 0;
+    const idat = [];
+    while (off + 8 <= png.length) {
+      const len = png.readUInt32BE(off);
+      const type = png.toString('latin1', off + 4, off + 8);
+      const data = png.subarray(off + 8, off + 8 + len);
+      if (type === 'IHDR') {
+        width = data.readUInt32BE(0); height = data.readUInt32BE(4);
+        bitDepth = data[8]; colourType = data[9];
+      } else if (type === 'IDAT') idat.push(data);
+      else if (type === 'IEND') break;
+      off += 12 + len;
+    }
+    check('atlas IHDR is 8-bit RGBA', bitDepth === 8 && colourType === 6,
+          `depth ${bitDepth}, colour type ${colourType}`);
+    check('atlas is the size the manifest declares',
+          width === A.cols * A.tileSize && height === A.rows * A.tileSize,
+          `${width}x${height} vs ${A.cols * A.tileSize}x${A.rows * A.tileSize}`);
+
+    const raw = inflateSync(Buffer.concat(idat));
+    const bpp = 4, stride = width * bpp;
+    const pixels = Buffer.alloc(height * stride);
+    for (let y = 0; y < height; ++y) {
+      const ft = raw[y * (stride + 1)];
+      const row = raw.subarray(y * (stride + 1) + 1, y * (stride + 1) + 1 + stride);
+      const prev = y > 0 ? pixels.subarray((y - 1) * stride, y * stride) : null;
+      const out = pixels.subarray(y * stride, (y + 1) * stride);
+      for (let i = 0; i < stride; ++i) {
+        const a = i >= bpp ? out[i - bpp] : 0;
+        const b = prev ? prev[i] : 0;
+        const c = (prev && i >= bpp) ? prev[i - bpp] : 0;
+        let v = row[i];
+        if (ft === 1) v += a;
+        else if (ft === 2) v += b;
+        else if (ft === 3) v += (a + b) >> 1;
+        else if (ft === 4) {
+          const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+          v += (pa <= pb && pa <= pc) ? a : (pb <= pc ? b : c);
+        } else check('atlas row filter is valid', ft === 0, `filter ${ft} on row ${y}`);
+        out[i] = v & 0xff;
+      }
+    }
+
+    // Every textured material must name a tile inside the grid, and no two
+    // materials may name the same one (a collision would make two surfaces share
+    // a texture the build never intended to share).
+    const seen = new Map();
+    let textured = 0, mismatched = 0, worstMean = 0;
+    const toLinear = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+    for (const m of meta.materials) {
+      if (m.tex === undefined || m.tex < 0) continue;
+      ++textured;
+      check('material tile is inside the atlas grid', m.tex < A.count,
+            `${m.name} -> tile ${m.tex} of ${A.count}`);
+      check('material tile is not shared', !seen.has(m.tex), `${m.name} and ${seen.get(m.tex)}`);
+      seen.set(m.tex, m.name);
+      check('material declares its physical tile size', m.tileMetres > 0, `${m.name}`);
+
+      // Mean preservation, measured off the pixels the viewer will actually
+      // sample: the linear-space mean of the tile must be the `tileMean` the
+      // manifest publishes, because that is the divisor in the shader.
+      const col = m.tex % A.cols, row = Math.floor(m.tex / A.cols);
+      let sr = 0, sg = 0, sb = 0, n = 0;
+      for (let y = row * A.tileSize; y < (row + 1) * A.tileSize; ++y)
+        for (let x = col * A.tileSize; x < (col + 1) * A.tileSize; ++x) {
+          const o = y * stride + x * bpp;
+          sr += toLinear(pixels[o] / 255); sg += toLinear(pixels[o + 1] / 255);
+          sb += toLinear(pixels[o + 2] / 255); ++n;
+        }
+      sr /= n; sg /= n; sb /= n;
+      const err = Math.max(Math.abs(sr - m.tileMeanR), Math.abs(sg - m.tileMeanG),
+                           Math.abs(sb - m.tileMeanB));
+      if (err > worstMean) worstMean = err;
+      if (err > 0.01) { ++mismatched; }
+    }
+    check('atlas covers the material library', textured === A.count,
+          `${textured} textured materials vs ${A.count} tiles`);
+    check('published tileMean matches the atlas pixels', mismatched === 0,
+          `worst error ${worstMean.toFixed(4)}`);
+    console.log(`  atlas — ${A.cols}x${A.rows} tiles of ${A.tileSize} px, ${textured} textured materials, ` +
+                `worst tileMean error ${worstMean.toFixed(4)}`);
   }
 }
 

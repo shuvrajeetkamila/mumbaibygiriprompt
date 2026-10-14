@@ -94,10 +94,14 @@ bool emitTerrainMeshes(Context& ctx) {
                         }
                         const u8 aoByte = static_cast<u8>(clamp<f64>(ao, 0.0, 1.0) * 255.0);
 
+                        // Terrain materials (grass, earth, sand, rock, mud) each
+                        // have their own physical tile; 0.05 (a 20 m tile) stays
+                        // the fallback for a material the library does not know.
+                        const f32 uvScale = ctx.uvScaleFor(mat, 0.05f);
                         grid[static_cast<size_t>(j) * (n + 1) + i] = mb.addVertex(
                             Vec3{static_cast<f32>(i * step), h, static_cast<f32>(j * step)},
                             nrm,
-                            Vec2{static_cast<f32>(wx * 0.05), static_cast<f32>(wz * 0.05)},
+                            Vec2{static_cast<f32>(wx * uvScale), static_cast<f32>(wz * uvScale)},
                             mat, static_cast<u32>(ZoningZone::Unknown), 1, aoByte);
                         if (lod == 0) { minH = std::min(minH, h); maxH = std::max(maxH, h); }
                     }

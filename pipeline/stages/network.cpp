@@ -1028,6 +1028,7 @@ bool buildRailAndLanduse(Context& ctx) {
         // Ground cover tint quad (a single triangle fan at terrain height; the
         // detailed blend happens in the terrain shader using this mask).
         cd.water.beginSubmesh(matId, static_cast<u32>(zone));
+        const f32 uvScale = ctx.uvScaleFor(matId, 0.05f);
         geo2d::Mesh2 tris = geo2d::triangulateRing(ring);
         std::vector<u32> map(tris.vertices.size());
         for (size_t k = 0; k < tris.vertices.size(); ++k) {
@@ -1035,7 +1036,7 @@ bool buildRailAndLanduse(Context& ctx) {
             map[k] = cd.water.addVertex(
                 Vec3{static_cast<f32>(p.x), ctx.terrainHF.sample(p.x, p.y) + 0.02f, static_cast<f32>(p.y)} - off,
                 ctx.terrainHF.sampleNormal(p.x, p.y),
-                Vec2{static_cast<f32>(p.x * 0.05), static_cast<f32>(p.y * 0.05)},
+                Vec2{static_cast<f32>(p.x * uvScale), static_cast<f32>(p.y * uvScale)},
                 matId, static_cast<u32>(zone), 0);
         }
         for (size_t k = 0; k + 2 < tris.indices.size(); k += 3)

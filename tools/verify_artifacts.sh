@@ -24,7 +24,7 @@ fail=0
 note() { printf '  %-46s %s\n' "$1" "$2"; }
 
 echo "== payload artifacts =="
-for f in mumbai.bin mumbai.json; do
+for f in mumbai.bin mumbai.json atlas_basecolor.png; do
     if [[ ! -s "$DIR/$f" ]]; then
         note "$f" "MISSING — run: make world"
         fail=1

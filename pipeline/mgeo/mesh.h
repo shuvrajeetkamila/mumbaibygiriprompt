@@ -51,6 +51,20 @@ public:
     void setCurrentLod(u32 lod) { m_lod = lod; }
     u32 currentLod() const { return m_lod; }
 
+    // --- material UV scale (A8) ---------------------------------------------
+    // The pipeline publishes one UV scale per material id — metres per UV unit is
+    // 1/tileMetres, so one UV tile is one physical tile — and every builder in
+    // the world points at that table.  It is a pointer to a vector the Context
+    // owns, refreshed as materials are minted, so a builder created for a cell
+    // early in the build still sees materials added later (facade variants).
+    // A builder with no table (tests, tools) uses its caller's scale unchanged.
+    void setUvScales(const std::vector<f32>* scales) { m_uvScales = scales; }
+    f32 materialUvScale(u32 materialId, f32 fallback) const {
+        if (!m_uvScales || materialId >= m_uvScales->size()) return fallback;
+        const f32 s = (*m_uvScales)[materialId];
+        return s > 0.0f ? s : fallback;
+    }
+
     // --- AO baking ----------------------------------------------------------
     // Applies a cheap curvature/occlusion estimate: vertices closer to the
     // ground and inside concavities are darkened.  Baked once offline so the
@@ -82,6 +96,10 @@ public:
 
 private:
     struct OpenSubmesh { u32 materialId; u32 zoneId; u32 firstIndex; u32 firstVertex; bool open = false; };
+    // Per-material UV scales, owned by the pipeline Context (A8).  A null table
+    // means "no material library": the caller's own scale is used, which is how
+    // the mesh tests and standalone tools keep working unchanged.
+    const std::vector<f32>* m_uvScales = nullptr;
     std::vector<MeshVertex> m_vertices;
     std::vector<u32> m_indices;
     std::vector<SubMesh> m_submeshes;

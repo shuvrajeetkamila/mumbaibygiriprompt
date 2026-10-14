@@ -56,6 +56,22 @@ runtime needs the loads on a worker pool with a budget, which is why the
 harness is structured as "one maintain() call per N frames" rather than as a
 blocking load.
 
+## Material textures (implemented, D-031)
+
+`engine/world/texture.{h,cpp}` is the runtime reader for `.mumbaitex`: mmap,
+validate (magic, version, map type, layer table, mip arithmetic, per-layer spans,
+8-byte alignment) and, when the caller asks for it, re-hash every layer. The mip
+chains are baked offline, so `open()` allocates nothing and the GPU gets a
+pointer into the mapping per layer; `mip(i, level)` and `layerMean(i, rgb,
+linear)` are views for the streaming and QA paths.
+
+The renderer's contract, once A1 exists: one 4-channel sRGB base-colour array,
+one 3-channel normal array and one 3-channel ORM array; a `MaterialDef`'s
+`textureSetIndex` is the layer (‑1 untextured); UVs are metres divided by the
+material's `tileMetres`, so texel density is physical; and the surface multiplies
+the sampled tile by `1/tileMean` so the texture adds detail without changing the
+calibration the rest of the shading was verified with.
+
 ## Nav graph (implemented)
 
 Every chunk carries `RoadNavGraph`: nodes (position, first edge, edge count,
@@ -106,7 +122,14 @@ events in 216,000 audits, median 451 vehicles within 500 m of the camera (peak
 (wireframe option), building instances, the street graph, the five hero meshes,
 sun/time presets, layer toggles and presets 1–5. It reads
 `viewer/data/mumbai.json` for offsets and `viewer/data/mumbai.bin` for the
-payload, and it renders material id 0 as neutral wet concrete.
+payload, and it renders material id 0 as neutral wet concrete.  Since D-031 it
+also fetches the base-colour atlas and applies it with a box-projected patch on
+the standard material: the projection plane is chosen in the vertex shader from
+the object-space normal, the atlas tile and the tile's mean albedo arrive as
+per-vertex (and per-instance) attributes, and the sampled tile is divided by that
+mean, so a tinted facade keeps its tint and gains grain.  `make all-checks` runs
+`tests/verify_viewer_shaders.mjs`, which applies the same patch to the vendored
+three.js and checks it still lands.
 
 Serve it with `make serve` (an HTTP server is required: a `file://` page cannot
 fetch the payload, and the sandboxed preview iframe cannot either).

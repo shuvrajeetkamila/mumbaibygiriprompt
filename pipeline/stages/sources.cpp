@@ -8,6 +8,7 @@
 //    * buildWater    — sea/creek surface, inland water bodies, river ribbons
 // =============================================================================
 #include "pipeline/pipeline.h"
+#include "pipeline/mgeo/texture.h"
 
 namespace mumbai::pipeline {
 
@@ -42,8 +43,10 @@ BuildConfig BuildConfig::fromJson(const Json& j) {
         c.buildBuildings = s["buildings"].asBool(true);
         c.buildProps     = s["props"].asBool(true);
         c.buildHero      = s["heroAssets"].asBool(true);
+        c.buildTextures  = s["textures"].asBool(true);
         c.verifyChunks   = s["verifyChunks"].asBool(true);
     }
+    if (j.has("textures")) c.textureSize = static_cast<u32>(j["textures"]["tileSize"].asInt(c.textureSize));
     return c;
 }
 
@@ -61,7 +64,10 @@ void fillDef(MaterialDef& d, const char* name, f32 r, f32 g, f32 b, f32 roughnes
     d.normalScale = 1.0f;
     d.macroVariation = macroVariation;
     d.wetnessResponse = wetness;
-    d.textureSetIndex = 0.0f;
+    // -1 means "no texture layer" (see MaterialLibrary::textureLayerIndex).  It
+    // cannot be 0: layer 0 is a real layer, and overloading it would hand every
+    // untextured surface the first material in the library.
+    d.textureSetIndex = -1.0f;
     d.flags = flags;
 }
 } // namespace
@@ -69,9 +75,15 @@ void fillDef(MaterialDef& d, const char* name, f32 r, f32 g, f32 b, f32 roughnes
 MaterialLibrary::MaterialLibrary() {
     m_defs.emplace_back();           // id 0 = unknown
     std::snprintf(m_defs[0].name, sizeof(m_defs[0].name), "unknown");
+    // Value-initialised to 0, but 0 is a *real* texture layer: "unknown" must be
+    // explicitly marked untextured, or every fallback surface in the city would
+    // sample the asphalt tile.
+    m_defs[0].textureSetIndex = -1.0f;
+    m_tiles.push_back(tex::tileMetresFor("unknown"));
     auto addMaterial = [&](const char* name, MaterialDef d) {
         m_lookup[name] = static_cast<u32>(m_defs.size());
         m_defs.push_back(d);
+        m_tiles.push_back(tex::tileMetresFor(name));
     };
     MaterialDef d{};
 
@@ -131,7 +143,55 @@ u32 MaterialLibrary::id(const std::string& name) const {
 
 u32 MaterialLibrary::add(const MaterialDef& def) {
     m_defs.push_back(def);
+    // The physical tile size is a property of the *material family*, derived from
+    // the name, so a facade variant minted per building inherits its base
+    // material's tile without the caller having to pass it through.
+    m_tiles.push_back(tex::tileMetresFor(def.name));
     return static_cast<u32>(m_defs.size() - 1);
+}
+
+void MaterialLibrary::setTextureSet(u32 id, u32 layer, f32 tileMetres) {
+    if (id >= m_defs.size()) return;
+    m_defs[id].textureSetIndex = static_cast<f32>(layer);
+    if (tileMetres > 0.0f) m_tiles[id] = tileMetres;
+}
+
+i32 MaterialLibrary::textureLayerIndex(u32 id) const {
+    if (id >= m_defs.size()) return -1;
+    const f32 v = m_defs[id].textureSetIndex;
+    return v >= -0.5f ? static_cast<i32>(v + 0.5f) : -1;
+}
+
+u32 MaterialLibrary::textureLayer(u32 id) const {
+    const i32 i = textureLayerIndex(id);
+    return i < 0 ? 0u : static_cast<u32>(i) + 1u;
+}
+
+void MaterialLibrary::setTextureLayerMean(u32 layer, f32 r, f32 g, f32 b) {
+    if (m_layerMean.size() < (static_cast<size_t>(layer) + 1) * 3)
+        m_layerMean.resize((static_cast<size_t>(layer) + 1) * 3, 0.0f);
+    m_layerMean[static_cast<size_t>(layer) * 3 + 0] = r;
+    m_layerMean[static_cast<size_t>(layer) * 3 + 1] = g;
+    m_layerMean[static_cast<size_t>(layer) * 3 + 2] = b;
+}
+
+bool MaterialLibrary::textureLayerMean(i32 layer, f32 rgb[3]) const {
+    if (layer < 0 || static_cast<size_t>(layer) * 3 + 2 >= m_layerMean.size()) return false;
+    for (u32 c = 0; c < 3; ++c) rgb[c] = m_layerMean[static_cast<size_t>(layer) * 3 + c];
+    return true;
+}
+
+f32 MaterialLibrary::tileMetres(u32 id) const {
+    if (id < m_tiles.size()) return m_tiles[id];
+    if (id < m_defs.size()) return tex::tileMetresFor(m_defs[id].name);
+    return 0.0f;
+}
+
+f32 MaterialLibrary::uvScaleFor(u32 id, f32 fallback) const {
+    if (id >= m_defs.size()) { ++m_unmapped; return fallback; }
+    const f32 tile = tileMetres(id);
+    if (!(tile > 0.0f)) { ++m_unmapped; return fallback; }
+    return 1.0f / tile;
 }
 
 std::vector<u8> MaterialLibrary::serialize() const {
@@ -183,6 +243,10 @@ CellData& Context::cellAt(i64 cx, i64 cz) {
     cd.cellX = cx;
     cd.cellZ = cz;
     cd.origin = cellOrigin(cx, cz);
+    // Every builder this cell will ever use points at the library's UV table, so
+    // geometry emitted now and geometry emitted after a hundred more materials
+    // have been minted are scaled by the same rule (A8).
+    cd.setUvScales(&uvScales());
     cd.minHeight = 1e30f;
     cd.maxHeight = -1e30f;
     auto [ins, _] = cells.emplace(k, std::move(cd));
@@ -541,6 +605,7 @@ bool buildWater(Context& ctx) {
         cd.water.beginSubmesh(matInland, static_cast<u32>(ZoningZone::Unknown));
         const f64 waterY = std::max<f64>(ctx.cfg.seaLevel + 0.05,
                                          ctx.terrainHF.sample(cx, cy) - 0.4);
+        const f32 uvScale = ctx.uvScaleFor(matInland, 0.02f);
         geo2d::Mesh2 tris = geo2d::triangulateRing(ring);
         std::vector<u32> map(tris.vertices.size());
         for (size_t k = 0; k < tris.vertices.size(); ++k) {
@@ -548,7 +613,7 @@ bool buildWater(Context& ctx) {
                 Vec3{static_cast<f32>(tris.vertices[k].x), static_cast<f32>(waterY),
                      static_cast<f32>(tris.vertices[k].y)} - off,
                 Vec3{0, 1, 0},
-                Vec2{static_cast<f32>(tris.vertices[k].x * 0.02), static_cast<f32>(tris.vertices[k].y * 0.02)},
+                Vec2{static_cast<f32>(tris.vertices[k].x * uvScale), static_cast<f32>(tris.vertices[k].y * uvScale)},
                 matInland, static_cast<u32>(ZoningZone::Unknown), 0);
         }
         // Reversed emission: see the winding note in mesh.cpp addRoofCap.

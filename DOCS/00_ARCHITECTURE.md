@@ -56,7 +56,7 @@ cannot be executed in this environment (see D-001 in `02_DECISIONS.md`).
 | path | what lives there |
 |---|---|
 | `engine/core/` | `core.h/.cpp` (logging, hashing, RNG, timing, files, CLI), `math.h/.cpp` (SIMD-ready vector/matrix/geometry maths, Vulkan clip conventions), `geo.h/.cpp` (projection, extents, macro cells, `GlobalPosition`, floating origin, taxonomies), `json.h/.cpp` (the project's JSON reader/writer) |
-| `engine/world/` | `chunk.h/.cpp` — the `.mumbai_chunk` contract: header, 19 section types, writer, reader, typed views, hash verification |
+| `engine/world/` | `chunk.h/.cpp` — the `.mumbai_chunk` contract: header, 19 section types, writer, reader, typed views, hash verification. `texture.h/.cpp` — `.mumbaitex`, the mmap-able material texture array, shared with the offline writer |
 | `engine/app/` | `sim_main.cpp` — `mumbai_sim`, the headless runtime-validation harness |
 | `pipeline/mgeo/` | geometry primitives, OSM XML scanner, DEM synthesis, mesh builder, GeoJSON reader, deterministic synthesis helpers |
 | `pipeline/stages/` | the 13 build stages, one concern per file |

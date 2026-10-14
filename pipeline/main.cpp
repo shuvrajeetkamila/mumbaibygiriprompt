@@ -109,6 +109,9 @@ int main(int argc, char** argv) {
         {"buildBuildings",     buildBuildings},
         {"buildProps",         buildProps},
         {"buildHeroAssets",    buildHeroAssets},
+        // Textures come after every material exists (facade variants are minted
+        // per building) and before anything is serialised.  A8.
+        {"buildTextures",      buildTextures},
         {"buildFloodModel",    buildFloodModel},
         {"writeChunks",        writeChunks},
         {"writeManifest",      writeManifest},

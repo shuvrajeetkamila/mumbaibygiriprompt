@@ -94,7 +94,7 @@ world: $(PIPELINE_BIN)
 # runs produce identical hashes), so a committed checksum is meaningful, and it
 # is what catches a binary that was mangled outside the build — see
 # tools/verify_artifacts.sh.
-	@cd viewer/data && sha256sum mumbai.bin mumbai.json > SHA256SUMS
+	@cd viewer/data && sha256sum mumbai.bin mumbai.json atlas_basecolor.png > SHA256SUMS
 	@echo "  artifacts  viewer/data/SHA256SUMS"
 
 # Acceptance-scale run: 60 simulated minutes along Colaba -> Borivali at 60 Hz
@@ -107,6 +107,7 @@ simulate: $(SIM_BIN)
 # the Node verifier, and the integrity of the raw source data.
 all-checks: test simulate
 	@node tests/verify_export.mjs
+	@node tests/verify_viewer_shaders.mjs
 	@bash tools/verify_artifacts.sh
 	@bash tools/fetch_data.sh --verify-only
 	@echo "== all checks complete =="

@@ -832,6 +832,108 @@ environment (D-019).
 
 ---
 
+## D-031 — Material content is synthesised, mean-preserving, and shipped as a texture array
+
+Section 1B asks for per-surface PBR materials and Section 2 wants no feature
+shipped rough.  The world carried material *parameters* — albedo, roughness,
+metallic, the wetness response — but no textures, because the offline tier has
+no right to ship scanned maps and no way to fetch them here either (D-014).  A8
+synthesises them: every material in the library gets a tileable base-colour map,
+a normal map derived from a wrapped height field, and an ORM map, all a pure
+function of the material's *name* and the build seed.
+
+**Decisions.**
+
+* **The tile's mean is the material's albedo.**  The generator is built around
+  mean preservation: a synthesised tile's average *linear* albedo equals the
+  `MaterialDef.baseColor` the rest of the pipeline was calibrated against, and
+  the ORM green channel is *absolute* roughness whose mean is the authored
+  roughness.  The build measures this off the bytes it wrote (worst 1.05 % over
+  115 materials, the residue being sRGB quantisation on the darkest channels) and
+  **fails the stage above 2 %**.  Adding textures therefore changes detail, not
+  tone: the wetness response, the baked AO, the flood shading and the tonemap
+  keep the calibration they were verified with.
+* **Optically smooth surfaces are flat on purpose.**  Glass curtain walls, lamp
+  lenses and rail steel get a flat albedo and a flat normal: their variation in
+  reality is reflection and roughness, not surface grain, and inventing grain
+  would put a fake bump on every glass facade in the city.  Standing water is the
+  one exception — a dead-flat 12 m water tile reads as painted glass, and the
+  mesh has no waves of its own (the Gerstner ocean is a separate GPU system for
+  the open sea), so inland water carries a quarter-strength ripple.  The test
+  suite asserts both the flatness and the ripple, so neither can drift.
+* **A texture is content, not a re-grade — the divisor travels with the bytes.**
+  Each layer record carries the mean linear albedo of its own mip0 and the
+  physical size of one tile, so the array is self-describing: a runtime binding
+  layer N knows what to divide the sample by (`tile / mean`, mean 1, which keeps
+  a tinted facade variant tinted) and how many metres one UV unit covers.  The
+  writer *measures* both from the pixels rather than accepting them from a
+  caller, so a record cannot claim behaviour the content does not have.
+* **UVs are decided in one place.**  `MaterialLibrary::uvScaleFor` returns
+  `1/tileMetres` for every material id — including the tinted facade variants,
+  which inherit their base material's tile because the derivation is by *name* —
+  and every `MeshBuilder` in every cell points at that one table.  A builder
+  without a table (tests, tools) keeps its caller's scale, so the mesh layer
+  remains usable in isolation; content built by the pipeline always has the
+  table.  Dividing world metres by a physical tile size is what makes brick
+  courses brick-sized on a 12 m chawl and a 90 m tower at once.
+* **The tile size is physical, and comes from the name.**  Each material family
+  declares how many metres one tile covers (asphalt 6 m, brick 1 m, water 12 m),
+  the mesh builders divide UVs by it, and the lookup is `name → family`, so the
+  74 tinted facade variants minted per building inherit their base material's
+  tile instead of falling to a default.  A shader sampling these maps can be
+  trusted to put brick courses at brick size on a 12 m chawl and a 90 m tower
+  alike.
+* **Textures are content, not decoration: the shader is handed a divisor.**  The
+  export publishes, per material, the tile index into the base-colour atlas and
+  the layer's mean linear albedo (`tileMean*`).  A surface multiplies its colour
+  by `tile / tileMean`, a quotient with mean 1.  That is what lets a tinted
+  facade variant keep its tint while gaining the texture's grain — the naive
+  alternative (multiply by `tile / ownAlbedo`) would flatten every variant to
+  its base material's colour and silently erase the weathering that Section 2's
+  civic realism depends on.
+* **Container: `.mumbaitex`, an mmap-able texture array.**  `TexArrayHeader`
+  (64 B) + `TexLayer[count]` (24 B) + per-layer mip chains, box-filtered at build
+  time so the runtime never builds one.  Layers start 8-byte aligned, so a
+  runtime can upload straight out of the mapping.  The container, its constants
+  and its reader live in `engine/world/texture.h` because the offline writer and
+  the runtime must share one definition; the writer includes the reader's header,
+  not a copy.
+* **PNG is a review and browser format, not the shipping format.**  The pipeline
+  carries its own deflate encoder (fixed Huffman + greedy LZ77, 32 KiB window,
+  15-bit hash chain) and adaptive PNG row filters, which makes the atlas and the
+  contact sheet dependency-free and byte-identical across machines — the browser
+  preview and a human reviewer read PNGs, the runtime reads `.mumbaitex`.
+* **`textureSetIndex` means a layer, and `-1` means none.**  `MaterialDef`.
+  `textureSetIndex` is now the 0-based array layer (the same number the atlas
+  grid uses) with **-1 for untextured** — id 0 `unknown` is explicitly -1, since
+  0 is a real layer and overloading it would hand every fallback surface the
+  asphalt tile.
+
+**Result.**  `textures` stage: 115 materials → 41 families, 0 unmapped, 256 px
+tiles, 100.5 MB of arrays (40.2 MB base colour at 4 channels, 30.1 MB each for
+normal and ORM, mip chains included) (40.2 MB base colour at 4 channels, 30.1 MB each for
+normal and ORM), mean albedo error 1.049 %, 6.3 s.  The 11×11 atlas is copied
+into the viewer's data directory and decoded independently by
+`tests/verify_export.mjs`, which re-inflates the PNG, walks every material's tile
+and confirms the published `tileMean` against the pixels (worst error 0.0002).
+`engine/world/texture.{h,cpp}` is the runtime reader (mmap, validate, mip
+access, layer statistics).  `tests/test_texture.cpp` round-trips the container
+through the runtime reader, refuses a truncated file and a flipped byte, holds
+the generator to mean preservation and normal validity per family, and then
+verifies the *shipped* arrays: 115 layers, whole-file hashes recomputed, every
+record's published mean re-measured from the pixels, unit-length normals, and a
+count of deliberately flat surfaces (7) that fails if the list grows.
+
+**Not claimed.**  Nothing on a GPU samples these yet: A1 is the renderer that
+will.  Beyond base colour, the normal and ORM arrays are validated as data (unit
+normals, roughness means, mip arithmetic) but their *visual* effect is not
+verified in this environment — the browser preview uses the base-colour atlas
+only, with flat roughness.  The remaining material-content work is the surface
+detail Section 1B asks for at production density: decals, signage text, kerb and
+rail furniture maps, and the harness that would catch a shader regression.
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

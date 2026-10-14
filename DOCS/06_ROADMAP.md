@@ -20,7 +20,7 @@ GPU, a device, or the Android toolchain exists yet.
 | A5 | **Ocean (S3)** | 4–8 Gerstner waves (80–150 m swell, 0.5–2 m; monsoon 3–5 m), PBR + subsurface scattering, sun glitter, depth-buffer foam and runup | the sea/creek mesh exists (31,180 quads) | no — same reason |
 | A6 | **Sky / scattering (S3)** | Rayleigh + Mie with time-of-day, humidity and pollution | the preview has a skydome approximation | no |
 | A7 | **Android app** | native app, Vulkan surface, JNI, input, audio, installable package ≤160 GB | nothing | **no** — no JDK, Gradle, Android SDK or NDK; `dl.google.com`, `repo1.maven.org`, `services.gradle.org` are blocked |
-| A8 | **Texture / material content** | per-surface PBR materials, baked AO, material masks at production density | 116 material definitions, vertex colours, baked AO; no textures, no atlas, no UVs in the payload | **yes** — procedural texture generation writes PNGs, no GPU needed |
+| A8 | **Texture / material content** | per-surface PBR materials, baked AO, material masks at production density | **built and shipped** (D-031): 115 materials textured into `.mumbaitex` arrays (albedo / normal / ORM, 256 px, 100.5 MB), physical tile sizes driving UVs, an 11×11 atlas wired into the browser preview through a box-projected `onBeforeCompile` patch, a runtime mmap reader, and both a C++ and an independent JS verification of mean preservation | **done for the material library** — decals, signage text and kerb/rail detail maps remain, and nothing on a GPU samples the normal/ORM arrays yet (A1) |
 | A9 | **Audio** | not specified in detail, but a client engine needs it | nothing | yes (CPU) |
 
 ## B. Built, but below the specification's bar
@@ -58,9 +58,11 @@ GPU, a device, or the Android toolchain exists yet.
    the harness keeps only the population device, which is documented as a
    scenario device and not as a behaviour (D-030).  The result is in
    `05_VALIDATION.md`.
-2. **A8 — texture and material content.** Procedural PBR maps and an atlas move
-   the visual standard more than anything else that can be done without a GPU,
-   and they are what makes the 160 GB figure real rather than nominal.
+2. ~~**A8 — texture and material content.**~~ **Closed** (D-031): the library is
+   synthesised, mean-preserving, shipped as mmap-able arrays and reviewed
+   through the atlas in the preview.  What remains inside A8 is surface *detail*
+   at production density (decals, signage, furniture maps) and GPU consumption,
+   which belongs with A1.
 3. **B1/B3 — hero detail.** Window grids, cornices, cable hardware and signage
    along the published geometry.  Large, mechanical, and reviewable in the
    preview.

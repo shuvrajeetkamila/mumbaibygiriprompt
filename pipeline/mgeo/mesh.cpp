@@ -45,9 +45,12 @@ void MeshBuilder::addQuad(u32 a, u32 b, u32 c, u32 d) {
 void MeshBuilder::addQuad(const Vec3& p0, const Vec3& p1, const Vec3& p2, const Vec3& p3,
                           const Vec3& normal, u32 materialId, u32 zoneId, u8 flags,
                           f32 uvScale, u8 ao) {
-    // Planar UV projection along the dominant tangent pair.
+    // Planar UV projection along the dominant tangent pair, at the material's
+    // physical tile size: one UV unit is one tile (A8).  The caller's scale is
+    // the fallback for a mesh built without a material library.
+    const f32 s = materialUvScale(materialId, uvScale);
     auto uvOf = [&](const Vec3& p) -> Vec2 {
-        return {p.x * uvScale, (p.z + p.y) * uvScale};
+        return {p.x * s, (p.z + p.y) * s};
     };
     const u32 a = addVertex(p0, normal, uvOf(p0), materialId, zoneId, flags, ao);
     const u32 b = addVertex(p1, normal, uvOf(p1), materialId, zoneId, flags, ao);
@@ -84,11 +87,14 @@ void MeshBuilder::extrudeWalls(const std::vector<Vec2d>& ring, f64 baseY, f64 to
         const Vec3 t1{static_cast<f32>(b.x), static_cast<f32>(topY),  static_cast<f32>(b.y)};
 
         // UV: U runs with arc length (world-scaled so stone courses and brick
-        // rows keep constant size regardless of facade length), V with height.
-        const f32 u0 = static_cast<f32>(runLength * uvScale);
-        const f32 u1 = static_cast<f32>((runLength + len) * uvScale);
+        // rows keep constant size regardless of facade length), V with height —
+        // and scaled so that one UV unit is one *physical* tile of the material
+        // (A8), which is what makes a brick 230 mm on every facade in the city.
+        const f32 s = materialUvScale(materialId, uvScale);
+        const f32 u0 = static_cast<f32>(runLength * s);
+        const f32 u1 = static_cast<f32>((runLength + len) * s);
         const f32 v0 = 0.0f;
-        const f32 v1 = static_cast<f32>(height * uvScale);
+        const f32 v1 = static_cast<f32>(height * s);
 
         auto push = [&](const Vec3& p, f32 u, f32 v) {
             return addVertex(p, n, {u, v}, materialId, zoneId, flags);
@@ -115,11 +121,12 @@ void MeshBuilder::addRoofCap(const std::vector<Vec2d>& ring, f64 y, u32 material
 
     geo2d::Mesh2 tris = geo2d::triangulateRing(cap);
     const Vec3 n{0, 1, 0};
+    const f32 us = materialUvScale(materialId, uvScale);
     std::vector<u32> mapping(tris.vertices.size());
     for (size_t i = 0; i < tris.vertices.size(); ++i) {
         const Vec2d& p = tris.vertices[i];
         mapping[i] = addVertex({static_cast<f32>(p.x), static_cast<f32>(y), static_cast<f32>(p.y)},
-                               n, {static_cast<f32>(p.x * uvScale), static_cast<f32>(p.y * uvScale)},
+                               n, {static_cast<f32>(p.x * us), static_cast<f32>(p.y * us)},
                                materialId, zoneId, flags);
     }
     // The ear-clipper emits counter-clockwise triangles in the 2D footprint
@@ -137,7 +144,7 @@ void MeshBuilder::addRoofCap(const std::vector<Vec2d>& ring, f64 y, u32 material
             for (size_t i = 0; i < lipTris.vertices.size(); ++i) {
                 const Vec2d& p = lipTris.vertices[i];
                 lipMap[i] = addVertex({static_cast<f32>(p.x), static_cast<f32>(y + lipHeight), static_cast<f32>(p.y)},
-                                      n, {static_cast<f32>(p.x * uvScale), static_cast<f32>(p.y * uvScale)},
+                                      n, {static_cast<f32>(p.x * us), static_cast<f32>(p.y * us)},
                                       materialId, zoneId, flags);
             }
             for (size_t i = 0; i + 2 < lipTris.indices.size(); i += 3)

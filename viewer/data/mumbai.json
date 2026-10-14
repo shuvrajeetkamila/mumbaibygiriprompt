@@ -1,4 +1,12 @@
 {
+ "atlas": {
+  "cols": 11,
+  "count": 115,
+  "pixels": 256,
+  "rows": 11,
+  "tileSize": 128,
+  "url": "data/atlas_basecolor.png"
+ },
  "buildings": {
   "count": 164057,
   "offset": 1896450,
@@ -92,6 +100,8 @@
    "name": "unknown",
    "r": 0,
    "roughness": 0,
+   "tex": -1,
+   "tileMetres": 2,
    "wetness": 0
   },
   {
@@ -102,6 +112,11 @@
    "name": "asphalt_smooth",
    "r": 0.0850000009,
    "roughness": 0.620000005,
+   "tex": 0,
+   "tileMeanB": 0.0920004398,
+   "tileMeanG": 0.0880020708,
+   "tileMeanR": 0.0850004107,
+   "tileMetres": 6,
    "wetness": 0.949999988
   },
   {
@@ -112,6 +127,11 @@
    "name": "asphalt_patched",
    "r": 0.115000002,
    "roughness": 0.779999971,
+   "tex": 1,
+   "tileMeanB": 0.109999701,
+   "tileMeanG": 0.111999556,
+   "tileMeanR": 0.115000829,
+   "tileMetres": 5,
    "wetness": 0.920000017
   },
   {
@@ -122,6 +142,11 @@
    "name": "asphalt_sealink",
    "r": 0.0719999969,
    "roughness": 0.550000012,
+   "tex": 2,
+   "tileMeanB": 0.0799974576,
+   "tileMeanG": 0.0750028715,
+   "tileMeanR": 0.0719992742,
+   "tileMetres": 8,
    "wetness": 0.949999988
   },
   {
@@ -132,6 +157,11 @@
    "name": "concrete_road",
    "r": 0.419999987,
    "roughness": 0.720000029,
+   "tex": 3,
+   "tileMeanB": 0.415008157,
+   "tileMeanG": 0.420004457,
+   "tileMeanR": 0.420004457,
+   "tileMetres": 4,
    "wetness": 0.850000024
   },
   {
@@ -142,6 +172,11 @@
    "name": "paver_block",
    "r": 0.360000014,
    "roughness": 0.800000012,
+   "tex": 4,
+   "tileMeanB": 0.319999218,
+   "tileMeanG": 0.340003371,
+   "tileMeanR": 0.360009283,
+   "tileMetres": 1.20000005,
    "wetness": 0.800000012
   },
   {
@@ -152,6 +187,11 @@
    "name": "gravel",
    "r": 0.300000012,
    "roughness": 0.899999976,
+   "tex": 5,
+   "tileMeanB": 0.255025744,
+   "tileMeanG": 0.279990703,
+   "tileMeanR": 0.299957275,
+   "tileMetres": 2,
    "wetness": 0.699999988
   },
   {
@@ -162,6 +202,11 @@
    "name": "dirt",
    "r": 0.25,
    "roughness": 0.939999998,
+   "tex": 6,
+   "tileMeanB": 0.159997851,
+   "tileMeanG": 0.205002114,
+   "tileMeanR": 0.25001052,
+   "tileMetres": 3,
    "wetness": 0.75
   },
   {
@@ -172,6 +217,11 @@
    "name": "rock",
    "r": 0.230000004,
    "roughness": 0.819999993,
+   "tex": 7,
+   "tileMeanB": 0.215008155,
+   "tileMeanG": 0.224999487,
+   "tileMeanR": 0.22999993,
+   "tileMetres": 3,
    "wetness": 0.550000012
   },
   {
@@ -182,6 +232,11 @@
    "name": "earth",
    "r": 0.234999999,
    "roughness": 0.920000017,
+   "tex": 8,
+   "tileMeanB": 0.145001277,
+   "tileMeanG": 0.189996243,
+   "tileMeanR": 0.235001892,
+   "tileMetres": 3,
    "wetness": 0.800000012
   },
   {
@@ -192,6 +247,11 @@
    "name": "sand",
    "r": 0.639999986,
    "roughness": 0.850000024,
+   "tex": 9,
+   "tileMeanB": 0.469998509,
+   "tileMeanG": 0.585004628,
+   "tileMeanR": 0.640005946,
+   "tileMetres": 4,
    "wetness": 0.699999988
   },
   {
@@ -202,6 +262,11 @@
    "name": "wetland_mud",
    "r": 0.119999997,
    "roughness": 0.879999995,
+   "tex": 10,
+   "tileMeanB": 0.090001002,
+   "tileMeanG": 0.135003433,
+   "tileMeanR": 0.119997405,
+   "tileMetres": 3,
    "wetness": 0.899999976
   },
   {
@@ -212,6 +277,11 @@
    "name": "reclamation_fill",
    "r": 0.330000013,
    "roughness": 0.879999995,
+   "tex": 11,
+   "tileMeanB": 0.300115287,
+   "tileMeanG": 0.32006675,
+   "tileMeanR": 0.329932421,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -222,6 +292,11 @@
    "name": "grass",
    "r": 0.180000007,
    "roughness": 0.899999976,
+   "tex": 12,
+   "tileMeanB": 0.115004025,
+   "tileMeanG": 0.255006582,
+   "tileMeanR": 0.180003807,
+   "tileMetres": 2,
    "wetness": 0.600000024
   },
   {
@@ -232,6 +307,11 @@
    "name": "plaster_painted",
    "r": 0.720000029,
    "roughness": 0.860000014,
+   "tex": 13,
+   "tileMeanB": 0.560000896,
+   "tileMeanG": 0.660004377,
+   "tileMeanR": 0.719992399,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -242,6 +322,11 @@
    "name": "stone_ashlar",
    "r": 0.560000002,
    "roughness": 0.800000012,
+   "tex": 14,
+   "tileMeanB": 0.379998714,
+   "tileMeanG": 0.479998648,
+   "tileMeanR": 0.560004473,
+   "tileMetres": 2.4000001,
    "wetness": 0.699999988
   },
   {
@@ -252,6 +337,11 @@
    "name": "stone_rubble",
    "r": 0.400000006,
    "roughness": 0.879999995,
+   "tex": 15,
+   "tileMeanB": 0.310000986,
+   "tileMeanG": 0.354997069,
+   "tileMeanR": 0.400008261,
+   "tileMetres": 2,
    "wetness": 0.720000029
   },
   {
@@ -262,6 +352,11 @@
    "name": "curtain_wall_glass",
    "r": 0.180000007,
    "roughness": 0.0799999982,
+   "tex": 16,
+   "tileMeanB": 0.258182913,
+   "tileMeanG": 0.238397658,
+   "tileMeanR": 0.181164235,
+   "tileMetres": 4,
    "wetness": 0.349999994
   },
   {
@@ -272,6 +367,11 @@
    "name": "brick_exposed",
    "r": 0.469999999,
    "roughness": 0.879999995,
+   "tex": 17,
+   "tileMeanB": 0.170001477,
+   "tileMeanG": 0.245003536,
+   "tileMeanR": 0.469992101,
+   "tileMetres": 1,
    "wetness": 0.779999971
   },
   {
@@ -282,6 +382,11 @@
    "name": "corrugated_metal",
    "r": 0.330000013,
    "roughness": 0.550000012,
+   "tex": 18,
+   "tileMeanB": 0.34498322,
+   "tileMeanG": 0.330032706,
+   "tileMeanR": 0.329996616,
+   "tileMetres": 0.899999976,
    "wetness": 0.850000024
   },
   {
@@ -292,6 +397,11 @@
    "name": "concrete_raw",
    "r": 0.479999989,
    "roughness": 0.850000024,
+   "tex": 19,
+   "tileMeanB": 0.450014442,
+   "tileMeanG": 0.46999535,
+   "tileMeanR": 0.479996622,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -302,6 +412,11 @@
    "name": "kerb_concrete",
    "r": 0.519999981,
    "roughness": 0.850000024,
+   "tex": 20,
+   "tileMeanB": 0.499996662,
+   "tileMeanG": 0.514996111,
+   "tileMeanR": 0.519991875,
+   "tileMetres": 1.5,
    "wetness": 0.800000012
   },
   {
@@ -312,6 +427,11 @@
    "name": "sidewalk_concrete",
    "r": 0.479999989,
    "roughness": 0.870000005,
+   "tex": 21,
+   "tileMeanB": 0.459992498,
+   "tileMeanG": 0.475006551,
+   "tileMeanR": 0.480010033,
+   "tileMetres": 2,
    "wetness": 0.819999993
   },
   {
@@ -322,6 +442,11 @@
    "name": "median_barrier",
    "r": 0.449999988,
    "roughness": 0.839999974,
+   "tex": 22,
+   "tileMeanB": 0.439999521,
+   "tileMeanG": 0.449994475,
+   "tileMeanR": 0.449994475,
+   "tileMetres": 2,
    "wetness": 0.779999971
   },
   {
@@ -332,6 +457,11 @@
    "name": "water_surface",
    "r": 0.0500000007,
    "roughness": 0.0500000007,
+   "tex": 23,
+   "tileMeanB": 0.13013649,
+   "tileMeanG": 0.109461717,
+   "tileMeanR": 0.0497065634,
+   "tileMetres": 12,
    "wetness": 0.200000003
   },
   {
@@ -342,6 +472,11 @@
    "name": "inland_water",
    "r": 0.075000003,
    "roughness": 0.119999997,
+   "tex": 24,
+   "tileMeanB": 0.0998987406,
+   "tileMeanG": 0.119538434,
+   "tileMeanR": 0.0742135793,
+   "tileMetres": 8,
    "wetness": 0.25
   },
   {
@@ -352,6 +487,11 @@
    "name": "rail_ballast",
    "r": 0.230000004,
    "roughness": 0.920000017,
+   "tex": 25,
+   "tileMeanB": 0.210012317,
+   "tileMeanG": 0.219981685,
+   "tileMeanR": 0.230004251,
+   "tileMetres": 1.60000002,
    "wetness": 0.649999976
   },
   {
@@ -362,6 +502,11 @@
    "name": "rail_steel",
    "r": 0.400000006,
    "roughness": 0.349999994,
+   "tex": 26,
+   "tileMeanB": 0.420002818,
+   "tileMeanG": 0.399990171,
+   "tileMeanR": 0.399990171,
+   "tileMetres": 1,
    "wetness": 0.449999988
   },
   {
@@ -372,6 +517,11 @@
    "name": "rail_sleeper",
    "r": 0.300000012,
    "roughness": 0.899999976,
+   "tex": 27,
+   "tileMeanB": 0.240007684,
+   "tileMeanG": 0.269995958,
+   "tileMeanR": 0.299986869,
+   "tileMetres": 1,
    "wetness": 0.699999988
   },
   {
@@ -382,6 +532,11 @@
    "name": "water_tank_plastic",
    "r": 0.180000007,
    "roughness": 0.449999988,
+   "tex": 28,
+   "tileMeanB": 0.230004966,
+   "tileMeanG": 0.259999514,
+   "tileMeanR": 0.179999575,
+   "tileMetres": 1,
    "wetness": 0.400000006
   },
   {
@@ -392,6 +547,11 @@
    "name": "ac_unit",
    "r": 0.620000005,
    "roughness": 0.600000024,
+   "tex": 29,
+   "tileMeanB": 0.609973669,
+   "tileMeanG": 0.620017946,
+   "tileMeanR": 0.620017946,
+   "tileMetres": 1,
    "wetness": 0.550000012
   },
   {
@@ -402,6 +562,11 @@
    "name": "metal_railing",
    "r": 0.219999999,
    "roughness": 0.449999988,
+   "tex": 30,
+   "tileMeanB": 0.230006874,
+   "tileMeanG": 0.220007166,
+   "tileMeanR": 0.220002189,
+   "tileMetres": 1,
    "wetness": 0.5
   },
   {
@@ -412,6 +577,11 @@
    "name": "signage_painted",
    "r": 0.699999988,
    "roughness": 0.800000012,
+   "tex": 31,
+   "tileMeanB": 0.250008464,
+   "tileMeanG": 0.600000441,
+   "tileMeanR": 0.69999814,
+   "tileMetres": 1,
    "wetness": 0.699999988
   },
   {
@@ -422,6 +592,11 @@
    "name": "tree_foliage",
    "r": 0.115000002,
    "roughness": 0.920000017,
+   "tex": 32,
+   "tileMeanB": 0.0850042999,
+   "tileMeanG": 0.189994901,
+   "tileMeanR": 0.115004994,
+   "tileMetres": 1.5,
    "wetness": 0.400000006
   },
   {
@@ -432,6 +607,11 @@
    "name": "tree_bark",
    "r": 0.180000007,
    "roughness": 0.949999988,
+   "tex": 33,
+   "tileMeanB": 0.105003677,
+   "tileMeanG": 0.140000179,
+   "tileMeanR": 0.180003211,
+   "tileMetres": 1,
    "wetness": 0.550000012
   },
   {
@@ -442,6 +622,11 @@
    "name": "streetlamp_pole",
    "r": 0.300000012,
    "roughness": 0.550000012,
+   "tex": 34,
+   "tileMeanB": 0.294979006,
+   "tileMeanG": 0.300001711,
+   "tileMeanR": 0.300001711,
+   "tileMetres": 1.20000005,
    "wetness": 0.550000012
   },
   {
@@ -452,6 +637,11 @@
    "name": "streetlamp_glow",
    "r": 1,
    "roughness": 0.300000012,
+   "tex": 35,
+   "tileMeanB": 0.619996667,
+   "tileMeanG": 0.869973183,
+   "tileMeanR": 0.994318426,
+   "tileMetres": 0.5,
    "wetness": 0.200000003
   },
   {
@@ -462,6 +652,11 @@
    "name": "hero_stone",
    "r": 0.579999983,
    "roughness": 0.779999971,
+   "tex": 36,
+   "tileMeanB": 0.430007219,
+   "tileMeanG": 0.519999862,
+   "tileMeanR": 0.579999685,
+   "tileMetres": 1.60000002,
    "wetness": 0.680000007
   },
   {
@@ -472,6 +667,11 @@
    "name": "hero_terracotta",
    "r": 0.430000007,
    "roughness": 0.819999993,
+   "tex": 37,
+   "tileMeanB": 0.175000161,
+   "tileMeanG": 0.245006025,
+   "tileMeanR": 0.430007517,
+   "tileMetres": 1.20000005,
    "wetness": 0.620000005
   },
   {
@@ -482,6 +682,11 @@
    "name": "hero_concrete",
    "r": 0.519999981,
    "roughness": 0.819999993,
+   "tex": 38,
+   "tileMeanB": 0.505010664,
+   "tileMeanG": 0.514989913,
+   "tileMeanR": 0.519997537,
+   "tileMetres": 2,
    "wetness": 0.699999988
   },
   {
@@ -492,6 +697,11 @@
    "name": "sea_link_pylon",
    "r": 0.720000029,
    "roughness": 0.699999988,
+   "tex": 39,
+   "tileMeanB": 0.659989059,
+   "tileMeanG": 0.700001538,
+   "tileMeanR": 0.72001785,
+   "tileMetres": 3,
    "wetness": 0.600000024
   },
   {
@@ -502,6 +712,11 @@
    "name": "sea_link_cable",
    "r": 0.5,
    "roughness": 0.400000006,
+   "tex": 40,
+   "tileMeanB": 0.520169854,
+   "tileMeanG": 0.500292659,
+   "tileMeanR": 0.500292659,
+   "tileMetres": 0.800000012,
    "wetness": 0.349999994
   },
   {
@@ -512,6 +727,11 @@
    "name": "plaster_painted",
    "r": 0.860000014,
    "roughness": 0.898980021,
+   "tex": 41,
+   "tileMeanB": 0.680003464,
+   "tileMeanG": 0.809985757,
+   "tileMeanR": 0.860018253,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -522,6 +742,11 @@
    "name": "concrete_raw",
    "r": 0.860000014,
    "roughness": 0.888980031,
+   "tex": 42,
+   "tileMeanB": 0.680000782,
+   "tileMeanG": 0.809990644,
+   "tileMeanR": 0.860000908,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -532,6 +757,11 @@
    "name": "plaster_painted",
    "r": 0.680000007,
    "roughness": 0.955649436,
+   "tex": 43,
+   "tileMeanB": 0.849990845,
+   "tileMeanG": 0.780003011,
+   "tileMeanR": 0.680003464,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -542,6 +772,11 @@
    "name": "concrete_raw",
    "r": 0.680000007,
    "roughness": 0.945649445,
+   "tex": 44,
+   "tileMeanB": 0.849986792,
+   "tileMeanG": 0.779984176,
+   "tileMeanR": 0.680000782,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -552,6 +787,11 @@
    "name": "stone_ashlar",
    "r": 0.720000029,
    "roughness": 0.891889334,
+   "tex": 45,
+   "tileMeanB": 0.519986928,
+   "tileMeanG": 0.639996588,
+   "tileMeanR": 0.720001101,
+   "tileMetres": 2.4000001,
    "wetness": 0.699999988
   },
   {
@@ -562,6 +802,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.941889346,
+   "tex": 46,
+   "tileMeanB": 0.520010114,
+   "tileMeanG": 0.64002049,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -572,6 +817,11 @@
    "name": "stone_ashlar",
    "r": 0.720000029,
    "roughness": 0.90554285,
+   "tex": 47,
+   "tileMeanB": 0.519986928,
+   "tileMeanG": 0.639996588,
+   "tileMeanR": 0.720001101,
+   "tileMetres": 2.4000001,
    "wetness": 0.699999988
   },
   {
@@ -582,6 +832,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.955542862,
+   "tex": 48,
+   "tileMeanB": 0.520010114,
+   "tileMeanG": 0.64002049,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -592,6 +847,11 @@
    "name": "plaster_painted",
    "r": 0.839999974,
    "roughness": 0.915275812,
+   "tex": 49,
+   "tileMeanB": 0.419993222,
+   "tileMeanG": 0.719992399,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -602,6 +862,11 @@
    "name": "concrete_raw",
    "r": 0.839999974,
    "roughness": 0.905275822,
+   "tex": 50,
+   "tileMeanB": 0.419999808,
+   "tileMeanG": 0.719992518,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -612,6 +877,11 @@
    "name": "plaster_painted",
    "r": 0.860000014,
    "roughness": 0.919170201,
+   "tex": 51,
+   "tileMeanB": 0.680003464,
+   "tileMeanG": 0.809985757,
+   "tileMeanR": 0.860018253,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -622,6 +892,11 @@
    "name": "concrete_raw",
    "r": 0.860000014,
    "roughness": 0.90917021,
+   "tex": 52,
+   "tileMeanB": 0.680000782,
+   "tileMeanG": 0.809990644,
+   "tileMeanR": 0.860000908,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -632,6 +907,11 @@
    "name": "plaster_painted",
    "r": 0.680000007,
    "roughness": 0.907768071,
+   "tex": 53,
+   "tileMeanB": 0.849990845,
+   "tileMeanG": 0.780003011,
+   "tileMeanR": 0.680003464,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -642,6 +922,11 @@
    "name": "concrete_raw",
    "r": 0.680000007,
    "roughness": 0.89776808,
+   "tex": 54,
+   "tileMeanB": 0.849986792,
+   "tileMeanG": 0.779984176,
+   "tileMeanR": 0.680000782,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -652,6 +937,11 @@
    "name": "plaster_painted",
    "r": 0.839999974,
    "roughness": 0.960280538,
+   "tex": 55,
+   "tileMeanB": 0.419993222,
+   "tileMeanG": 0.719992399,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -662,6 +952,11 @@
    "name": "concrete_raw",
    "r": 0.839999974,
    "roughness": 0.950280547,
+   "tex": 56,
+   "tileMeanB": 0.419999808,
+   "tileMeanG": 0.719992518,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -672,6 +967,11 @@
    "name": "plaster_painted",
    "r": 0.879999995,
    "roughness": 0.915033698,
+   "tex": 57,
+   "tileMeanB": 0.580011249,
+   "tileMeanG": 0.660004377,
+   "tileMeanR": 0.879993856,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -682,6 +982,11 @@
    "name": "concrete_raw",
    "r": 0.879999995,
    "roughness": 0.905033708,
+   "tex": 58,
+   "tileMeanB": 0.580003858,
+   "tileMeanG": 0.66000545,
+   "tileMeanR": 0.880005836,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -692,6 +997,11 @@
    "name": "plaster_painted",
    "r": 0.839999974,
    "roughness": 0.944533825,
+   "tex": 59,
+   "tileMeanB": 0.419993222,
+   "tileMeanG": 0.719992399,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -702,6 +1012,11 @@
    "name": "concrete_raw",
    "r": 0.839999974,
    "roughness": 0.934533834,
+   "tex": 60,
+   "tileMeanB": 0.419999808,
+   "tileMeanG": 0.719992518,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -712,6 +1027,11 @@
    "name": "plaster_painted",
    "r": 0.720000029,
    "roughness": 0.948814094,
+   "tex": 61,
+   "tileMeanB": 0.75999862,
+   "tileMeanG": 0.860018253,
+   "tileMeanR": 0.719992399,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -722,6 +1042,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.938814104,
+   "tex": 62,
+   "tileMeanB": 0.760006368,
+   "tileMeanG": 0.860000908,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -732,6 +1057,11 @@
    "name": "plaster_painted",
    "r": 0.839999974,
    "roughness": 0.923328519,
+   "tex": 63,
+   "tileMeanB": 0.419993222,
+   "tileMeanG": 0.719992399,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -742,6 +1072,11 @@
    "name": "concrete_raw",
    "r": 0.839999974,
    "roughness": 0.913328528,
+   "tex": 64,
+   "tileMeanB": 0.419999808,
+   "tileMeanG": 0.719992518,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -752,6 +1087,11 @@
    "name": "plaster_painted",
    "r": 0.680000007,
    "roughness": 0.921721935,
+   "tex": 65,
+   "tileMeanB": 0.849990845,
+   "tileMeanG": 0.780003011,
+   "tileMeanR": 0.680003464,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -762,6 +1102,11 @@
    "name": "concrete_raw",
    "r": 0.680000007,
    "roughness": 0.911721945,
+   "tex": 66,
+   "tileMeanB": 0.849986792,
+   "tileMeanG": 0.779984176,
+   "tileMeanR": 0.680000782,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -772,6 +1117,11 @@
    "name": "plaster_painted",
    "r": 0.860000014,
    "roughness": 0.952898502,
+   "tex": 67,
+   "tileMeanB": 0.680003464,
+   "tileMeanG": 0.809985757,
+   "tileMeanR": 0.860018253,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -782,6 +1132,11 @@
    "name": "concrete_raw",
    "r": 0.860000014,
    "roughness": 0.942898512,
+   "tex": 68,
+   "tileMeanB": 0.680000782,
+   "tileMeanG": 0.809990644,
+   "tileMeanR": 0.860000908,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -792,6 +1147,11 @@
    "name": "plaster_painted",
    "r": 0.879999995,
    "roughness": 0.929628611,
+   "tex": 69,
+   "tileMeanB": 0.580011249,
+   "tileMeanG": 0.660004377,
+   "tileMeanR": 0.879993856,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -802,6 +1162,11 @@
    "name": "concrete_raw",
    "r": 0.879999995,
    "roughness": 0.91962862,
+   "tex": 70,
+   "tileMeanB": 0.580003858,
+   "tileMeanG": 0.66000545,
+   "tileMeanR": 0.880005836,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -812,6 +1177,11 @@
    "name": "plaster_painted",
    "r": 0.720000029,
    "roughness": 0.917548835,
+   "tex": 71,
+   "tileMeanB": 0.75999862,
+   "tileMeanG": 0.860018253,
+   "tileMeanR": 0.719992399,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -822,6 +1192,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.907548845,
+   "tex": 72,
+   "tileMeanB": 0.760006368,
+   "tileMeanG": 0.860000908,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -832,6 +1207,11 @@
    "name": "plaster_painted",
    "r": 0.720000029,
    "roughness": 0.926004767,
+   "tex": 73,
+   "tileMeanB": 0.75999862,
+   "tileMeanG": 0.860018253,
+   "tileMeanR": 0.719992399,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -842,6 +1222,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.916004777,
+   "tex": 74,
+   "tileMeanB": 0.760006368,
+   "tileMeanG": 0.860000908,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -852,6 +1237,11 @@
    "name": "plaster_painted",
    "r": 0.680000007,
    "roughness": 0.903024971,
+   "tex": 75,
+   "tileMeanB": 0.849990845,
+   "tileMeanG": 0.780003011,
+   "tileMeanR": 0.680003464,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -862,6 +1252,11 @@
    "name": "concrete_raw",
    "r": 0.680000007,
    "roughness": 0.893024981,
+   "tex": 76,
+   "tileMeanB": 0.849986792,
+   "tileMeanG": 0.779984176,
+   "tileMeanR": 0.680000782,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -872,6 +1267,11 @@
    "name": "plaster_painted",
    "r": 0.860000014,
    "roughness": 0.93652612,
+   "tex": 77,
+   "tileMeanB": 0.680003464,
+   "tileMeanG": 0.809985757,
+   "tileMeanR": 0.860018253,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -882,6 +1282,11 @@
    "name": "concrete_raw",
    "r": 0.860000014,
    "roughness": 0.926526129,
+   "tex": 78,
+   "tileMeanB": 0.680000782,
+   "tileMeanG": 0.809990644,
+   "tileMeanR": 0.860000908,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -892,6 +1297,11 @@
    "name": "plaster_painted",
    "r": 0.720000029,
    "roughness": 0.961550415,
+   "tex": 79,
+   "tileMeanB": 0.75999862,
+   "tileMeanG": 0.860018253,
+   "tileMeanR": 0.719992399,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -902,6 +1312,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.951550424,
+   "tex": 80,
+   "tileMeanB": 0.760006368,
+   "tileMeanG": 0.860000908,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -912,6 +1327,11 @@
    "name": "plaster_painted",
    "r": 0.839999974,
    "roughness": 0.899689317,
+   "tex": 81,
+   "tileMeanB": 0.419993222,
+   "tileMeanG": 0.719992399,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -922,6 +1342,11 @@
    "name": "concrete_raw",
    "r": 0.839999974,
    "roughness": 0.889689326,
+   "tex": 82,
+   "tileMeanB": 0.419999808,
+   "tileMeanG": 0.719992518,
+   "tileMeanR": 0.840000808,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -932,6 +1357,11 @@
    "name": "plaster_painted",
    "r": 0.879999995,
    "roughness": 0.947214961,
+   "tex": 83,
+   "tileMeanB": 0.580011249,
+   "tileMeanG": 0.660004377,
+   "tileMeanR": 0.879993856,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -942,6 +1372,11 @@
    "name": "concrete_raw",
    "r": 0.879999995,
    "roughness": 0.937214971,
+   "tex": 84,
+   "tileMeanB": 0.580003858,
+   "tileMeanG": 0.66000545,
+   "tileMeanR": 0.880005836,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -952,6 +1387,11 @@
    "name": "plaster_painted",
    "r": 0.680000007,
    "roughness": 0.94887054,
+   "tex": 85,
+   "tileMeanB": 0.849990845,
+   "tileMeanG": 0.780003011,
+   "tileMeanR": 0.680003464,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -962,6 +1402,11 @@
    "name": "concrete_raw",
    "r": 0.680000007,
    "roughness": 0.938870549,
+   "tex": 86,
+   "tileMeanB": 0.849986792,
+   "tileMeanG": 0.779984176,
+   "tileMeanR": 0.680000782,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -972,6 +1417,11 @@
    "name": "concrete_raw",
    "r": 0.699999988,
    "roughness": 0.886000037,
+   "tex": 87,
+   "tileMeanB": 0.699991822,
+   "tileMeanG": 0.699991822,
+   "tileMeanR": 0.699991822,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -982,6 +1432,11 @@
    "name": "plaster_painted",
    "r": 0.879999995,
    "roughness": 0.904616654,
+   "tex": 88,
+   "tileMeanB": 0.580011249,
+   "tileMeanG": 0.660004377,
+   "tileMeanR": 0.879993856,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -992,6 +1447,11 @@
    "name": "concrete_raw",
    "r": 0.879999995,
    "roughness": 0.894616663,
+   "tex": 89,
+   "tileMeanB": 0.580003858,
+   "tileMeanG": 0.66000545,
+   "tileMeanR": 0.880005836,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1002,6 +1462,11 @@
    "name": "plaster_painted",
    "r": 0.720000029,
    "roughness": 0.897312045,
+   "tex": 90,
+   "tileMeanB": 0.75999862,
+   "tileMeanG": 0.860018253,
+   "tileMeanR": 0.719992399,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -1012,6 +1477,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.887312055,
+   "tex": 91,
+   "tileMeanB": 0.760006368,
+   "tileMeanG": 0.860000908,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1022,6 +1492,11 @@
    "name": "corrugated_metal",
    "r": 0.550000012,
    "roughness": 0.625481188,
+   "tex": 92,
+   "tileMeanB": 0.57000047,
+   "tileMeanG": 0.549924672,
+   "tileMeanR": 0.550160527,
+   "tileMetres": 0.899999976,
    "wetness": 0.850000024
   },
   {
@@ -1032,6 +1507,11 @@
    "name": "concrete_raw",
    "r": 0.550000012,
    "roughness": 0.9254812,
+   "tex": 93,
+   "tileMeanB": 0.569999814,
+   "tileMeanG": 0.549993992,
+   "tileMeanR": 0.549993992,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1042,6 +1522,11 @@
    "name": "corrugated_metal",
    "r": 0.550000012,
    "roughness": 0.650057077,
+   "tex": 94,
+   "tileMeanB": 0.57000047,
+   "tileMeanG": 0.549924672,
+   "tileMeanR": 0.550160527,
+   "tileMetres": 0.899999976,
    "wetness": 0.850000024
   },
   {
@@ -1052,6 +1537,11 @@
    "name": "concrete_raw",
    "r": 0.550000012,
    "roughness": 0.95005703,
+   "tex": 95,
+   "tileMeanB": 0.569999814,
+   "tileMeanG": 0.549993992,
+   "tileMeanR": 0.549993992,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1062,6 +1552,11 @@
    "name": "concrete_raw",
    "r": 0.699999988,
    "roughness": 0.886000037,
+   "tex": 96,
+   "tileMeanB": 0.699991822,
+   "tileMeanG": 0.699991822,
+   "tileMeanR": 0.699991822,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1072,6 +1567,11 @@
    "name": "corrugated_metal",
    "r": 0.550000012,
    "roughness": 0.617734969,
+   "tex": 97,
+   "tileMeanB": 0.57000047,
+   "tileMeanG": 0.549924672,
+   "tileMeanR": 0.550160527,
+   "tileMetres": 0.899999976,
    "wetness": 0.850000024
   },
   {
@@ -1082,6 +1582,11 @@
    "name": "concrete_raw",
    "r": 0.550000012,
    "roughness": 0.917734981,
+   "tex": 98,
+   "tileMeanB": 0.569999814,
+   "tileMeanG": 0.549993992,
+   "tileMeanR": 0.549993992,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1092,6 +1597,11 @@
    "name": "plaster_painted",
    "r": 0.879999995,
    "roughness": 0.955093026,
+   "tex": 99,
+   "tileMeanB": 0.580011249,
+   "tileMeanG": 0.660004377,
+   "tileMeanR": 0.879993856,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -1102,6 +1612,11 @@
    "name": "concrete_raw",
    "r": 0.879999995,
    "roughness": 0.945093036,
+   "tex": 100,
+   "tileMeanB": 0.580003858,
+   "tileMeanG": 0.66000545,
+   "tileMeanR": 0.880005836,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1112,6 +1627,11 @@
    "name": "stone_ashlar",
    "r": 0.720000029,
    "roughness": 0.856315076,
+   "tex": 101,
+   "tileMeanB": 0.519986928,
+   "tileMeanG": 0.639996588,
+   "tileMeanR": 0.720001101,
+   "tileMetres": 2.4000001,
    "wetness": 0.699999988
   },
   {
@@ -1122,6 +1642,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.906315088,
+   "tex": 102,
+   "tileMeanB": 0.520010114,
+   "tileMeanG": 0.64002049,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1132,6 +1657,11 @@
    "name": "stone_ashlar",
    "r": 0.720000029,
    "roughness": 0.875448406,
+   "tex": 103,
+   "tileMeanB": 0.519986928,
+   "tileMeanG": 0.639996588,
+   "tileMeanR": 0.720001101,
+   "tileMetres": 2.4000001,
    "wetness": 0.699999988
   },
   {
@@ -1142,6 +1672,11 @@
    "name": "concrete_raw",
    "r": 0.720000029,
    "roughness": 0.925448418,
+   "tex": 104,
+   "tileMeanB": 0.520010114,
+   "tileMeanG": 0.64002049,
+   "tileMeanR": 0.719992518,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1152,6 +1687,11 @@
    "name": "plaster_painted",
    "r": 0.860000014,
    "roughness": 0.925290763,
+   "tex": 105,
+   "tileMeanB": 0.680003464,
+   "tileMeanG": 0.809985757,
+   "tileMeanR": 0.860018253,
+   "tileMetres": 2,
    "wetness": 0.75
   },
   {
@@ -1162,6 +1702,11 @@
    "name": "concrete_raw",
    "r": 0.860000014,
    "roughness": 0.915290773,
+   "tex": 106,
+   "tileMeanB": 0.680000782,
+   "tileMeanG": 0.809990644,
+   "tileMeanR": 0.860000908,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1172,6 +1717,11 @@
    "name": "corrugated_metal",
    "r": 0.550000012,
    "roughness": 0.664250433,
+   "tex": 107,
+   "tileMeanB": 0.57000047,
+   "tileMeanG": 0.549924672,
+   "tileMeanR": 0.550160527,
+   "tileMetres": 0.899999976,
    "wetness": 0.850000024
   },
   {
@@ -1182,6 +1732,11 @@
    "name": "concrete_raw",
    "r": 0.550000012,
    "roughness": 0.964250445,
+   "tex": 108,
+   "tileMeanB": 0.569999814,
+   "tileMeanG": 0.549993992,
+   "tileMeanR": 0.549993992,
+   "tileMetres": 2.5,
    "wetness": 0.800000012
   },
   {
@@ -1192,6 +1747,11 @@
    "name": "stone_ashlar",
    "r": 0.720000029,
    "roughness": 0.864043534,
+   "tex": 109,
+   "tileMeanB": 0.519986928,
+   "tileMeanG": 0.639996588,
+   "tileMeanR": 0.720001101,
+   "tileMetres": 2.4000001,
    "wetness": 0.699999988
   },
   {
@@ -1202,6 +1762,11 @@
    "name": "stone_ashlar",
    "r": 0.720000029,
    "roughness": 0.844860315,
+   "tex": 110,
+   "tileMeanB": 0.519986928,
+   "tileMeanG": 0.639996588,
+   "tileMeanR": 0.720001101,
+   "tileMetres": 2.4000001,
    "wetness": 0.699999988
   },
   {
@@ -1212,6 +1777,11 @@
    "name": "curtain_wall_glass",
    "r": 0.444710582,
    "roughness": 0.0953266099,
+   "tex": 111,
+   "tileMeanB": 0.658374846,
+   "tileMeanG": 0.590618908,
+   "tileMeanR": 0.445201248,
+   "tileMetres": 4,
    "wetness": 0.349999994
   },
   {
@@ -1222,6 +1792,11 @@
    "name": "curtain_wall_glass",
    "r": 0.467194229,
    "roughness": 0.0864400417,
+   "tex": 112,
+   "tileMeanB": 0.651405692,
+   "tileMeanG": 0.610495627,
+   "tileMeanR": 0.467783839,
+   "tileMetres": 4,
    "wetness": 0.349999994
   },
   {
@@ -1232,6 +1807,11 @@
    "name": "curtain_wall_glass",
    "r": 0.518428564,
    "roughness": 0.0928120315,
+   "tex": 113,
+   "tileMeanB": 0.686685443,
+   "tileMeanG": 0.545724571,
+   "tileMeanR": 0.520995677,
+   "tileMetres": 4,
    "wetness": 0.349999994
   },
   {
@@ -1242,6 +1822,11 @@
    "name": "curtain_wall_glass",
    "r": 0.505424142,
    "roughness": 0.0967360809,
+   "tex": 114,
+   "tileMeanB": 0.644479752,
+   "tileMeanG": 0.545724571,
+   "tileMeanR": 0.502886593,
+   "tileMetres": 4,
    "wetness": 0.349999994
   }
  ],
@@ -1251,7 +1836,7 @@
   "stride": 6
  },
  "qa": {
-  "counters": 164,
+  "counters": 174,
   "failures": 0,
   "passed": true,
   "warnings": 0

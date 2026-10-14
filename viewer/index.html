@@ -68,6 +68,7 @@
   <div class="row"><span>terrain</span><b id="s-terrain">—</b></div>
   <div class="row"><span>monsoon flood</span><b id="s-flood">—</b></div>
   <div class="row"><span>cells</span><b id="s-cells">—</b></div>
+  <div class="row"><span>materials</span><b id="s-materials">—</b></div>
   <div class="row"><span>position</span><b id="s-pos">—</b></div>
   <div class="row"><span>sun</span><b id="s-sun">—</b></div>
   <div class="row"><span>weather</span><b id="s-wx">golden hour</b></div>
@@ -199,6 +200,112 @@ const world = {
 };
 const THREE_TAU = Math.PI * 2;
 
+// ---------------------------------------------------------------------------
+//  Material textures (A8)
+// ---------------------------------------------------------------------------
+//  The pipeline bakes a procedural PBR library — 115 materials, albedo / normal /
+//  roughness — and packs the albedo into one atlas for this preview.  Every tile
+//  is mean-preserving (its average linear colour *is* the material's albedo), so
+//  the shader modulates whatever colour the surface already carries by
+//  `tile / tileMean`: the city keeps the tone the material table gave it, and
+//  gains the grain the texture carries.  Surfaces the atlas does not know are
+//  left exactly as they were.
+const atlas = { tex: null, cols: 1, rows: 1, pixels: 256, tile: 128, count: 0 };
+
+function atlasGrid() {
+  return { uAtlas: { value: atlas.tex },
+           uGrid: new THREE.Vector2(atlas.cols, atlas.rows),
+           uPixels: { value: atlas.pixels } };
+}
+
+// Material name -> atlas tile, mean albedo and physical tile size (metres).
+const tileByName = new Map();
+function materialTile(id) {
+  const m = world.mat.get(id);
+  if (!m || m.tex === undefined || m.tex < 0) return null;
+  return m;
+}
+
+const ATLAS_GLSL = `
+uniform sampler2D uAtlas;
+uniform vec2 uGrid;
+uniform float uPixels;
+varying float vTile;
+varying float vScale;
+varying vec3 vMean;
+varying vec2 vAtlasUv;
+vec3 atlasSample(vec2 uv) {
+  if (vTile < 0.0 || vScale <= 0.0) return vec3(1.0);
+  float col = mod(vTile, uGrid.x);
+  float row = floor(vTile / uGrid.x);
+  vec2 cell = 1.0 / uGrid;
+  // Half-texel inset: bilinear taps must never reach the neighbouring tile, or
+  // a wall picks up a stripe of the material next to it in the atlas.
+  vec2 inset = 0.5 / (uPixels * uGrid);
+  vec2 f = clamp(fract(uv), inset, 1.0 - inset);
+  vec2 at = (vec2(col, uGrid.y - 1.0 - row) + f) * cell;
+  return texture2D(uAtlas, at).rgb;
+}`;
+
+// Applies the procedural atlas to a standard three.js material.
+//
+//   * The tile is selected per *surface* (a per-vertex / per-instance attribute
+//     written from the material table), never from position, so two buildings of
+//     the same material sample the same tile.
+//   * The projection plane is chosen in the *vertex* shader from the
+//     object-space normal.  Doing it in the fragment shader is the obvious
+//     version and it is wrong: `vNormal` arrives in view space, so a wall's
+//     dominant axis would change as the camera orbits and the texture would swim.
+//   * The sampled tile is divided by the layer's mean albedo, so the quotient has
+//     mean 1 and the surface keeps whatever colour it already had (vertex colour,
+//     facade tint, height cooling).  Textures add grain, not a re-grade.
+function patchAtlas(material) {
+  const uniforms = atlasGrid();
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uAtlas = uniforms.uAtlas;
+    shader.uniforms.uGrid = uniforms.uGrid;
+    shader.uniforms.uPixels = uniforms.uPixels;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute float aTile;
+        attribute float aScale;
+        attribute vec3 aMean;
+        varying float vTile;
+        varying float vScale;
+        varying vec3 vMean;
+        varying vec2 vAtlasUv;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vTile = aTile;
+        vScale = aScale;
+        vMean = aMean;
+        vec3 aN = normal;
+        vec3 aP = position;
+        #ifdef USE_INSTANCING
+          // Instance matrices are yaw + non-uniform scale, so rotating the box
+          // normal by them keeps the dominant axis correct and scaling the local
+          // position turns the unit box into metres.
+          aN = mat3(instanceMatrix) * aN;
+          aP = position * vec3(length(instanceMatrix[0].xyz),
+                               length(instanceMatrix[1].xyz),
+                               length(instanceMatrix[2].xyz));
+        #endif
+        vec3 aA = abs(aN);
+        if (aA.y >= aA.x && aA.y >= aA.z)      vAtlasUv = vec2(aP.x, aP.z);
+        else if (aA.x >= aA.z)                 vAtlasUv = vec2(aP.z, aP.y);
+        else                                   vAtlasUv = vec2(aP.x, aP.y);`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', '#include <common>\n' + ATLAS_GLSL)
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        if (vTile >= 0.0 && vScale > 0.0) {
+          vec3 t = atlasSample(vAtlasUv * vScale);
+          diffuseColor.rgb *= t / max(vMean, vec3(0.03));
+        }`);
+  };
+  material.customProgramCacheKey = () => 'atlas';
+  material.needsUpdate = true;
+  return material;
+}
+
 function materialOf(id) {
   return world.mat.get(id) || { name: 'unknown', colour: new THREE.Color(0.62, 0.60, 0.57),
                                 roughness: 0.8, metallic: 0.0, wetness: 0.5 };
@@ -227,8 +334,17 @@ async function loadWorld() {
       name: m.name,
       colour: new THREE.Color().setRGB(unset ? 0.60 : m.r, unset ? 0.58 : m.g,
                                        unset ? 0.55 : m.b, THREE.LinearSRGBColorSpace),
+      albedo: [unset ? 0.60 : m.r, unset ? 0.58 : m.g, unset ? 0.55 : m.b],
+      // Mean linear albedo of the atlas tile this material samples.  The shader
+      // divides by it; the tile then multiplies by ~1 on average, so a tinted
+      // facade variant keeps its tint and still gains the texture's grain.
+      tileMean: [m.tileMeanR === undefined ? (unset ? 0.60 : m.r) : m.tileMeanR,
+                 m.tileMeanG === undefined ? (unset ? 0.58 : m.g) : m.tileMeanG,
+                 m.tileMeanB === undefined ? (unset ? 0.55 : m.b) : m.tileMeanB],
       roughness: m.roughness, metallic: m.metallic,
       wetness: m.wetness === undefined ? 0.5 : m.wetness,
+      tex: (m.tex === undefined) ? -1 : m.tex,
+      tileMetres: m.tileMetres || 2.0,
     });
   }
   $('s-buildings').textContent = meta.stats.buildings.toLocaleString();
@@ -242,6 +358,27 @@ async function loadWorld() {
   $('s-qa').textContent = (meta.qa.passed ? 'PASS' : 'FAIL') + ' · ' + meta.qa.counters + ' counters';
   $('s-qa').style.color = meta.qa.passed ? '#7fe0c0' : '#ff9d9d';
   for (const l of (meta.landmarks || [])) world.landmarks[l.name] = l;
+
+  // --- procedural material atlas (A8) --------------------------------------
+  if (meta.atlas && meta.atlas.url && meta.atlas.count) {
+    setProgress(0.22, 'loading ' + meta.atlas.count + ' material textures…');
+    atlas.cols = meta.atlas.cols; atlas.rows = meta.atlas.rows;
+    atlas.pixels = meta.atlas.pixels; atlas.tile = meta.atlas.tileSize;
+    atlas.count = meta.atlas.count;
+    await new Promise((resolve) => {
+      new THREE.TextureLoader().load('./' + meta.atlas.url, (t) => {
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+        t.minFilter = THREE.LinearMipmapLinearFilter;
+        t.magFilter = THREE.LinearFilter;
+        t.generateMipmaps = true;
+        t.anisotropy = 4;
+        atlas.tex = t;
+        resolve();
+      }, undefined, () => resolve());          // a missing atlas is not fatal
+    });
+    $('s-materials').textContent = meta.atlas.count + ' textured · ' + atlas.pixels + 'px';
+  }
 
   decodeTerrain();
   decodeFlood();
@@ -368,12 +505,35 @@ function buildTerrain(step = 2) {
       idx[t++] = b; idx[t++] = d; idx[t++] = e;
     }
   }
+  // The atlas tile a terrain vertex samples, chosen from the same height bands
+  // that pick its colour: reclamation and docks, the low shore, the green hills.
+  const byName = new Map();
+  for (const [, mm] of world.mat) if (!byName.has(mm.name)) byName.set(mm.name, mm);
+  const bandOf = (y) =>
+      y < -1.0 ? 'earth' : y < 1.5 ? 'reclamation_fill' : y < 8 ? 'earth'
+    : y < 70 ? 'grass' : 'tree_foliage';
+  const tile = new Float32Array(nx * nz), scale = new Float32Array(nx * nz),
+        mean = new Float32Array(nx * nz * 3);
+  for (let j = 0; j < nz; ++j) {
+    for (let i = 0; i < nx; ++i) {
+      const gi = Math.min(W - 1, i * step), gj = Math.min(H - 1, j * step);
+      const y = T.heights[gj * W + gi], k = j * nx + i;
+      const mm = atlas.tex ? byName.get(bandOf(y)) : null;
+      tile[k] = (mm && mm.tex >= 0) ? mm.tex : -1;
+      scale[k] = (mm && mm.tex >= 0) ? 1.0 / mm.tileMetres : 0.0;
+      if (mm && mm.tex >= 0) { mean[k * 3] = mm.tileMean[0]; mean[k * 3 + 1] = mm.tileMean[1]; mean[k * 3 + 2] = mm.tileMean[2]; }
+    }
+  }
+
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aTile', new THREE.BufferAttribute(tile, 1));
+  g.setAttribute('aScale', new THREE.BufferAttribute(scale, 1));
+  g.setAttribute('aMean', new THREE.BufferAttribute(mean, 3));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeVertexNormals();
-  const m = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.0 });
+  const m = patchAtlas(new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0.0 }));
   const mesh = new THREE.Mesh(g, m);
   mesh.frustumCulled = false;
   scene.add(mesh);
@@ -546,8 +706,16 @@ function buildCity() {
   const B = world.buildings;
   const geo = new THREE.BoxGeometry(1, 1, 1);
   geo.translate(0, 0.5, 0);
-  const mat = new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0.05 });
+  const mat = patchAtlas(new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0.05 }));
   const mesh = new THREE.InstancedMesh(geo, mat, B.count);
+  // Per-instance texture selection: the atlas tile of the building's material and
+  // its physical tile size, so the brick on a 12 m chawl and a 90 m tower is the
+  // same brick.  Buildings whose material has no tile are left untextured.
+  const aTile = new Float32Array(B.count), aScale = new Float32Array(B.count),
+        aMean = new Float32Array(B.count * 3);
+  geo.setAttribute('aTile', new THREE.InstancedBufferAttribute(aTile, 1));
+  geo.setAttribute('aScale', new THREE.InstancedBufferAttribute(aScale, 1));
+  geo.setAttribute('aMean', new THREE.InstancedBufferAttribute(aMean, 3));
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(),
         p = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0), col = new THREE.Color();
   const cool = new THREE.Color(0x40618f);
@@ -562,7 +730,16 @@ function buildCity() {
     const h = B.h(i);
     if (h > 45) col.lerp(cool, Math.min(0.7, (h - 45) / 90));
     mesh.setColorAt(i, col);
+    const textured = atlas.tex && mm.tex >= 0;
+    aTile[i] = textured ? mm.tex : -1;
+    aScale[i] = textured ? 1.0 / mm.tileMetres : 0.0;
+    if (textured) {
+      aMean[i * 3] = mm.tileMean[0]; aMean[i * 3 + 1] = mm.tileMean[1]; aMean[i * 3 + 2] = mm.tileMean[2];
+    }
   }
+  geo.attributes.aTile.needsUpdate = true;
+  geo.attributes.aScale.needsUpdate = true;
+  geo.attributes.aMean.needsUpdate = true;
   mesh.instanceMatrix.needsUpdate = true;
   if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   mesh.frustumCulled = false;
@@ -578,6 +755,8 @@ function buildLandmarks() {
   if (!H || !H.indexCount) return null;
   const pos = new Float32Array(H.vertexCount * 3), nor = new Float32Array(H.vertexCount * 3),
         col = new Float32Array(H.vertexCount * 3);
+  const heroTile = new Float32Array(H.vertexCount), heroScale = new Float32Array(H.vertexCount),
+        heroMean = new Float32Array(H.vertexCount * 3);
   const c = new THREE.Color();
   for (let i = 0; i < H.vertexCount; ++i) {
     const o = H.vertexOffset + i * H.vertexStride;
@@ -587,9 +766,17 @@ function buildLandmarks() {
     nor[i * 3] = dv.getFloat32(o + 12, true);
     nor[i * 3 + 1] = dv.getFloat32(o + 16, true);
     nor[i * 3 + 2] = dv.getFloat32(o + 20, true);
-    c.copy(materialOf(dv.getUint8(o + 24)).colour);
+    const mm = materialOf(dv.getUint8(o + 24));
+    c.copy(mm.colour);
     const ao = 0.45 + (dv.getUint8(o + 25) / 255) * 0.55;
     col[i * 3] = c.r * ao; col[i * 3 + 1] = c.g * ao; col[i * 3 + 2] = c.b * ao;
+    const textured = atlas.tex && mm.tex >= 0;
+    heroTile[i] = textured ? mm.tex : -1;
+    heroScale[i] = textured ? 1.0 / mm.tileMetres : 0.0;
+    if (textured) {
+      heroMean[i * 3] = mm.tileMean[0]; heroMean[i * 3 + 1] = mm.tileMean[1];
+      heroMean[i * 3 + 2] = mm.tileMean[2];
+    }
   }
   const idx = new Uint32Array(H.indexCount);
   for (let i = 0; i < H.indexCount; ++i) idx[i] = dv.getUint32(H.indexOffset + i * 4, true);
@@ -597,9 +784,12 @@ function buildLandmarks() {
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
   g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aTile', new THREE.BufferAttribute(heroTile, 1));
+  g.setAttribute('aScale', new THREE.BufferAttribute(heroScale, 1));
+  g.setAttribute('aMean', new THREE.BufferAttribute(heroMean, 3));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
-  const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
-    vertexColors: true, roughness: 0.62, metalness: 0.05, side: THREE.DoubleSide }));
+  const mesh = new THREE.Mesh(g, patchAtlas(new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.62, metalness: 0.05, side: THREE.DoubleSide })));
   mesh.frustumCulled = false;
   scene.add(mesh);
   return mesh;

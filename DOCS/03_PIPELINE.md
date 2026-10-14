@@ -87,11 +87,40 @@ Record sizes (all `static_assert`ed): `Header` 128, `SectionEntry` 40,
 
 ## Materials
 
-116 materials are defined in `MaterialLibrary` (declared once, ids assigned in
-insertion order, mirrored by the `MaterialId` enum and serialised as
-`MaterialDef` 80 B records). Id **0 means "no material"** and the viewer renders
-it as neutral wet concrete rather than black — a missing id must never produce
-a rendering artifact.
+42 base materials are defined in `MaterialLibrary` (declared once, ids assigned
+in insertion order, mirrored by the `MaterialId` enum and serialised as
+`MaterialDef` 80 B records); `materialVariant()` mints tinted, weathered copies
+of five facade bases per building, so a built world's table is ~116 records. Id
+**0 means "no material"** and the viewer renders it as neutral wet concrete
+rather than black — a missing id must never produce a rendering artifact.
+
+### Textures (A8, D-031)
+
+| artefact | where | what |
+|---|---|---|
+| `materials_{basecolor,normal,orm}.mumbaitex` | `data/processed/textures/` | the shipping containers: mmap-able texture arrays, one layer per textured material, mip chains baked offline, and a 40 B layer record carrying the tile's mean linear albedo and physical size. Read by `engine/world/texture.{h,cpp}` |
+| `atlas_{basecolor,normal,orm}.png` | `data/processed/textures/` | the same layers packed into a `ceil(sqrt(count))`-wide grid, for the browser preview and for review |
+| `materials.png` | `data/processed/textures/` | the labelled contact sheet — how a procedural library is reviewed without a renderer |
+| `texture_manifest.json` | `data/processed/textures/` | layer → material, family, `tileMetres`, and the authored albedo/roughness the tile must reproduce |
+| `atlas_basecolor.png` | `viewer/data/` | copied by `exportViewer`; `meta.atlas` describes the grid |
+
+`MaterialDef.textureSetIndex` holds the **0-based array layer**, or **-1** for an
+untextured material (id 0). The viewer payload adds, per material, `tex` (atlas
+tile = layer), `tileMetres` and `tileMean{R,G,B}` (the layer's mean *linear*
+albedo), plus `meta.atlas = {url, cols, rows, count, tileSize, pixels}`.
+
+Mean preservation is the invariant that makes the library safe to add to a
+calibrated world: a tile's mean linear albedo is the material's albedo, and the
+ORM green channel's mean is the authored roughness. The stage fails above a 2 %
+mean error and reports the measured value (`textures.meanAlbedoError`, 1.05 % at
+the current build). Surfaces sample `tile / tileMean`, a quotient with mean 1, so
+texture adds detail without moving tone.
+
+UVs follow from the same table: `uvScaleFor(id) = 1/tileMetres`, published to
+every `MeshBuilder` in the build (`CellData::setUvScales`), so a wall's UVs are
+metres divided by the physical tile size of its material and texel density does
+not depend on how large the surface is. A builder with no table keeps its
+caller's scale, which is what the mesh unit tests use.
 
 The ordered base set (id = position): `asphalt_smooth`, `asphalt_patched`,
 `asphalt_sealink`, `concrete_road`, `paver_block`, `gravel`, `dirt`, `rock`,

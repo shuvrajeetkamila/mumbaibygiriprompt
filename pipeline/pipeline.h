@@ -20,6 +20,7 @@
 #include "pipeline/mgeo/geometry.h"
 #include "pipeline/mgeo/mesh.h"
 #include "pipeline/mgeo/dem.h"
+#include "pipeline/mgeo/texture.h"
 
 #include <map>
 
@@ -51,6 +52,8 @@ struct BuildConfig {
     bool buildProps    = true;
     bool buildHero     = true;
     bool verifyChunks  = true;        // re-open and hash every chunk after write
+    bool buildTextures = true;        // procedural PBR content (A8)
+    u32 textureSize    = 256;         // mip0 edge of one material tile, pixels
 
     // Simplification tolerances, all in metres.
     f64 footprintSimplify = 0.35;
@@ -76,9 +79,51 @@ public:
     // Serialises the table as a section payload.
     std::vector<u8> serialize() const;
 
+    // --- texture content (A8) ----------------------------------------------
+    // `layer` is the 1-based index into the material's texture array; 0 means
+    // the material has no texture and renders from its parameters alone.
+    // Records that material `id` is baked into array layer `layer` (0-based, the
+    // index the runtime and the atlas grid both use) and how many metres one tile
+    // covers.  Called by the texture stage as it appends each layer.
+    void setTextureSet(u32 id, u32 layer, f32 tileMetres);
+    // 0-based texture-array / atlas-tile index of a material, or -1 when the
+    // material is untextured (id 0 "unknown" is).  The sentinel is -1 rather than
+    // 0 because layer 0 is a real layer: overloading it would silently give every
+    // untextured surface the first material in the library.
+    i32 textureLayerIndex(u32 id) const;
+    // 1-based layer number, kept for the QA report ("layer 3 of 115").
+    u32 textureLayer(u32 id) const;
+    // Mean *linear* albedo of a baked layer.  This is the number the shader
+    // divides the sampled tile by, which is what makes adding textures a
+    // detail change rather than a re-grade: the quotient has mean 1, so a
+    // tinted facade variant keeps its tint and still gains the grain.
+    void setTextureLayerMean(u32 layer, f32 r, f32 g, f32 b);
+    bool textureLayerMean(i32 layer, f32 rgb[3]) const;
+    // The physical size of one texture tile in metres.  This is what the mesh
+    // layer divides UVs by, so it is derived from the material's *name* and is
+    // available for every material — including the facade variants that are
+    // minted per building long after the base library was built.
+    f32 tileMetres(u32 id) const;
+    // Metres per UV unit: one UV unit is one tile.  Falls back to the caller's
+    // own scale when the material is unknown, so a mesh built without a library
+    // (tests, tools) behaves exactly as it did before textures existed.
+    f32 uvScaleFor(u32 id, f32 fallback) const;
+    u64 unmappedUvLookups() const { return m_unmapped; }
+    // Number of materials that received a texture layer (A8), i.e. the number of
+    // tiles in the atlas the viewer reads.
+    u32 textureLayerCount() const { return m_textureLayers; }
+    void setTextureLayerCount(u32 n) { m_textureLayers = n; }
+    u32 textureAtlasTile() const { return m_atlasTile; }
+    void setTextureAtlasTile(u32 n) { m_atlasTile = n; }
+
 private:
     std::vector<MaterialDef> m_defs;
     std::unordered_map<std::string, u32> m_lookup;
+    std::vector<f32> m_tiles;         // parallel to m_defs
+    mutable u64 m_unmapped = 0;
+    u32 m_textureLayers = 0;          // how many layers the texture stage wrote
+    u32 m_atlasTile = 0;              // atlas tile edge in pixels
+    std::vector<f32> m_layerMean;     // 3 floats per baked layer (linear RGB)
 };
 
 // -----------------------------------------------------------------------------
@@ -160,6 +205,15 @@ struct CellData {
         return terrain[0].empty() && roads.empty() && buildings[0].empty() &&
                water.empty() && rail.empty() && hero.empty();
     }
+
+    // One call, every builder: the cell's meshes all scale their UVs by the same
+    // material table (A8).
+    void setUvScales(const std::vector<f32>* t) {
+        mesh::MeshBuilder* all[] = {&terrain[0], &terrain[1], &terrain[2], &terrain[3],
+                                    &roads, &buildings[0], &buildings[1], &buildings[2],
+                                    &buildings[3], &water, &rail, &hero, &impostors};
+        for (mesh::MeshBuilder* m : all) m->setUvScales(t);
+    }
 };
 
 // -----------------------------------------------------------------------------
@@ -196,6 +250,30 @@ struct Context {
 
     ZoningField zoning;
     MaterialLibrary materials;
+
+    // --- material UV scales (A8) --------------------------------------------
+    // One entry per material id, = 1 / tileMetres, so a mesh's UV in metres is
+    // divided by the material's physical tile.  Kept in step with the library
+    // lazily: `uvScales()` refreshes it whenever the material count has moved
+    // (facade variants are minted per building, long after the base library), and
+    // every MeshBuilder in the world holds a pointer to this vector, so a cell
+    // created early still resolves a material created later.  The vector's
+    // address never changes, only its contents.
+    std::vector<f32> uvScaleTable;
+    // The UV scale for one material (metres -> UV); `fallback` is the caller's
+    // legacy scale, used when the material is unknown or the table has no entry.
+    f32 uvScaleFor(u32 materialId, f32 fallback = 0.25f) {
+        const std::vector<f32>& t = uvScales();
+        return materialId < t.size() && t[materialId] > 0.0f ? t[materialId] : fallback;
+    }
+    const std::vector<f32>& uvScales() {
+        if (uvScaleTable.size() != materials.count()) {
+            uvScaleTable.resize(materials.count());
+            for (u32 i = 0; i < materials.count(); ++i)
+                uvScaleTable[i] = materials.uvScaleFor(i, 0.25f);
+        }
+        return uvScaleTable;
+    }
 
     std::unordered_map<CellKey, CellData, CellKeyHash> cells;
     CellKey originCell{0, 0};
@@ -303,6 +381,7 @@ bool buildRailAndLanduse(Context& ctx);
 bool buildBuildings(Context& ctx);
 bool buildProps(Context& ctx);
 bool buildHeroAssets(Context& ctx);
+bool buildTextures(Context& ctx);        // procedural PBR content (textures.cpp, A8)
 bool buildFloodModel(Context& ctx);      // monsoon hydrology (flood.cpp)
 bool writeChunks(Context& ctx);
 bool writeManifest(Context& ctx);

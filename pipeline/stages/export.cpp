@@ -323,6 +323,24 @@ bool exportViewer(Context& ctx) {
                         m.set("roughness", Json(defs[i].roughness));
                         m.set("metallic", Json(defs[i].metallic));
                         m.set("wetness", Json(defs[i].wetnessResponse));
+                        // A8: the texture the material samples, as a tile index
+                        // into the base-colour atlas the export copies alongside
+                        // this payload, and the physical size of one tile.  -1
+                        // means the material is untextured (id 0, "unknown").
+                        const i32 layer = ctx.materials.textureLayerIndex(i);
+                        m.set("tex", Json(static_cast<f64>(layer)));
+                        m.set("tileMetres", Json(static_cast<f64>(ctx.materials.tileMetres(i))));
+                        // The mean linear albedo of the layer.  The shader divides
+                        // the sampled tile by it, so the quotient averages 1 and the
+                        // surface keeps whatever colour it already had — which is
+                        // what lets 74 tinted facade variants share their base
+                        // material's texture without losing their tint.
+                        f32 mean[3] = {0, 0, 0};
+                        if (ctx.materials.textureLayerMean(layer, mean)) {
+                            m.set("tileMeanR", Json(static_cast<f64>(mean[0])));
+                            m.set("tileMeanG", Json(static_cast<f64>(mean[1])));
+                            m.set("tileMeanB", Json(static_cast<f64>(mean[2])));
+                        }
                         materials.push(m);
                     }
                 }
@@ -478,6 +496,32 @@ bool exportViewer(Context& ctx) {
     }
     meta.set("landmarks", anchors);
     meta.set("materials", materials);
+
+    // --- texture atlas (A8) ---------------------------------------------------
+    // The browser preview gets the procedural material library as one packed
+    // image (the runtime reads the .mumbaitex arrays instead).  The grid is
+    // published with it so the viewer can address a tile per material without
+    // guessing, and the atlas itself is copied next to the payload.
+    {
+        Json atlas = Json::object();
+        const u32 textured = ctx.materials.textureLayerCount();
+        if (textured) {
+            const u32 cols = static_cast<u32>(std::ceil(std::sqrt(static_cast<f64>(textured))));
+            const u32 rows = (textured + cols - 1) / cols;
+            atlas.set("url", Json(std::string("data/atlas_basecolor.png")));
+            atlas.set("cols", Json(static_cast<f64>(cols)));
+            atlas.set("rows", Json(static_cast<f64>(rows)));
+            atlas.set("count", Json(static_cast<f64>(textured)));
+            atlas.set("tileSize", Json(static_cast<f64>(ctx.materials.textureAtlasTile())));
+            atlas.set("pixels", Json(static_cast<f64>(ctx.cfg.textureSize)));
+            const std::string src = ctx.cfg.outDir + "/textures/atlas_basecolor.png";
+            const std::string dst = dataDir + "/atlas_basecolor.png";
+            const std::string bytes = readFileToString(src);
+            if (bytes.empty() || !writeFile(dst, bytes.data(), bytes.size()))
+                ctx.qa.warn("texture atlas could not be copied into the viewer payload");
+        }
+        meta.set("atlas", atlas);
+    }
 
     Json stats = Json::object();
     stats.set("chunks", Json(static_cast<f64>(cells)));
