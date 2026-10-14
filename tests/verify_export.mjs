@@ -220,22 +220,46 @@ const B = meta.buildings;
   }
   for (const [n, [d, who]] of worst)
     console.log(`    ${n.padEnd(20)} worst vertex ${d.toFixed(0)} m from ${who}`);
-  // hero_concrete is shared by the CSMT bulk and the 3.5 km Marine Drive
-  // promenade, whose published anchor is its mid-point; the stone, terracotta
-  // and glass materials belong to point landmarks and get the tight limit.
+  // The hero section holds both point landmarks and linear features.  hero_stone,
+  // hero_terracotta and curtain_wall_glass belong to the three monuments and are
+  // held to 400 m of their anchor; hero_concrete (the CSMT bulk and the 3.5 km
+  // Marine Drive promenade) and paver_block (the promenade's own paving bays) are
+  // corridor geometry whose published anchor is the corridor's mid-point.
+  const corridorMaterials = new Set(['hero_concrete', 'paver_block', 'concrete_road']);
   for (const [n, [d]] of worst) {
-    const limit = n === 'hero_concrete' ? 2500 : 400;
+    const limit = corridorMaterials.has(n) ? 2500 : 400;
     check(`hero '${n}' sits on its anchor`, d < limit, `worst vertex ${d.toFixed(0)} m away`);
   }
-  // The Sea Link deck must be kilometres long, not a stub.  (The cable groups
-  // themselves only span the two navigation channels, so the deck is the
-  // measurement that matters.)
-  const deck = [...byMat.entries()].find(([id]) => nameOf(id) === 'concrete_road');
-  if (deck) {
-    const r = deck[1];
-    const span = Math.hypot(r[1] - r[0], r[3] - r[2]);
-    console.log(`    sea link deck span ${(span / 1000).toFixed(2)} km`);
+  // The Sea Link deck must be kilometres long, not a stub.  The deck material is
+  // the city's concrete decks in general — flyovers carry it too — so the span is
+  // measured over the crossing corridor: deck vertices that lie within 4 km of
+  // the cable groups, which exist nowhere else in the world.
+  const bridgeMats = ['sea_link_cable', 'sea_link_pylon'];
+  const bridgeBB = [Infinity, -Infinity, Infinity, -Infinity];
+  for (const [id, r] of byMat) {
+    if (!bridgeMats.includes(nameOf(id))) continue;
+    bridgeBB[0] = Math.min(bridgeBB[0], r[0]); bridgeBB[1] = Math.max(bridgeBB[1], r[1]);
+    bridgeBB[2] = Math.min(bridgeBB[2], r[2]); bridgeBB[3] = Math.max(bridgeBB[3], r[3]);
+  }
+  const deckIds = [...byMat.keys()].filter(id => nameOf(id) === 'concrete_road');
+  let dMinX = Infinity, dMaxX = -Infinity, dMinZ = Infinity, dMaxZ = -Infinity, deckN = 0;
+  for (let i = 0; i < H.vertexCount; ++i) {
+    const o = H.vertexOffset + i * H.vertexStride;
+    if (!deckIds.includes(dv.getUint8(o + 24))) continue;
+    const x = dv.getFloat32(o, true), z = dv.getFloat32(o + 8, true);
+    if (x < bridgeBB[0] - 4000 || x > bridgeBB[1] + 4000 ||
+        z < bridgeBB[2] - 4000 || z > bridgeBB[3] + 4000) continue;
+    dMinX = Math.min(dMinX, x); dMaxX = Math.max(dMaxX, x);
+    dMinZ = Math.min(dMinZ, z); dMaxZ = Math.max(dMaxZ, z);
+    deckN++;
+  }
+  if (deckN > 0) {
+    const span = Math.hypot(dMaxX - dMinX, dMaxZ - dMinZ);
+    console.log(`    sea link deck ${deckN} vertices, corridor span ` +
+                `${(span / 1000).toFixed(2)} km`);
     check('sea link spans the bay', span > 2500, `${span.toFixed(0)} m`);
+  } else {
+    check('sea link deck found in its corridor', false, 'no deck vertices near the cable groups');
   }
   check('pylons reach their published height', maxY > 100, `${maxY.toFixed(1)} m`);
 }

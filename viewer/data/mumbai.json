@@ -27,7 +27,7 @@
  "flood": {
   "cellsOver50cm": 128907,
   "height": 1345,
-  "offset": 8057332,
+  "offset": 21627276,
   "peakCm": 255,
   "storm": "severe",
   "units": "cm",
@@ -37,7 +37,7 @@
  "floodModerate": {
   "cellsOver50cm": 14628,
   "height": 1345,
-  "offset": 9005557,
+  "offset": 22575501,
   "peakCm": 255,
   "storm": "moderate",
   "units": "cm",
@@ -48,9 +48,9 @@
  "formatVersion": 1,
  "generated": "mumbai_pipeline",
  "hero": {
-  "indexCount": 44208,
-  "indexOffset": 7880500,
-  "vertexCount": 29232,
+  "indexCount": 579990,
+  "indexOffset": 19307316,
+  "vertexCount": 386320,
   "vertexOffset": 6945076,
   "vertexStride": 32
  },
@@ -1836,7 +1836,7 @@
   "stride": 6
  },
  "qa": {
-  "counters": 174,
+  "counters": 193,
   "failures": 0,
   "passed": true,
   "warnings": 0

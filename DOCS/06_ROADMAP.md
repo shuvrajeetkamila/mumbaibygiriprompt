@@ -27,9 +27,9 @@ GPU, a device, or the Android toolchain exists yet.
 
 | # | item | specification | now | notes |
 |---|---|---|---|---|
-| B1 | Hero assets | Gateway ~500k tris, Taj ~800k, CSMT ~1.2M, Sea Link ~300k/pylon, Marine Drive ~50k/building | 1,750 / 4,500 / 1,762 / 6,324 / 400 — 14,736 total (D-022) | correct massings and published dimensions; the detail budgets are ~2 % |
+| B1 | Hero assets | Gateway ~500k tris, Taj ~800k, CSMT ~1.2M, Sea Link ~300k/pylon, Marine Drive ~50k/building | 19,314 / 84,494 / 30,304 / 34,476 (2 pylons) / 41,288 — 193,132 total against an 8,100,000 budget (**2.38 %**, D-032) | published dimensions; ornament to the survey tier (coursed ashlar, voussoirs, jali, balustrades, deck furniture, Deco frontage). The budgets are hand-modelled asset budgets; closing the gap needs hand-modelled or photogrammetric assets, not more procedural ornament |
 | B2 | Building count | 200k+ | 164,057, of which 148 surveyed and the rest generated inside real parcels and slum clusters | the extract carries 16,408 building ways; the rest needs parcel data |
-| B3 | Landmark recognisability at 100 m unlabelled | judged by a Mumbai resident | massings are right; facades, cornices, windows and signage are not modelled | follows B1 |
+| B3 | Landmark recognisability at 100 m unlabelled | judged by a Mumbai resident | massings, cornices, window rows with glazing bars, jali screens, voussoir arches, dome ribs, gallery balustrades, deck rails and the Art Deco row are modelled; signage text and carved relief are not | a resident check is not runnable here — the reviewer's eye is the instrument (D-032) |
 | B4 | 34,000 km of roadway | 34,000 km with 14 rail lines, 6 highway corridors | 8,189 km OSM centreline + authored corridors; 29 rail ways | the extract is a truncated 2015 sample (D-020) |
 
 ## C. Data-limited — code is ready, the inputs are not reachable
@@ -63,9 +63,14 @@ GPU, a device, or the Android toolchain exists yet.
    through the atlas in the preview.  What remains inside A8 is surface *detail*
    at production density (decals, signage, furniture maps) and GPU consumption,
    which belongs with A1.
-3. **B1/B3 — hero detail.** Window grids, cornices, cable hardware and signage
-   along the published geometry.  Large, mechanical, and reviewable in the
-   preview.
+3. ~~**B1/B3 — hero detail.**~~ **Built to the survey tier** (D-032): every hero
+   asset carries a detail level; at level 3 the monuments are coursed ashlar cut
+   around their openings, with voussoir arches, jali lattices, gallery
+   balustrades, pinnacles, deck rails/kerbs/stiffeners and the Art Deco row.
+   193,132 triangles against the specification's 8,100,000 (2.38 %), published
+   per asset as `hero.<name>.triangles` beside `hero.<name>.triangleBudget`.
+   What remains is not more procedural ornament but hand-modelled or
+   photogrammetric assets, plus carved relief and signage text.
 4. **A2 — Jolt, vendored**, with a hand-written build file, then a headless
    physics harness (drop a motorcycle on the Sea Link, measure penetration) so
    the integration is validated the way the traffic layer is.

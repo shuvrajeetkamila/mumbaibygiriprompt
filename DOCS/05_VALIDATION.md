@@ -9,7 +9,7 @@ make all-checks
 which runs the unit suite, the 60-minute runtime validation, the independent
 payload verifier, the viewer-shader verifier, the artifact hash check and the
 raw-data hash check. The numbers quoted here are from the last full run (the
-`all-checks` log of 2026-10-14, after D-031).
+`all-checks` log of 2026-10-14, after D-032).
 
 ## The six verification layers
 
@@ -63,14 +63,14 @@ city's own nav graph — 119 chunks, 31,345 nodes, 85,956 edges, 302 signal phas
 | **vehicles within 500 m of the camera** | median **451**, peak **547** over 360 samples |
 | minimum gap held | **2.55 m** against a 0.50 m floor; 0 lane violations in 216,000 audits |
 | macro-cell crossings | **105** |
-| worst shift cost | 0.0004 ms (budget: 1 ms) |
+| worst shift cost | 0.0003 ms (budget: 1 ms) |
 | worst camera-relative error across a shift | **0.00e+00 m** |
 | chunk loads / unloads | 256 / 364 |
 | hash failures | **0** |
-| frame cost (solver + floating origin, CPU) | mean 0.36 ms, p50 0.08 ms, p99 4.15 ms, worst 18.93 ms |
-| streaming cost (separate, off-thread in the runtime) | 0.09 ms mean over 7,200 streaming frames, worst 8.56 ms |
-| traffic behaviour | 28,393 lane changes, 4,087,290 Boids updates, 94,530 separation events, 18,833 turnarounds |
-| signals | 301 stops at a line on red, 708 cleared on green, 72,825 turned away from a full junction |
+| frame cost (solver + floating origin, CPU) | mean 0.33 ms, p50 0.08 ms, p99 3.64 ms, worst 9.27 ms |
+| streaming cost (separate, off-thread in the runtime) | 0.10 ms mean over 7,200 streaming frames, worst 14.09 ms |
+| traffic behaviour | 28,393 lane changes, 28,393 rollover-limited manoeuvres, 4,087,290 Boids updates, 94,530 separation events, 18,833 turnarounds |
+| signals | 301 stops at a line on red, 708 cleared on green, 72,825 turned away from a full junction, 0 held at a dead end |
 | population device | 14,587 re-entry attempts found no room (0.8 % of 1.8 M edge completions), 0 vehicles stranded |
 | junction holds stopped at the box limit | 2,710 of 72,825 (the one place the floor can be transiently compressed; no audit found a violation) |
 | invalid states | 0 non-finite, 0 out-of-envelope speeds, 0 out-of-extent positions |
@@ -85,7 +85,7 @@ which is why the run reports the distribution and asserts the peak (D-030).
 
 A Node verifier that re-derives everything from the offsets in
 `viewer/data/mumbai.json` and never trusts the pipeline's own counters:
-**395 checks, 0 failing**.  Since D-031 it also re-inflates the material atlas
+**396 checks, 0 failing**.  Since D-031 it also re-inflates the material atlas
 (its own PNG decode, `node:zlib` for the stream), walks every textured
 material's tile and confirms the `tileMean` the shader divides by against the
 pixels it will sample — worst error 0.0002 — and refuses two materials that name
@@ -94,9 +94,11 @@ y −13.5 … 91.4 m; 164,057 building records; 126.7 km² of footprint; heights
 p50/p90/p99 = 12/22/41 m; **124,348 nodes / 167,145 edges** — the street graph
 clipped to the extent (2,550 nodes and 2,556 edges that lie outside the box are
 dropped), 100 % of the survivors reachable, median edge 29.7 m, longest 169 m,
-reaching x 22,527 of 22,528 m and z 43,005 of 43,008 m; hero 29,232 vertices;
-sea-link deck span 3.88 km; every vertex of a point-landmark material within
-400 m of its anchor (stone 54 m, terracotta 48 m, glass 82 m).
+reaching x 22,527 of 22,528 m and z 43,005 of 43,008 m; hero 386,320 vertices /
+**193,330 triangles**; the Sea Link deck 59,792 vertices across a 3.88 km
+corridor span; every vertex of a point-landmark material within 400 m of its
+anchor (stone 54 m, terracotta 48 m, glass 82 m) and every vertex of a corridor
+material (concrete, paving) within 2.5 km of the corridor's published anchor.
 
 The verifier has earned its place three times.  An earlier version added the
 extent origin twice and produced nonsense.  It caught the payload/console QA-count
@@ -127,8 +129,8 @@ publishes `tex` / `tileMetres` / `tileMean` for every textured material.
 `viewer/data/SHA256SUMS` pins the published payload (the build is
 byte-reproducible, so the hashes are stable across rebuilds) and the verifier
 fails loudly if the bytes on disk are not the bytes that were published:
-`mumbai.bin` sha256 `f9784040…` (9,953,782 B), `mumbai.json` sha256 `b79195f2…`
-(37,608 B), and `atlas_basecolor.png` sha256 `dbf81ed5…` (1,704,817 B — the
+`mumbai.bin` sha256 `62793556…` (23,523,726 B), `mumbai.json` sha256 `a88493ab…`
+(37,613 B), and `atlas_basecolor.png` sha256 `dbf81ed5…` (1,704,817 B — the
 11x11 material atlas the viewer fetches) pinned by the same script.  The texture
 arrays in `data/processed/textures/` are *inputs* to the payload, not artifacts
 of the browser build, so they are covered by the manifest byte counts the
@@ -161,12 +163,12 @@ the pinned hashes).
 | 1 | terrain within 1 m vertical of Cartosat | **data-limited** | no Cartosat DEM obtainable (D-006); the synthesis is anchored on 43 published control points, `--dem` swaps in a real raster |
 | 2 | roads within 2 m horizontal of OSM | met for surveyed ways | centrelines are used verbatim; resampling only inserts vertices. Authored corridors are published alignments (D-021) |
 | 3 | landmark detail / material content | partly met | **textures are no longer the gap** (D-031): 115 materials with albedo, normal and ORM maps at a physical tile size, mean-preserving, verified from the shipped bytes; the remaining gap at this row is hero *geometry*, below |
-| 3b | landmarks recognisable at 100 m, unlabelled | partly met | correct massing and, after the detail pass, 14,736 triangles across five assets (Gateway 1,750, Taj 4,500, CSMT 1,762, Sea Link 6,324, Marine Drive 400). The specification's budgets (500k / 800k / 1.2M / 300k per pylon / 50k per building) are unmet — declared, not concealed (D-022) |
+| 3b | landmarks recognisable at 100 m, unlabelled | partly met | published dimensions plus the identifying ornament at the survey tier (D-032): coursed ashlar cut around the openings, voussoir arches with the barrel behind them, jali lattices, gallery balustrades, pinnacles, deck rails/kerbs/stiffeners, the Art Deco row. 193,330 triangles across five assets (Gateway 19,126, Taj 84,556, CSMT 30,628, Sea Link 34,476, Marine Drive 41,288). The specification's budgets (500k / 800k / 1.2M / 300k per pylon / 50k per building) are hand-modelled asset budgets and are **2.39 % met** — published per asset (`hero.<name>.triangles` beside `hero.<name>.triangleBudget`), not concealed |
 | 4 | zero vertex jitter at 4 corners + centre | **met** | unit test (1 mm survives, tol 2e-4) and 105 live crossings at 0.00e+00 m |
-| 5 | ≥500 vehicles in a 500 m radius at 30 FPS | CPU-side met | 547 peak / 451 median within 500 m of the moving camera over 60 min; solver + origin CPU p99 4.38 ms against a 16.6 ms budget, with chunk I/O timed apart. The GPU frame is not measurable here |
-| 6 | weather and ocean valid | partly met | **monsoon hydrology is built and verified** (D-026): two design storms on a 705 × 1345 hydrology grid, mass balance closed to 10⁻¹⁰ relative, published peak-depth rasters for both storms, and the specification's own sites (Hindmata 289 mm, King's Circle 283 mm, Andheri subway 376 mm in the 2005 analogue; Marine Drive dry in both) flooding as an emergent consequence of the DEM. GPU rain, wetness shading, Gerstner ocean and scattering remain specified-not-built in `04_RUNTIME.md` |
+| 5 | ≥500 vehicles in a 500 m radius at 30 FPS | CPU-side met | 547 peak / 451 median within 500 m of the moving camera over 60 min; solver + origin CPU p99 3.64 ms against a 16.6 ms budget, with chunk I/O timed apart. The GPU frame is not measurable here |
+| 6 | weather and ocean valid | partly met | **monsoon hydrology is built and verified** (D-026): two design storms on a 705 × 1345 hydrology grid, mass balance closed to 10⁻¹⁰ relative, published peak-depth rasters for both storms, and the specification's own sites (Hindmata 274 mm, King's Circle 280 mm, Andheri subway 408 mm in the 2005 analogue; Marine Drive dry in both) flooding as an emergent consequence of the DEM. GPU rain, wetness shading, Gerstner ocean and scattering remain specified-not-built in `04_RUNTIME.md` |
 | 7 | 30 FPS worst case (monsoon + traffic + South Bombay) | **not verifiable here** | needs a device; no GPU in the build environment |
-| 8 | ≤160 GB installed | met at this tier | 686 MB of chunks for 968.9 km²; scales with hero density and texture budget, both of which are currently far below the specification's |
+| 8 | ≤160 GB installed | met at this tier | 708 MB of chunks for 968.9 km²; scales with hero density and texture budget, both of which are currently far below the specification's |
 | 9 | 60-minute continuous run, zero crashes | **met** | `mumbai_sim` driving `engine/sim/` over the city graph, 216,000 ticks, exit 0, 14/14 checks, 0 penetrations, 0 lane violations |
 
 ## What this proves, and what it does not
@@ -189,12 +191,19 @@ hardware this environment does not have (D-001).
 
 ## Known gaps, in priority order
 
-1. **Hero detail** is ~2 % of the specification's triangle budgets (D-022).
-   The material library behind it is now real (D-031), and the hero meshes are
-   textured by the same atlas, so the remaining work is geometry and UV seams.
+1. **Hero detail** is 2.39 % of the specification's triangle budgets (D-032).
+   The assets are modelled to their published dimensions and ornament (coursed
+   ashlar cut around the openings, voussoir arches with the barrel behind them,
+   jali lattices, gallery balustrades, deck rails/kerbs/stiffeners, the Art Deco
+   row), and every build now audits the hero meshes for non-finite coordinates,
+   out-of-range indices and zero-area triangles — the last full run reports
+   **0 of each** across 193,330 triangles. What a procedural build cannot supply
+   is the photogrammetry-scale triangle density the budgets describe; that needs
+   hand-modelled or scanned assets, not more ornament.
 2. **Weather and ocean** are designed, not built.
-3. **MOBIL lane changes and the two-wheeler flow field** are specified; the
-   longitudinal layer they build on is implemented and validated (D-015).
+3. **The traffic layer is closed** (D-030): the 60-minute run above drives the
+   shipped `engine/sim/` over the city's own graph — 28,393 lane changes through
+   MOBIL, 4.09 M two-wheeler boids updates, 302 signal phases obeyed.
 4. **Terrain accuracy** is bounded by the authored control points until a real
    DEM is supplied (D-006).
 5. **Flood depths are uncalibrated and the conveyance is parameterised.** The

@@ -47,6 +47,11 @@ BuildConfig BuildConfig::fromJson(const Json& j) {
         c.verifyChunks   = s["verifyChunks"].asBool(true);
     }
     if (j.has("textures")) c.textureSize = static_cast<u32>(j["textures"]["tileSize"].asInt(c.textureSize));
+    if (j.has("hero")) {
+        c.heroDetail = static_cast<u32>(clamp<i64>(j["hero"]["detail"].asInt(
+            static_cast<i64>(c.heroDetail)), 1, 3));
+        c.buildHero = j["hero"]["enabled"].asBool(c.buildHero);
+    }
     return c;
 }
 
@@ -221,6 +226,16 @@ void QaReport::add(const std::string& name, f64 value, u32 severity) {
     c.value = value;
     c.severity = severity;
     counters.push_back(c);
+}
+bool QaReport::has(const std::string& name) const {
+    for (const auto& c : counters)
+        if (name == c.name) return true;
+    return false;
+}
+f64 QaReport::value(const std::string& name) const {
+    for (const auto& c : counters)
+        if (name == c.name) return c.value;
+    return 0.0;
 }
 void QaReport::warn(const std::string& msg) { warnings.push_back(msg); MLOG_WARN("QA: %s", msg.c_str()); }
 void QaReport::fail(const std::string& msg) { failures.push_back(msg); MLOG_ERR("QA FAILURE: %s", msg.c_str()); }

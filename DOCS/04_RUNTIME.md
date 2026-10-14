@@ -156,5 +156,6 @@ follows. None of this runs in the build environment (D-001).
 3. the weather/ocean shaders and the flood model (with the drainage-sentinel
    filter noted in `02_DECISIONS.md`);
 4. MOBIL + Boids on top of the existing nav graph;
-5. the hero detail budgets the specification names (D-022) — the current assets
+5. the hero detail budgets the specification names (D-032; 193,132 triangles of a
+   8,100,000 budget) — the assets
    are correct massings at a fraction of the requested triangle counts.

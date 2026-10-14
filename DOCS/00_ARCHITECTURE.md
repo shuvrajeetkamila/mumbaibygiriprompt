@@ -101,7 +101,7 @@ and the invariant (no pop) on every crossing.
 | rail | 29 ways |
 | instances (props) | 128,220 (tanks, AC units, lamps, trees, two-wheelers) |
 | triangles | 7,563,429 across all built meshes |
-| hero assets | 5 (Gateway of India, Taj Mahal Palace, CSMT, Bandra–Worli Sea Link, Marine Drive), 15,676 vertices |
+| hero assets | 5 (Gateway of India, Taj Mahal Palace, CSMT, Bandra–Worli Sea Link, Marine Drive), 193,132 triangles at the `hero.detail` survey tier (D-032) |
 | materials | 116 named PBR materials |
 
 ## Data flow, in one paragraph
@@ -131,7 +131,7 @@ report to the manifest and the payload.
 |---|---|---|
 | terrain 1 m vertical vs Cartosat | `dem.cpp` synthesis, control points | **data-limited** — no Cartosat source available (D-006) |
 | roads 2 m horizontal vs OSM | `osm.cpp` centrelines are used verbatim; `network.cpp` extrudes them | met for surveyed ways; authored corridors are public alignments |
-| landmarks recognisable at 100 m, unlabelled | `hero.cpp` + viewer | **partly met** — massings are correct, detail budgets are far below the specification's |
+| landmarks recognisable at 100 m, unlabelled | `hero.cpp` + viewer | **partly met** — published dimensions and the identifying ornament (voussoir arches, jali, cornices, arcaded fronts, deck furniture, the Deco row) are modelled; the specification's asset triangle budgets are 2.38 % met (D-032) |
 | zero vertex jitter at 4 corners + centre | `test_geo.cpp`, `mumbai_sim` shift audit | **met** (worst error 0.00e+00 m, 105 crossings) |
 | ≥500 vehicles in 500 m, 30 FPS | `mumbai_sim` (545 peak within 500 m; CPU p99 0.14 ms) | **CPU-side met**; GPU/device frame not verifiable here |
 | weather / ocean valid | designed in `04_RUNTIME.md`, not implemented | **not started** |

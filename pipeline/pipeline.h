@@ -54,6 +54,15 @@ struct BuildConfig {
     bool verifyChunks  = true;        // re-open and hash every chunk after write
     bool buildTextures = true;        // procedural PBR content (A8)
     u32 textureSize    = 256;         // mip0 edge of one material tile, pixels
+    // Hero asset detail, 1..3 (B1/B3).  It drives repetition counts and the
+    // number of refinement steps in the landmark detail passes — opening
+    // mullions, balustrades, arcade columns, dome ribs, deck railings, the Art
+    // Deco frontage — not their position or proportion, so a change here is a
+    // change in how much of the published geometry is *modelled* rather than in
+    // where it stands.  1 = the massing plus its principal mouldings, 2 = the
+    // shipping default (glazing bars, balustrades, columns, deck furniture),
+    // 3 = the survey-chasing tier that also subdivides curved surfaces finely.
+    u32 heroDetail     = 2;
 
     // Simplification tolerances, all in metres.
     f64 footprintSimplify = 0.35;
@@ -225,6 +234,11 @@ struct QaReport {
     std::vector<std::string> failures;
 
     void add(const std::string& name, f64 value, u32 severity = 0);
+    // Look up a counter published earlier in this build (0 when absent).  Lets a
+    // later measurement be expressed against an earlier one — a budget against
+    // the asset count it belongs to — instead of re-deriving it.
+    bool has(const std::string& name) const;
+    f64 value(const std::string& name) const;
     void warn(const std::string& msg);
     void fail(const std::string& msg);
     bool ok() const { return failures.empty(); }

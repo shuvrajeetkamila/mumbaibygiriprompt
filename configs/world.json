@@ -1,38 +1,40 @@
 {
-  "_comment": "MUMBAI 1:1 EXACT — world build configuration. Deterministic: the same inputs and this file always produce byte-identical chunks.",
-
+  "_comment": "MUMBAI 1:1 EXACT \u2014 world build configuration. Deterministic: the same inputs and this file always produce byte-identical chunks.",
   "rawDir": "data/raw",
   "authoredDir": "data/authored",
   "outDir": "data/processed",
   "seed": 20251013,
-
   "terrain": {
     "resolutionMetres": 24.0,
     "detailAmplitude": 2.4,
     "seaLevel": 0.0,
     "_note": "Resolution is the heightfield grid; per-chunk render meshes are generated at 32 m (LOD0), 64 m (LOD1) and 128 m (LOD2) with exact 1024 m tiling."
   },
-
   "zoning": {
     "resolutionMetres": 100.0
   },
-
   "simplify": {
     "footprintMetres": 0.35,
     "roadMetres": 0.5
   },
-
   "minBuildingAreaMetres": 12.0,
-
   "stages": {
     "terrain": true,
     "roads": true,
     "buildings": true,
     "props": true,
     "heroAssets": true,
+    "textures": true,
     "verifyChunks": true
   },
-
+  "hero": {
+    "enabled": true,
+    "detail": 3,
+    "_note": "1 = massing + principal mouldings, 2 = the ornament that makes a massing read as a building (glazing bars, balustrades, arcade colonnettes, deck furniture, the Art Deco frontage), 3 = survey tier (coursed ashlar cut around the openings, voussoir arches with the barrel behind them, jali lattices, gallery balustrades, deck stiffeners and kerbs, promenade paving bays). It changes how much of the published geometry is modelled, never where it stands (D-032)."
+  },
+  "textures": {
+    "tileSize": 256
+  },
   "runtime": {
     "lod0RadiusMetres": 500,
     "lod1RadiusMetres": 2000,

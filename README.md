@@ -16,16 +16,16 @@ GPU, no Android toolchain, no graphics dependencies — see decision D-001 in
 
 | | |
 |---|---|
-| world | 968.9 km², 924 chunks, **686 MB** on disk |
+| world | 968.9 km², 924 chunks, **708 MB** on disk |
 | terrain | 705 × 1345 samples at 32 m, −13.5 m … +91.4 m |
 | buildings | **164,057** massings (148 surveyed + synthetic fabric, tagged separately) |
 | roads | 107,764 OSM ways, **8,189 km** of centreline, 82,933 junctions |
 | nav graph | **254,470 nodes / 127,235 edges** |
-| hero assets | Gateway of India, Taj Mahal Palace, CSMT, Bandra–Worli Sea Link, Marine Drive — 14,736 triangles |
-| monsoon flood | two design storms on a 705 × 1345 hydrology grid; mass balance closed to 10⁻¹⁰ relative; Hindmata 289 mm / King's Circle 283 mm / Andheri subway 376 mm in the 2005 analogue, Marine Drive dry in both (D-026) |
-| QA | 155 counters, 0 warnings, 0 failures |
-| tests | 37 cases / 477 checks, 0 failing (+42 payload checks) |
-| runtime validation | 60-minute Colaba → Borivali drive: PASS (105 origin crossings at 0.00e+00 m error, 0 hash failures, 545 vehicles within 500 m) |
+| hero assets | Gateway of India, Taj Mahal Palace, CSMT, Bandra–Worli Sea Link, Marine Drive — **193,330 triangles** at the survey tier (D-032; the specification's asset budgets are hand-modelled and are 2.4 % met, published per asset) |
+| monsoon flood | two design storms on a 705 × 1345 hydrology grid; mass balance closed to 10⁻¹⁰ relative; Hindmata 274 mm / King's Circle 280 mm / Andheri subway 408 mm in the 2005 analogue, Marine Drive dry in both (D-026) |
+| QA | 193 counters, 0 warnings, 0 failures |
+| tests | **58 cases / 1,529 checks, 0 failing**, plus 396 payload checks, 31 viewer-shader checks, the artifact hashes and the raw-data hashes |
+| runtime validation | 60-minute Colaba → Borivali drive: PASS (105 origin crossings at 0.00e+00 m error, 0 hash failures, 547 vehicles within 500 m) |
 
 ## Quick start
 

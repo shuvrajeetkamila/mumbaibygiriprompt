@@ -934,15 +934,79 @@ rail furniture maps, and the harness that would catch a shader regression.
 
 ---
 
+## D-032 — Hero detail is a level, not a rewrite; the specification's triangle budgets are reported, not faked
+
+**Decided.** The five hero assets carry a detail level (`hero.detail`, 1..3,
+`BuildConfig::heroDetail`; the shipped `configs/world.json` builds at **3**).
+The level changes *how much of the published geometry is modelled* — bay counts,
+balusters, dentils, colonnettes, glazing bars, masonry courses, jali lattices —
+and never where anything stands.  Level 1 is the massing plus its principal
+mouldings, 2 adds the ornament that makes a massing read as a building, 3 adds
+the **survey tier**: coursed ashlar cut around the openings, voussoir arches with
+the barrel behind them, jali screens as pierced lattices, gallery balustrades,
+pinnacles, deck stiffeners and kerbs, paving bays on the promenade.
+
+**Why a level and not a rewrite.** The three landmark passes already carried a
+detail vocabulary (mouldings, recessed opening rows, drum ribbing, domed turrets,
+finials) and were wired into the massings.  The work here extended that
+vocabulary with three primitives — `addAshlarFace`, `addVoussoirArch`,
+`addJaliLattice` — and a `Detail` object that decides how many of each are used.
+That is why the same builder produces 18.5k triangles at level 3's Gateway and
+would produce far fewer at level 1, with the same plan, height and position.
+
+**The budgets.** Section 2 asks for ~500k Gateway, ~800k Taj, ~1.2M CSMT,
+~300k per Sea Link pylon and ~50k per Marine Drive building.  Those are
+hand-modelled photogrammetry-scale asset budgets.  A procedural build cannot
+reach them by subdividing surfaces: subdividing a flat panel adds triangles and
+no geometry, and the specification's own standard (S0) is that nothing ships
+rough.  What a procedural build *can* do is model the real masonry, and that is
+what the survey tier does: the Gateway of India is basalt ashlar, so its walls
+are emitted as 0.6 m courses of 1.35 m blocks with open joints and per-block
+tonal variation — the published masonry size, not a subdivision chosen to reach
+a number.  Courses are cut around the openings by *rectangle overlap*, not by the
+block's centre: a block whose centre clears a window by half a metre still covers
+half of it, and a half-covered window at 100 m is a modelling error.
+
+**Result at level 3 (shipped).** Gateway 19,314; Taj 84,494; CSMT 30,304; Sea
+Link 34,476 (two pylons, 4,014.7 m of viaduct); Marine Drive 41,288 of which
+16,744 is the Art Deco row in the building buffer.  Total 193,132 triangles
+against a specification budget of 8,100,000 — **2.38 %**.  The build publishes
+that number itself: each asset carries a `hero.<name>.triangleBudget` counter
+beside its `hero.<name>.triangles`, and `hero.budgetMetPercent` is the ratio, so
+the gap is a QA reading rather than a claim in a document.
+
+**Second decision in the same area: an asset's count must follow the asset.**
+`hero.marineDrive.triangles` used to measure only the hero mesh, which reported
+400 triangles while the pass was writing 100 Art Deco blocks — the row goes into
+the *building* buffer because it is city fabric.  The counter now measures every
+buffer a hero pass can write to and reports the split
+(`hero.marineDrive.heroMeshTriangles` / `.buildingTriangles`).  A metric that
+cannot see most of what it measures is worse than no metric.
+
+**Not claimed.** The gap to the specification's budgets is real and is not
+closed by this entry.  Closing it means either hand-modelled assets or a
+photogrammetry import path, neither of which exists here.  What exists is a
+silhouette and feature set a resident can check at 100 m: the Gateway's pointed
+arch with its voussoirs and barrel, jali screens in its flanking piers, turrets
+and finials; the Taj's arcaded faces with their balcony slabs, glazing bars,
+drum clerestory and ribbed dome; the CSMT's arcade of colonnettes with pointed
+heads, rose window, gallery balustrade and pinnacles; the Sea Link's raked legs,
+semi-harp stays, deck rails, kerbs and stiffeners; Marine Drive's promenade
+paving, lamp pairs and stepped, fluted, banded Art Deco frontage.
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies
   sea, boundary, channel, shore and tidal-inlet cells explicitly, and the
   dredging sentinel basins (`pipeline/stages/dredging.cpp`) remain a separate
   concern that does not feed the flood model.
-* **Hero budgets.** 500k / 800k / 1.2M / 300k-per-pylon / 50k-per-building are
-  the specification's numbers; current assets are three orders of magnitude
-  below them (accurate massings, honestly counted).
+* **Hero budgets.** Resolved in D-032: the assets are built at three detail
+  levels and the survey tier reaches 199,812 triangles against the
+  specification's 8,100,000 (2.47 %).  The figure is published per asset as
+  `hero.<name>.triangles` against `hero.<name>.triangleBudget`; closing the gap
+  needs hand-modelled or photogrammetric assets, not more procedural ornament.
 * **LOD0 terrain budget.** The specification's per-cell budget is met by
   construction, but the underwater half of many cells is tessellated at LOD0;
   a seabed-aware LOD split is planned.
