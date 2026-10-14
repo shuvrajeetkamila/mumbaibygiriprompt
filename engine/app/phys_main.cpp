@@ -870,6 +870,8 @@ int main(int argc, char** argv) {
         std::printf("  rides    %.0f s each, fleet %u, soak %.2f simulated minutes\n",
                     opt.seconds, opt.fleet, opt.minutes);
         std::printf("  answer   pass when every check below passes; exit 2 otherwise\n");
+        std::printf("  timing   step, fleet and origin-shift budgets are CPU-sensitive: run this\n"
+                    "           unshared (a concurrent build inflates them; nothing else moves)\n");
     }
 
     // --- the world on disk ----------------------------------------------------
@@ -1338,6 +1340,11 @@ int main(int argc, char** argv) {
         f64 worstMs = 0.0, meanMs = 0.0, worstError = 0.0;
         u64 crossings = 0, moved = 0;
         const Vec3 step(1024.0f, 0.0f, 0.0f);
+        // Warm the path and the cache: the first crossing pays for page faults on
+        // 1,454 bodies, and charging that to a per-crossing budget would be
+        // measuring the allocator, not the shift.  The pair cancels out.
+        world.rebase(step);
+        world.rebase(Vec3(-step.x, 0.0f, 0.0f));
         for (int i = 0; i < 20; ++i) {
             const phys::World::RebaseResult rr = world.rebase(i % 2 == 0 ? step : Vec3(-1024.0f, 0, 0));
             // Charge the shift to a whole macro cell of travel: the runtime calls
@@ -1387,7 +1394,7 @@ int main(int argc, char** argv) {
         const size_t baseIndex = deck.slabs.size() / 3;
         const Slab& base = deck.slabs[baseIndex];
         const f64 baseSurface = surfaceOf(deck, baseIndex);
-        f64 worstPropSpawnClearance = 1e30;
+        f64 worstPropClearance = 1e30;   // crate underside minus the surface under it
         for (u32 i = 0; i < opt.props; ++i) {
             const u32 col = i % 10, row = (i / 10) % 5;
             const f64 px = base.x + (col - 5) * 1.4;
@@ -1403,10 +1410,20 @@ int main(int argc, char** argv) {
             const Vec3 at(static_cast<f32>(px),
                           static_cast<f32>(floor + 0.52 + row * 1.02),
                           static_cast<f32>(pz));
-            worstPropSpawnClearance = std::min(worstPropSpawnClearance, 0.02);
+            // Measure the authored clearance back: a crate authored inside the
+            // deck would show up as solver penetration later, and the point of
+            // this harness is to attribute that to the author, not the solver.
+            const f64 beneath = world.groundHeightStatic(Vec3(at.x, at.y, at.z), 5.0);
+            if (std::isfinite(beneath))
+                worstPropClearance = std::min(worstPropClearance, (at.y - 0.5) - beneath);
             phys::BodyHandle h = world.addDynamicBox(at, Vec3(0.5f, 0.5f, 0.5f), 0.0, 40.0);
             if (h.valid()) props.push_back(h);
         }
+        require(props.size() == opt.props && worstPropClearance > -0.02,
+                "every prop is authored on the surface, not inside it",
+                sfmt("%zu crates, worst authored clearance %+.3f m (a negative value would be "
+                     "the harness authoring its own penetration)",
+                     props.size(), worstPropClearance));
         const u64 steps = static_cast<u64>(opt.minutes * 60.0 * 60.0);
         std::vector<f64> costs;
         costs.reserve(static_cast<size_t>(steps));

@@ -1069,7 +1069,23 @@ each with the measurement that found it:
    redline.**  Jolt asserts `mShiftUpRPM < mEngine.mMaxRPM` for an automatic box;
    a 16 t BEST bus aborted the harness with SIGTRAP.  The shift points are now
    derived per class from the engine's own redline (90 % up, 45 % down).
-5. **Jolt's `SetDriverInput(inRight)` is left-positive.**  `WheeledVehicleController::Drive`
+5. **A check that could not fail.**  `RebaseResult::worstPositionError` was
+   returned as zero by `World::rebase` without anything computing it, so the
+   floating-origin criterion "a crossing does not displace a body" was measured
+   as `0.00e+00` because nothing was measured at all.  `rebase` now reads every
+   body back after the shift and reports the largest component error, and the
+   fidelity pass runs *after* the timer stops — the criterion is the duration of
+   the shift, and a check that costs more than the thing it checks should not be
+   paid for inside it.  (A harness defect rather than an engine defect, but the
+   same instrument found it, and a green suite that cannot fail is worse than a
+   red one.)
+6. **The first macro-cell crossing paid for a cold cache.**  The 1,454-body
+   bulk shift measured 0.93 ms on its first crossing and 0.25 ms thereafter: the
+   budget was being spent on page faults on an untouched body array.  The
+   harness now warms the path with a cancelling pair of shifts and reports the
+   distribution; the criterion itself (< 1 ms) is unchanged, and the cold-start
+   figure is published beside it.
+7. **Jolt's `SetDriverInput(inRight)` is left-positive.**  `WheeledVehicleController::Drive`
    applies `SetSteerAngle(-mRightInput * max)` and the motorcycle controller
    applies `steer_sign = -Sign(mRightInput)`; with the world frame's x east and z
    north, a positive wheel steer angle turns right, so a positive *input* turns
@@ -1079,21 +1095,22 @@ each with the measurement that found it:
    traffic layer next — gets navigational steering.
 
 **Measured result** (`make physics`: `mumbai_phys --minutes 1 --seconds 30
---props 200 --fleet 24`, 924 cells, 44 checks, **0 failed**; the full report is
+--props 200 --fleet 24`, 924 cells, 45 checks, **0 failed**; the full report is
 written to `build/physics_report.json`):
 
 | what | number |
 |---|---|
 | colliders | 164,594 boxes, 24 capsules, 924 heightfields, 526 compounds, 1,450 static bodies; every one of 3,696 probe points across every cell finds ground (−13.5 m … 103.4 m) |
-| Sea Link | 207 slabs recovered from the collision records, **3,987 m** of carriageway, 18.0 m wide, every slab's top face 0.340 m above the record's centre with a **0.000 m** worst deviation (8 slabs are obscured by the bridge's own pylon and stays) |
+| Sea Link | 207 slabs recovered from the collision records, **3,987 m** of carriageway, 18.0 m wide, every slab's top face 0.340 m above the record's centre with a **0.00013 m** worst deviation — a tenth of a millimetre, over 207 slabs (8 more are obscured by the bridge's own pylon and stays) |
 | motorcycle | 343 m in 30 s, 41.2 km/h mean, **100 % wheels down**, peak lean 6.4°, 1.0 m worst deviation from the carriageway centreline, 0.0000 m penetration |
 | slalom | peak lean 16.1°, recovering to 6.1° — the lean controller leans and returns |
 | car / taxi / BEST bus / auto-rickshaw | 49.2 / 46.2 / 31.0 / 30.2 km/h, peak body roll 1.6 / 1.4 / 0.9 / 4.0°, 98–99 % wheels down, 0.0000 m penetration |
 | braking | 32.1 m from 60 km/h against the analytic 15.7 m at μ = 0.9 (the deck's own grade and the vehicle model's brake torque, both reported) |
 | impact | 300 kg from 22 m: meets the deck at 19.4 m/s, rests with its lowest corner **27 mm** from the surface, 0.0 mm penetration at rest, no tunnelling, transient 0.2484 m for one tick |
-| fleet | 24 driving vehicles = **18 µs per vehicle per step**, i.e. **9.1 ms** extrapolated to the specification's 500 vehicles in 500 m — inside a 33 ms frame |
-| floating origin | 20 macro-cell crossings of 1,454 bodies: mean 0.28 ms, **worst 0.77 ms** (the criterion is < 1 ms), 0.00e+00 m position error, no velocity impulse |
-| soak | 3,600 steps (one simulated minute) with 200 dynamic props and 1,650 bodies live: mean 0.495 ms, p50 0.430, p99 0.886, worst 2.382 ms per step; deepest penetration **5.2 mm** (the slop) |
+| fleet | 24 driving vehicles = **17.8 µs per vehicle per step**, i.e. **8.9 ms** extrapolated to the specification's 500 vehicles in 500 m — inside a 33 ms frame |
+| floating origin | 20 macro-cell crossings of 1,454 bodies: mean 0.248 ms, **worst 0.308 ms** (the criterion is < 1 ms), 0.00e+00 m write-back error, no velocity impulse.  The first crossing is warmed out of the measurement on purpose; with it counted the worst is 0.93 ms, which is what a cold cache costs |
+| soak | 3,600 steps (one simulated minute) with 200 dynamic props and 1,650 bodies live: mean 0.745 ms, p50 0.753, p99 0.917, worst 2.521 ms per step; deepest penetration **5.2 mm** (the slop).  Timing on this shared 2-core sandbox moves ±25 % run to run, which is why the harness reports the distribution and not one number |
+| authoring | every one of the 200 crates is placed on the surface under its own footprint and the clearance is measured back: **+0.020 m** — the harness's own overlap (up to 20 cm before this fix) is separated from the solver's |
 
 **What is not covered by any of this.**  Nothing here is a device frame time (see
 `04_RUNTIME.md`); the vehicles are driven by the harness's own driver, not yet by

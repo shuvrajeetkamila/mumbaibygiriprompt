@@ -23,7 +23,7 @@ GPU, no Android toolchain, no graphics dependencies — see decision D-001 in
 | nav graph | **254,470 nodes / 127,235 edges** |
 | hero assets | Gateway of India, Taj Mahal Palace, CSMT, Bandra–Worli Sea Link, Marine Drive — **193,330 triangles** at the survey tier (D-032; the specification's asset budgets are hand-modelled and are 2.4 % met, published per asset) |
 | monsoon flood | two design storms on a 705 × 1345 hydrology grid; mass balance closed to 10⁻¹⁰ relative; Hindmata 274 mm / King's Circle 280 mm / Andheri subway 408 mm in the 2005 analogue, Marine Drive dry in both (D-026) |
-| physics | Jolt v5.6.0 over the pipeline's own collision (D-033): **164,594 colliders + 24 capsules + 924 heightfields**, the Sea Link's 3,987 m carriageway recovered from the baked records, a motorcycle at 100 % wheels down on it, 500 vehicles at 9.1 ms/frame, the origin shift at 0.77 ms worst — **44 / 44 acceptance checks** (`make physics`) |
+| physics | Jolt v5.6.0 over the pipeline's own collision (D-033): **164,594 colliders + 24 capsules + 924 heightfields**, the Sea Link's 3,987 m carriageway recovered from the baked records, a motorcycle at 100 % wheels down on it, 500 vehicles at 8.9 ms/frame, the origin shift at 0.31 ms worst — **45 / 45 acceptance checks** (`make physics`) |
 | QA | 196 counters, 0 warnings, 0 failures |
 | tests | **58 cases / 1,529 checks, 0 failing**, plus 396 payload checks, 31 viewer-shader checks, the artifact hashes and the raw-data hashes |
 | runtime validation | 60-minute Colaba → Borivali drive: PASS (105 origin crossings at 0.00e+00 m error, 0 hash failures, 547 vehicles within 500 m) |

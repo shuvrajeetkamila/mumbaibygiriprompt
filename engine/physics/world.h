@@ -110,8 +110,11 @@ public:
     // cell, so the cost is amortised over ~40 s of driving at 24 m/s.
     struct RebaseResult {
         u64 bodies = 0;
-        f64 milliseconds = 0.0;
-        f64 worstPositionError = 0.0;   // metres, after the shift
+        f64 milliseconds = 0.0;         // the shift itself, nothing else
+        f64 worstPositionError = 0.0;   // metres: measured by reading every body
+                                        // back, and deliberately measured *after*
+                                        // the timer stops, because the criterion
+                                        // is the duration of the shift
     };
     RebaseResult rebase(const Vec3& delta);
 
@@ -164,6 +167,9 @@ private:
     JPH::TempAllocatorImpl* m_temp = nullptr;
     JPH::JobSystemThreadPool* m_jobs = nullptr;
     JPH::PhysicsSystem* m_system = nullptr;
+    // Scratch for `rebase`: the target position of every body, kept across calls
+    // so a cell crossing allocates nothing.
+    std::vector<Vec3> m_rebaseTargets;
     BroadPhaseLayerInterfaceImpl m_bpFilter;
     ObjectVsBroadPhaseLayerFilterImpl m_ovbp;
     ObjectLayerPairFilterImpl m_ovl;

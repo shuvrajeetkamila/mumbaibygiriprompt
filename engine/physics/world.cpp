@@ -238,16 +238,30 @@ World::RebaseResult World::rebase(const Vec3& delta) {
     J::BodyInterface& bi = m_system->GetBodyInterface();
     J::BodyIDVector ids;
     m_system->GetBodies(ids);
-    for (const J::BodyID id : ids) {
-        const Vec3 target = fromJolt(bi.GetPosition(id)) - delta;
+    m_rebaseTargets.resize(ids.size());
+    for (size_t i = 0; i < ids.size(); ++i) {
+        const Vec3 target = fromJolt(bi.GetPosition(ids[i])) - delta;
+        m_rebaseTargets[i] = target;
         // DontActivate: a shift is not a disturbance.  Waking 600 bodies on a
         // cell boundary would turn a bookkeeping operation into a simulation
         // event, and the solver would report it as an impulse.
-        bi.SetPosition(id, J::RVec3(target.x, target.y, target.z), J::EActivation::DontActivate);
+        bi.SetPosition(ids[i], J::RVec3(target.x, target.y, target.z), J::EActivation::DontActivate);
     }
     const auto t1 = std::chrono::steady_clock::now();
     r.bodies = ids.size();
     r.milliseconds = std::chrono::duration<f64, std::milli>(t1 - t0).count();
+    // Fidelity, measured by reading every body back.  It is outside the timer on
+    // purpose: the criterion is the duration of the shift, and a check that costs
+    // more than the thing it checks should not be paid for inside it.
+    for (size_t i = 0; i < ids.size(); ++i) {
+        const Vec3 after = fromJolt(bi.GetPosition(ids[i]));
+        const Vec3 want = m_rebaseTargets[i];
+        r.worstPositionError = std::max(
+            r.worstPositionError,
+            std::max(std::fabs(static_cast<f64>(after.x) - want.x),
+                     std::max(std::fabs(static_cast<f64>(after.y) - want.y),
+                              std::fabs(static_cast<f64>(after.z) - want.z))));
+    }
     return r;
 }
 
