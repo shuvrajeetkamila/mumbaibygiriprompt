@@ -7,6 +7,8 @@
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/CompoundShape.h>
+#include <Jolt/Physics/Collision/Shape/Shape.h>
 
 #include <algorithm>
 #include <cmath>
@@ -138,12 +140,44 @@ std::string describeBody(World& world, J::BodyID bid, const Vec3& atWorld) {
         if (best == nullptr) return "a body the system does not resolve, and nothing contains the contact";
         body = best;
     }
+    // What the body *is*, not only where it is.  A compound's bounding box is a
+    // cell wide, so "bounds x -10240.0..-9166.1" says nothing about what a car
+    // was blocked by; the shape's own sub-type and its child count do, and they
+    // are the difference between a kerb, a deck and a road ribbon (D-035).
+    std::string shape;
+    if (const J::Shape* sh = body->GetShape()) {
+        const char* name = "shape";
+        switch (sh->GetSubType()) {
+            case J::EShapeSubType::Sphere: name = "sphere"; break;
+            case J::EShapeSubType::Box: name = "box"; break;
+            case J::EShapeSubType::Triangle: name = "triangle"; break;
+            case J::EShapeSubType::Capsule: name = "capsule"; break;
+            case J::EShapeSubType::Cylinder: name = "cylinder"; break;
+            case J::EShapeSubType::ConvexHull: name = "convex hull"; break;
+            case J::EShapeSubType::StaticCompound: name = "static compound"; break;
+            case J::EShapeSubType::MutableCompound: name = "mutable compound"; break;
+            case J::EShapeSubType::RotatedTranslated: name = "rotated shape"; break;
+            case J::EShapeSubType::Scaled: name = "scaled shape"; break;
+            case J::EShapeSubType::Mesh: name = "mesh"; break;
+            case J::EShapeSubType::HeightField: name = "heightfield"; break;
+            default: break;
+        }
+        char sbuf[96];
+        if (sh->GetType() == J::EShapeType::Compound) {
+            const J::CompoundShape* cs = static_cast<const J::CompoundShape*>(sh);
+            std::snprintf(sbuf, sizeof(sbuf), "%s of %u children", name, cs->GetNumSubShapes());
+        } else {
+            std::snprintf(sbuf, sizeof(sbuf), "%s", name);
+        }
+        shape = sbuf;
+    }
     const J::RVec3 p = body->GetCenterOfMassPosition();
     const J::AABox& bounds = body->GetWorldSpaceBounds();
-    char buf[256];
+    char buf[320];
     std::snprintf(buf, sizeof(buf),
-                  "body %u at (%.1f, %.1f, %.1f), bounds x %.1f..%.1f  y %.1f..%.1f  z %.1f..%.1f",
-                  body->GetID().GetIndex(), p.GetX(), p.GetY(), p.GetZ(), static_cast<f64>(bounds.mMin.GetX()),
+                  "body %u (%s) at (%.1f, %.1f, %.1f), bounds x %.1f..%.1f  y %.1f..%.1f  z %.1f..%.1f",
+                  body->GetID().GetIndex(), shape.c_str(), p.GetX(), p.GetY(), p.GetZ(),
+                  static_cast<f64>(bounds.mMin.GetX()),
                   static_cast<f64>(bounds.mMax.GetX()), static_cast<f64>(bounds.mMin.GetY()),
                   static_cast<f64>(bounds.mMax.GetY()), static_cast<f64>(bounds.mMin.GetZ()),
                   static_cast<f64>(bounds.mMax.GetZ()));

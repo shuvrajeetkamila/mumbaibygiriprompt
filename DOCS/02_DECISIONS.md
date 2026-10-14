@@ -1349,6 +1349,18 @@ edge is a bridge, and against the ground elsewhere.  The road ribbon, the nav
 graph and the graded ground remain three descriptions of one street; this decision
 makes them agree better and says exactly where they still do not.
 
+**Instrumentation added after the fact, and what it immediately showed.**
+`describeBody` now names the shape, not only the body — a compound's bounding box
+is a kilometre wide and its id says nothing about what a car was blocked by, while
+"static compound of 313 children" or "mesh" does.  The survey's blocked examples
+are now readable: at (−9692.0, 4817.7) the car's chassis box is 1.88 m inside a
+**mesh** whose body is one cell's road ribbon, on a one-lane class-10 way over
+water, with the ground agreeing to 6 cm (model 1.95 m, collision 2.01 m).  A probe
+box 1.88 m inside a *mesh* is either a probe that is inside a closed ribbon
+volume — a bridge soffit, a tunnel portal, a pier — or a shape filter that is not
+reaching that query, and the two are told apart by one more measurement, not by
+argument.  That measurement is the next step and is named as such.
+
 **Instrumentation kept, not discarded.**  Both defects were found by counting
 things the code did not previously count, so the counters stay and are published
 in the QA record: `flood.severe.wetOnSeaByRawHeight`, `flood.severe.wetOnSeaByMask`,
