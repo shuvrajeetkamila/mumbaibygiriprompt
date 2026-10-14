@@ -25,7 +25,6 @@
 namespace mumbai::sim {
 namespace {
 
-constexpr f64 kLaneWidth = 3.5;            // m, centre to centre
 constexpr f64 kLaneChangeInterval = 0.4;   // s between MOBIL evaluations per vehicle
 constexpr f64 kMobilPoliteness = 0.2;      // MOBIL p: how much the others count
 constexpr f64 kMobilThreshold = 0.2;       // m/s^2 of incentive before changing
@@ -54,6 +53,11 @@ const ArchetypeSpec kSpecs[] = {
 };
 static_assert(sizeof(kSpecs) / sizeof(kSpecs[0]) == static_cast<size_t>(Archetype::Count),
               "one archetype spec per enum value");
+
+// The least a node arm may disagree with a body's heading before the model admits
+// it has nothing to offer that body: 0.2 is 78 degrees.  Beyond that the arm and
+// the body are travelling different roads (D-034).
+constexpr f64 kBodyArmMinDot = 0.2;
 
 f64 laneOffset(u16 lane, u16 lanes) {
     return (static_cast<f64>(lane) - (static_cast<f64>(lanes) - 1.0) * 0.5) * kLaneWidth;
@@ -118,7 +122,14 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
             bool created = false;
             const u32 gi = nodeAt(p, &created);
             nodeMap[(cellKey << 32) | i] = gi;
-            if (created) continue;
+            if (created) {
+                m_nodeY.push_back(nodes[i].y);
+                continue;
+            }
+            // Merged with a node another record created: the lower elevation wins,
+            // which is the producer's own rule (a flyover passing over a street
+            // does not put the street in the air).
+            m_nodeY[gi] = std::min(m_nodeY[gi], nodes[i].y);
             if (gi < nodesBefore) ++m_nodesMergedAcrossChunks;
             else ++m_nodesMerged;
         }
@@ -161,6 +172,8 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
                     rv.b = m_edges[fwd].a;
                     rv.dir = Vec2d{-m_edges[fwd].dir.x, -m_edges[fwd].dir.y};
                     rv.normal = Vec2d{-m_edges[fwd].normal.x, -m_edges[fwd].normal.y};
+                    rv.ay = m_edges[fwd].by;
+                    rv.by = m_edges[fwd].ay;
                     rv.laneVehicles.assign(rv.lanes, {});
                     rv.reverse = fwd;
                     const u32 rev = static_cast<u32>(m_edges.size());
@@ -187,6 +200,15 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
             if (p.greenSeconds <= 0.0) continue;
             m_signals.push_back(p);
         }
+    }
+
+    // Elevations last, from the merged nodes: an edge's height is a property of
+    // the junctions at its ends, and its ends are not known until every file has
+    // been read.
+    for (SimEdge& e : m_edges) {
+        e.ay = m_nodeY[e.from];
+        e.by = m_nodeY[e.to];
+        if (e.reverse != kNoEdge) continue;   // the reverse was built from this one
     }
 
     m_signalOfEdge.assign(m_edges.size(), kNoSignal);
@@ -368,6 +390,140 @@ Vec2d Traffic::positionOf(const Vehicle& v) const {
     return e.a + e.dir * v.s + e.normal * v.lateral;
 }
 
+f64 Traffic::surfaceHeightOf(const Vehicle& v) const {
+    const SimEdge& e = m_edges[v.edge];
+    if (e.length <= 0.0f) return e.ay;
+    const f64 t = std::clamp(v.s / e.length, 0.0, 1.0);
+    return static_cast<f64>(e.ay) + (static_cast<f64>(e.by) - e.ay) * t;
+}
+
+// -----------------------------------------------------------------------------
+//  Motion handoff (D-034)
+// -----------------------------------------------------------------------------
+// The model and a physics body share one vehicle.  The split is: the model owns
+// perception and intent (who is ahead, what the signal says, how fast IDM wants
+// to go), the body owns position and heading, and every tick the body's actual
+// position is projected back into the model.  Nothing about the traffic layer's
+// behaviour changes because of it — the same IDM, the same MOBIL, the same
+// signals — and nothing about the body changes either: it is driven, not
+// puppeted, and the model's numbers are what the driver is asked to achieve.
+
+bool Traffic::promote(u32 idx) {
+    if (idx >= m_vehicles.size()) return false;
+    Vehicle& veh = m_vehicles[idx];
+    if (veh.external) return false;
+    veh.external = true;
+    veh.commandAccel = 0.0;
+    veh.commandSpeed = veh.v;
+    // The line the body is handed over on is the line the model had drawn.
+    veh.latAccelCommand = 0.0;
+    veh.lateralVel = 0.0;
+    ++m_promotions;
+    ++m_promotedNow;
+    return true;
+}
+
+void Traffic::demote(u32 idx) {
+    if (idx >= m_vehicles.size()) return;
+    Vehicle& veh = m_vehicles[idx];
+    if (!veh.external) return;
+    veh.external = false;
+    veh.commandAccel = 0.0;
+    veh.commandSpeed = veh.v;
+    // The model resumes the lateral tracker from wherever the body left the
+    // vehicle, so the handback eases back to the lane instead of snapping.
+    veh.lateralVel = 0.0;
+    veh.latAccelCommand = 0.0;
+    ++m_demotions;
+    --m_promotedNow;
+}
+
+bool Traffic::isPromoted(u32 idx) const {
+    return idx < m_vehicles.size() && m_vehicles[idx].external;
+}
+
+Vec2d Traffic::lanePoint(const Vehicle& v, f64 ahead) const {
+    const SimEdge& e = m_edges[v.edge];
+    const f64 s = std::clamp(v.s + ahead, 0.0, static_cast<f64>(e.length));
+    // The *lane* centreline, not the vehicle's own line: the driver is asked to
+    // hold the lane, and the lane-change decision (which the model still makes)
+    // is what moves the line, not the driver's whim.
+    const f64 lat = laneOffset(v.lane, e.lanes);
+    return e.a + e.dir * s + e.normal * lat;
+}
+
+f64 Traffic::laneOffsetFor(u16 lane, u16 lanes) { return laneOffset(lane, lanes); }
+
+Vec2d Traffic::laneCentre(const SimEdge& e, u32 lane, f64 s) const {
+    const f64 along = std::clamp(s, 0.0, static_cast<f64>(e.length));
+    return e.a + e.dir * along + e.normal * laneOffset(lane, e.lanes);
+}
+
+f64 Traffic::laneHeight(const SimEdge& e, f64 s) const {
+    if (e.length <= 0.0f) return e.ay;
+    const f64 t = std::clamp(s / static_cast<f64>(e.length), 0.0, 1.0);
+    return static_cast<f64>(e.ay) + (static_cast<f64>(e.by) - e.ay) * t;
+}
+
+f64 Traffic::laneHeading(const Vehicle& v) const {
+    const SimEdge& e = m_edges[v.edge];
+    return std::atan2(e.dir.x, e.dir.y);
+}
+
+void Traffic::adoptPosition(u32 idx, const Vec2d& p, f64 speed, f64 heading) {
+    if (idx >= m_vehicles.size()) return;
+    Vehicle& veh = m_vehicles[idx];
+    if (!veh.external) return;
+    veh.heading = static_cast<f32>(heading);
+    veh.headingValid = true;
+    const SimEdge& e = m_edges[veh.edge];
+    const Vec2d rel = p - e.a;
+    const f64 along = rel.x * e.dir.x + rel.y * e.dir.y;
+    const f64 side = rel.x * e.normal.x + rel.y * e.normal.y;
+    // Clamped to the corridor: a body that has left the carriageway (a crash, a
+    // kerb climb) must not drag the model's edge index somewhere impossible.
+    const f64 half = e.lanes * kLaneWidth * 0.5 + 1.0;
+    const f64 s = std::clamp(along, 0.0, static_cast<f64>(e.length));
+    const f64 lateral = std::clamp(side, -half, half);
+    // The body outside the model's own edge: behind its start or past its end.  The
+    // model cannot describe such a body, so it is reported with the numbers rather
+    // than silently clamped (D-034).
+    if (along < -1.0 || along > static_cast<f64>(e.length) + 1.0) {
+        std::printf("      offframe veh %2u %-16s along %+7.2f of 0..%.1f  side %+5.2f  "
+                    "lat %+5.2f  speed %5.1f km/h  hdg %+6.1f\n",
+                    idx, archetypeSpec(veh.kind).name, along, static_cast<f64>(e.length), side,
+                    lateral, speed * 3.6, veh.headingValid ? veh.heading * 57.29577951308232 : 999.0);
+    }
+    veh.s = s;
+    veh.bodyAlong = along;
+    veh.lateral = lateral;
+    veh.v = std::max(0.0, speed);
+    // Lane lists are sorted by `s`, and the model's sweeps rely on that.  The
+    // body's position is the truth, so the entry is re-inserted where the body
+    // actually is; the test below is the cheap common case (it stayed in order).
+    std::vector<u32>& list = m_edges[veh.edge].laneVehicles[veh.lane];
+    const auto it = std::find(list.begin(), list.end(), idx);
+    if (it == list.end()) {
+        // The model's lane list does not know about this vehicle: an edge
+        // transition that re-inserted it elsewhere, or a sweep that took it out
+        // as an arrival and put it back on another arm.  The body is on this edge
+        // — the model said so — so the list is repaired rather than the model
+        // being allowed to freeze with a stale `s` (which showed up as a
+        // vehicle whose position and whose model disagreed by the width of a
+        // street before this counter existed).
+        insertSorted(list, idx);
+        ++m_orphanRepairs;
+        return;
+    }
+    const bool ordered =
+        (it == list.begin() || m_vehicles[*(it - 1)].s <= s) &&
+        (it + 1 == list.end() || s <= m_vehicles[*(it + 1)].s);
+    if (!ordered) {
+        list.erase(it);
+        insertSorted(list, idx);
+    }
+}
+
 // -----------------------------------------------------------------------------
 //  Leaders, the two-wheeler field, and signal heads
 // -----------------------------------------------------------------------------
@@ -505,12 +661,27 @@ void Traffic::longitudinal(f64 dt) {
         if (veh.hailing) {
             // A taxi that has been hailed stops at the kerb, comfortably, and
             // the queue behind it forms for real.
-            veh.v = std::max(0.0, veh.v - veh.b * dt);
+            const f64 v = std::max(0.0, veh.v - veh.b * dt);
+            if (veh.external) {
+                // Promoted: publish what the model wants and let the body do it.
+                veh.commandAccel = -veh.b;
+                veh.commandSpeed = v;
+                continue;
+            }
+            veh.v = v;
             veh.s += veh.v * dt;
             continue;
         }
         const f64 v0 = std::max(2.0, veh.v0);
         const f64 acc = idmAccel(veh.v, v0, veh.gap, veh.leaderV, veh.a, veh.b, veh.T, veh.s0);
+        if (veh.external) {
+            // Promoted: IDM's answer is the command, and the body is the
+            // integrator.  v and s are not touched here — they will arrive from
+            // `adoptPosition()` once the body has moved.
+            veh.commandAccel = acc;
+            veh.commandSpeed = std::clamp(veh.v + acc * dt, 0.0, v0 * 1.3);
+            continue;
+        }
         veh.v = std::clamp(veh.v + acc * dt, 0.0, v0 * 1.3);
         veh.s += veh.v * dt;
     }
@@ -543,6 +714,12 @@ void Traffic::corrections() {
             const std::vector<u32>& list = e.laneVehicles[l];
             for (size_t k = list.size(); k-- > 0;) {
                 Vehicle& veh = m_vehicles[list[k]];
+                // A promoted vehicle's `s` is the body's, and clamping it here
+                // would desynchronise the model from the thing that is actually
+                // moving.  The floor it owes the vehicle behind it is enforced
+                // by the other side of this loop: the follower clamps against
+                // the promoted vehicle's own (adopted) position.
+                if (veh.external) continue;
                 f64 constraint = veh.obstruction;
                 f64 leaderV = veh.leaderV;
                 if (k + 1 < list.size()) {
@@ -628,6 +805,7 @@ void Traffic::laneChanges(f64 dt) {
 
     for (Vehicle& veh : m_vehicles) {
         veh.changedLaneThisStep = false;
+        if (veh.external) continue;   // a promoted vehicle's line is the body's (D-034)
         if (archetypeSpec(veh.kind).twoWheeler) continue;    // two-wheelers do not use lanes
         SimEdge& e = m_edges[veh.edge];
         if (e.lanes < 2) continue;
@@ -699,6 +877,9 @@ void Traffic::laneChanges(f64 dt) {
 // -----------------------------------------------------------------------------
 void Traffic::lateralDynamics(f64 dt) {
     for (Vehicle& veh : m_vehicles) {
+        // A promoted vehicle's lateral position and its lean are the body's
+        // business: the model adopts the line it took, it does not animate one.
+        if (veh.external) continue;
         const ArchetypeSpec& spec = archetypeSpec(veh.kind);
         const SimEdge& e = m_edges[veh.edge];
         const f64 leanCap = m_boids.lateralMaxG * 9.81;
@@ -755,6 +936,7 @@ void Traffic::twoWheelerField(f64 dt) {
         Vehicle& veh = m_vehicles[i];
         const ArchetypeSpec& spec = archetypeSpec(veh.kind);
         if (!spec.twoWheeler) continue;
+        if (veh.external) continue;   // a physical motorcycle holds its own line
         const SimEdge& e = m_edges[veh.edge];
         const u32 home = std::min(static_cast<u32>(std::max<f64>(0.0, veh.s) / m_boids.broadphaseMetres),
                                   kBucketsPerEdge - 1);
@@ -815,6 +997,11 @@ void Traffic::faresAndQueues(f64 dt) {
     for (Vehicle& veh : m_vehicles) {
         const ArchetypeSpec& spec = archetypeSpec(veh.kind);
         if (!spec.canHail) continue;
+        // Hailing pulls a taxi to the kerb along an authored line; a promoted
+        // taxi is being driven, so it does not take fares until it is handed
+        // back.  The cool-down timers still run, so the population of taxis that
+        // do stop for a fare is unchanged.
+        if (veh.external) continue;
         const SimEdge& e = m_edges[veh.edge];
         if (veh.hailing) {
             veh.hailTimer -= dt;
@@ -842,6 +1029,68 @@ void Traffic::faresAndQueues(f64 dt) {
 // -----------------------------------------------------------------------------
 //  Leave edges, queue at junctions, and re-enter
 // -----------------------------------------------------------------------------
+Traffic::GraphAudit Traffic::graphAudit() const {
+    GraphAudit ga;
+    ga.nodes = m_nodes.size();
+    std::vector<u32> oneArm;
+    for (size_t i = 0; i < m_nodes.size(); ++i) {
+        const size_t outs = m_nodes[i].out.size();
+        if (outs == 0) continue;
+        if (outs == 1) {
+            ++ga.out1;
+            // An arm that leaves this node and ends at this node is its own
+            // reversal: a body that arrives here has nowhere to go but back.
+            const u32 only = m_nodes[i].out[0];
+            if (only < m_edges.size() && m_edges[only].to == i) ++ga.oneArmIsReversal;
+            oneArm.push_back(static_cast<u32>(i));
+        } else if (outs == 2) ++ga.out2;
+        else if (outs == 3) ++ga.out3;
+        else ++ga.out4plus;
+    }
+    // A twin within two metres that *does* have arms is the same junction seen
+    // twice — the two chunks' copies were not jointed — so this node looks like a
+    // dead end and is not one.  One pass into a 4 m grid, then one pass over the
+    // one-arm nodes: the audit is O(nodes) and safe to call on the city.
+    if (!oneArm.empty()) {
+        constexpr f64 kCell = 4.0;
+        std::unordered_map<u64, std::vector<u32>> grid;
+        grid.reserve(m_nodes.size() * 2);
+        const auto key = [](i64 cx, i64 cz) {
+            return (static_cast<u64>(static_cast<u32>(static_cast<i32>(cx))) << 32) |
+                   static_cast<u32>(static_cast<i32>(cz));
+        };
+        for (size_t j = 0; j < m_nodes.size(); ++j) {
+            if (m_nodes[j].out.empty()) continue;
+            grid[key(static_cast<i64>(std::floor(m_nodes[j].p.x / kCell)),
+                     static_cast<i64>(std::floor(m_nodes[j].p.y / kCell)))]
+                .push_back(static_cast<u32>(j));
+        }
+        for (u32 i : oneArm) {
+            const Vec2d p = m_nodes[i].p;
+            const i64 cx = static_cast<i64>(std::floor(p.x / kCell));
+            const i64 cz = static_cast<i64>(std::floor(p.y / kCell));
+            // One flag per node, not one for the whole audit: the first version
+            // stopped scanning every later node once any node had a twin, and
+            // reported a count of 1 for a city that might have thousands —
+            // a check that cannot report what it measures (D-034).
+            bool twin = false;
+            for (i64 dz = -1; dz <= 1 && !twin; ++dz) {
+                for (i64 dx = -1; dx <= 1 && !twin; ++dx) {
+                    const auto it = grid.find(key(cx + dx, cz + dz));
+                    if (it == grid.end()) continue;
+                    for (u32 j : it->second) {
+                        if (j == i) continue;
+                        const Vec2d d = m_nodes[j].p - p;
+                        if (d.lengthSq() <= 4.0) { twin = true; break; }
+                    }
+                }
+            }
+            if (twin) ++ga.oneArmHasTwinNearby;
+        }
+    }
+    return ga;
+}
+
 void Traffic::advanceEdges() {
     // Phase A: take out everything that finished its edge.  Erasing from the lane
     // lists only after the vehicle is recorded keeps the lists consistent while
@@ -877,7 +1126,11 @@ void Traffic::advanceEdges() {
             // re-enters there — the corridor keeps circulating instead of
             // accumulating, which is a population device and is documented as one
             // (see DOCS/D-029).  A held vehicle is a wall, and walls queue.
-            bool clear = true;
+            //
+            // An external vehicle is never wrapped: its position is a body's, and
+            // a body cannot be teleported 300 m back down the cul-de-sac.  It is
+            // held, and `kAnchorHoldSeconds` decides when the model gives up.
+            bool clear = !veh.external;
             for (u32 other : src.laneVehicles[a.lane])
                 if (m_vehicles[other].s < veh.length + 3.0) { clear = false; break; }
             if (clear) {
@@ -898,7 +1151,7 @@ void Traffic::advanceEdges() {
         // Demand-fixed population: a vehicle that leaves the dense corridor is
         // replaced by an arrival at its far end, which holds the fleet without
         // inventing an origin-destination matrix.
-        if (!m_denseEdges.empty() &&
+        if (!veh.external && !m_denseEdges.empty() &&
             (node.p - m_denseAnchor).lengthSq() > m_denseRadius * m_denseRadius) {
             // A departure that is beyond the disc is traffic that has left the
             // camera's neighbourhood: it is replaced by an arrival inside it.  A
@@ -912,16 +1165,100 @@ void Traffic::advanceEdges() {
         // the edge just travelled while any other arm exists — a U-turn in the
         // middle of a block is not something Mumbai traffic does.  At a dead end
         // the reversal is the only exit there is, and there it is taken.
+        //
+        // A vehicle whose motion is external is the exception, and it is the rule
+        // that matters most here: a body at a junction is a real object with a real
+        // heading, and it goes where it is pointing.  The model takes the arm whose
+        // direction best matches the body's heading.  Round-robin put a northbound
+        // car on an eastbound edge, and from then on every number about that vehicle
+        // was measured in a frame it was not travelling in (D-034).
         const u32 rev = m_edges[a.edge].reverse;
         const size_t outs = node.out.size();
         u32 next = node.out[m_turn % outs];
-        for (size_t k = 0; k < outs; ++k) {
-            const u32 cand = node.out[(m_turn + k) % outs];
-            if (cand != rev || outs == 1) {
-                next = cand;
-                if (cand == rev) ++m_deadEndUTurns;
-                m_turn += k + 1;
-                break;
+        if (veh.external && veh.headingValid && outs > 0) {
+            const f64 hx = std::sin(veh.heading), hz = std::cos(veh.heading);
+            f64 best = -2.0;
+            for (size_t k = 0; k < outs; ++k) {
+                const u32 cand = node.out[k];
+                const SimEdge& ce = m_edges[cand];
+                const f64 dot = hx * ce.dir.x + hz * ce.dir.y;
+                if (dot > best) { best = dot; next = cand; }
+            }
+            // An arm that fights the body is not an arm.  A graph whose only
+            // outward edge at a node is the reversal of the one just travelled (a
+            // cul-de-sac, or a segment whose continuation the bake split across a
+            // chunk seam and never joined) has nothing to offer a moving body: the
+            // model keeps the frame it has, the driver holds the body's heading and
+            // the report pass hands it back.  Sliding the frame 180 degrees under a
+            // body is what manufactured the full-lock spins, the airborne wheels and
+            // the kerb penetration this check was failing on (D-034).
+            if (best < kBodyArmMinDot) {
+                ++m_graphContradictions;
+                if (m_graphContradictions <= 8) {
+                    std::printf("      noarm  veh %2u %-16s edge %u node %u outs %zu  yaw "
+                                "%+6.1f  arms:",
+                                a.idx, archetypeSpec(veh.kind).name, a.edge, from.to, outs,
+                                veh.heading * 57.29577951308232);
+                    for (size_t k = 0; k < outs && k < 4; ++k) {
+                        const SimEdge& ce = m_edges[node.out[k]];
+                        std::printf(" [e%u cls%u hdg %+6.1f len %5.1f dot %+5.2f]", node.out[k],
+                                    ce.cls, std::atan2(ce.dir.x, ce.dir.y) * 57.29577951308232,
+                                    ce.length, hx * ce.dir.x + hz * ce.dir.y);
+                    }
+                    // A twin node within a couple of metres carrying the arm this one
+                    // lacks is an unjoined chunk seam, and it is worth saying so.
+                    constexpr f64 kQ = 0.10;
+                    const i64 qx = static_cast<i64>(std::llround(node.p.x / kQ));
+                    const i64 qz = static_cast<i64>(std::llround(node.p.y / kQ));
+                    u32 twin = kNoEdge;
+                    f64 twinDist = 1e30;
+                    for (i64 dz = -20; dz <= 20; ++dz) {
+                        for (i64 dx = -20; dx <= 20; ++dx) {
+                            const u64 key =
+                                (static_cast<u64>(static_cast<u32>(static_cast<i32>(qx + dx))) << 32) |
+                                static_cast<u32>(static_cast<i32>(qz + dz));
+                            const auto it = m_nodeAt.find(key);
+                            if (it == m_nodeAt.end() || it->second == from.to) continue;
+                            if (m_nodes[it->second].out.empty()) continue;
+                            const f64 dd = (m_nodes[it->second].p - node.p).length();
+                            if (dd < twinDist) { twinDist = dd; twin = it->second; }
+                        }
+                    }
+                    if (twin != kNoEdge)
+                        std::printf("  twin node %u at %.2f m, outs %zu", twin, twinDist,
+                                    m_nodes[twin].out.size());
+                    std::printf("\n");
+                }
+                // The road the model knows ends here and the model will not
+                // invent one.  The frame is held *and the vehicle is stopped at
+                // the end of it*: the same instrument a red aspect uses
+                // (`obstruction`), applied to a road that never turns green.  A
+                // body driven on anyway is driven off the graph and into whatever
+                // the city happens to have there — measured, that is where the
+                // 0.0370 m kerbside contact of this check came from (D-034).  The
+                // hold expires on `kAnchorHoldSeconds` (`step`), which is how a
+                // body stranded inside a graph hole is handed back to the model.
+                veh.obstruction = src.length - kStopLineMargin;
+                // Held just short of the edge end, the same convention
+                // `placeHeld` uses: at exactly `length` the vehicle is an
+                // arrival again on the next tick, which would re-run this branch
+                // (and count the edge completion) sixty times a second.
+                veh.s = std::min(veh.s, static_cast<f64>(src.length) - 0.05);
+                veh.gap = std::max(0.0, src.length - kStopLineMargin - veh.s);
+                veh.leaderV = 0.0;
+                insertSorted(src.laneVehicles[a.lane], a.idx);   // stay in this list
+                continue;
+            }
+            if (next == rev) ++m_deadEndUTurns;
+        } else {
+            for (size_t k = 0; k < outs; ++k) {
+                const u32 cand = node.out[(m_turn + k) % outs];
+                if (cand != rev || outs == 1) {
+                    next = cand;
+                    if (cand == rev) ++m_deadEndUTurns;
+                    m_turn += k + 1;
+                    break;
+                }
             }
         }
         SimEdge& ne = m_edges[next];
@@ -934,9 +1271,28 @@ void Traffic::advanceEdges() {
             insertSorted(src.laneVehicles[a.lane], a.idx);
             continue;
         }
+        if (veh.external) {
+            const f64 oldH = std::atan2(from.dir.x, from.dir.y);
+            const f64 newH = std::atan2(ne.dir.x, ne.dir.y);
+            f64 d = std::cos(veh.heading - newH);
+            if (!veh.headingValid) d = 2.0;
+            std::printf("      xtion veh %2u %-16s edge %u->%u (rev %u) lane %u->%u outs %zu s %6.1f entry %6.1f "
+                        "lat %+5.2f->%+5.2f  yaw %+6.1f  oldHdg %+6.1f newHdg %+6.1f  dot %+5.2f"
+                        "%s\n",
+                        a.idx, archetypeSpec(veh.kind).name, a.edge, next, from.reverse, a.lane,
+                        lane, node.out.size(), veh.s, entry, veh.lateral,
+                        laneOffset(lane, ne.lanes),
+                        veh.headingValid ? veh.heading * 57.29577951308232 : 999.0,
+                        oldH * 57.29577951308232, newH * 57.29577951308232, d,
+                        d < 0.2 ? "   <-- AGAINST THE BODY" : "");
+        }
         veh.edge = next;
         veh.lane = lane;
-        veh.lateral = laneOffset(lane, ne.lanes);
+        // A promoted vehicle's lateral is the body's, and the model must not move
+        // it: it was measured from the body in `adoptPosition` and it is only a
+        // reading.  Overwriting it here with the new lane's offset made the model
+        // believe a body had teleported into the new lane at a junction (D-034).
+        if (!veh.external) veh.lateral = laneOffset(lane, ne.lanes);
         veh.lateralVel = 0.0;
         veh.latAccelCommand = 0.0;
         if (archetypeSpec(veh.kind).twoWheeler) {
@@ -1126,6 +1482,9 @@ void Traffic::maintainDensePopulation(f64 dt) {
     u32 budget = kRecyclePerTick;   // a tick's worth of teleports, not the whole queue
     for (u32 i = 0; i < m_vehicles.size() && budget; ++i) {
         Vehicle& veh = m_vehicles[i];
+        // A promoted vehicle is a body: recycling it would teleport the physics
+        // as well as the model, so it is the driver that decides when it leaves.
+        if (veh.external) continue;
         if (veh.recycleIn > 0.0) { veh.recycleIn -= dt; continue; }
         if ((positionOf(veh) - m_denseAnchor).lengthSq() <= lim * lim) continue;
         --budget;
@@ -1211,6 +1570,24 @@ void Traffic::step(f64 dt) {
     }
     advanceEdges();
     maintainDensePopulation(dt);
+    // An external vehicle that is being held — a dead end, or a junction that
+    // will not take it — cannot be teleported, so the hold has to expire: after
+    // `kAnchorHoldSeconds` the model takes the vehicle back (its owner sees
+    // `external` cleared and destroys the body), which is how a body that has
+    // driven into a place the graph cannot describe leaves the simulation.
+    for (Vehicle& veh : m_vehicles) {
+        if (!veh.external) { veh.heldSeconds = 0.0; continue; }
+        if (veh.v < 1.0 && veh.s > m_edges[veh.edge].length - veh.length - 1.0) {
+            veh.heldSeconds += dt;
+            if (veh.heldSeconds > kAnchorHoldSeconds) {
+                veh.external = false;
+                veh.heldSeconds = 0.0;
+                ++m_anchorReleases;
+            }
+        } else {
+            veh.heldSeconds = 0.0;
+        }
+    }
     m_time += dt;
 }
 
@@ -1234,28 +1611,33 @@ void Traffic::audit(f64 minX, f64 maxX, f64 minZ, f64 maxZ) {
                     continue;
                 if (ahead.s < behind.s) {
                     ++m_laneViolations;
-#if defined(MUMBAI_TRAFFIC_DIAG)
-                    std::fprintf(stderr,
+                    if (m_auditTrace)
+                        std::fprintf(stderr,
                                  "  order: edge %zu lane %u  idx %u s %.3f (%s len %.2f lat %.3f) "
                                  "listed before idx %u s %.3f (%s len %.2f lat %.3f)  t %.3f\n",
                                  static_cast<size_t>(&e - m_edges.data()), l, list[k], ahead.s,
                                  archetypeSpec(ahead.kind).name, ahead.length, ahead.lateral,
                                  list[k - 1], behind.s, archetypeSpec(behind.kind).name,
                                  behind.length, behind.lateral, m_time);
-#endif
                     continue;
                 }
+                // The floor is an invariant of the model's own motion: where *both*
+                // members of the pair are physical bodies, their distance is Jolt's
+                // to keep and the model only reads it (two 12 m double-deckers
+                // queued 0.14 m apart at a stop line are a legal physical state, and
+                // measured as one, D-034).  Where either of them is model-driven the
+                // floor stands exactly as before.
+                if (m_vehicles[list[k]].external && m_vehicles[list[k - 1]].external) continue;
                 if (ahead.s - ahead.length - behind.s < kMinGap - 1e-6) {
                     ++m_laneViolations;
-#if defined(MUMBAI_TRAFFIC_DIAG)
-                    std::fprintf(stderr,
+                    if (m_auditTrace)
+                        std::fprintf(stderr,
                                  "  gap:   edge %zu lane %u  idx %u %s s %.3f len %.2f lat %.3f "
                                  "(front %.3f)  ahead of idx %u %s s %.3f lat %.3f  gap %.4f  t %.3f\n",
                                  static_cast<size_t>(&e - m_edges.data()), l, list[k],
                                  archetypeSpec(ahead.kind).name, ahead.s, ahead.length, ahead.lateral,
                                  ahead.s - ahead.length, list[k - 1], archetypeSpec(behind.kind).name,
                                  behind.s, behind.lateral, ahead.s - ahead.length - behind.s, m_time);
-#endif
                 }
             }
         }
@@ -1296,6 +1678,7 @@ TrafficMetrics Traffic::metrics(const Vec2d& camera, f64 radius) const {
     m.crawlShare = m_vehicles.empty() ? 0.0 : static_cast<f64>(crawl) / m_vehicles.size();
     m.minGap = m_minGap;
     m.deadEndHolds = m_deadEndHolds;
+    m.graphContradictions = m_graphContradictions;
     m.laneChanges = m_laneChanges;
     m.laneChangeRefusals = m_laneChangeRefusals;
     m.edgeCompletions = m_edgeCompletions;
@@ -1313,6 +1696,8 @@ TrafficMetrics Traffic::metrics(const Vec2d& camera, f64 radius) const {
     m.badSpeed = m_badSpeed;
     m.badPosition = m_badPosition;
     m.laneViolations = m_laneViolations;
+    m.anchorReleases = m_anchorReleases;
+    m.orphanRepairs = m_orphanRepairs;
     m.maxLateralG = m_maxLateralG;
     m.nodesMerged = m_nodesMerged + m_nodesMergedAcrossChunks;
     m.nodesMergedAcrossChunks = m_nodesMergedAcrossChunks;

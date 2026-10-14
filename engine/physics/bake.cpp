@@ -56,6 +56,21 @@ J::RefConst<J::Shape> meshShapeFrom(const ChunkReader::MeshView& view, const Vec
         const u32 a = view.indices[i], b = view.indices[i + 1], c = view.indices[i + 2];
         if (a >= view.vertexCount || b >= view.vertexCount || c >= view.vertexCount) continue;
         if (a == b || b == c || a == c) continue;         // degenerate: rejected
+        // A sliver is the same defect with three different indices: a triangle
+        // whose area is nil has no normal, and Jolt's EPA asserts on it when a
+        // query overlaps it (`JPH_ASSERT(!ioV.IsNearZero())` in
+        // EPAPenetrationDepth).  The threshold is an absolute area — 1 cm^2 —
+        // because a road that is metres wide cannot need a triangle smaller than
+        // that, and a *relative* test would keep tiny triangles in a tiny mesh.
+        const J::Float3& pa = vertices[a];
+        const J::Float3& pb = vertices[b];
+        const J::Float3& pc = vertices[c];
+        const J::Vec3 ab = J::Vec3(pb) - J::Vec3(pa);
+        const J::Vec3 ac = J::Vec3(pc) - J::Vec3(pa);
+        if (ab.Cross(ac).LengthSq() < 4.0e-8f) {          // area < 1 cm^2
+            ++stats.roadSlivers;
+            continue;
+        }
         triangles.push_back(J::IndexedTriangle(a, b, c, 0));
     }
     if (triangles.empty()) return nullptr;

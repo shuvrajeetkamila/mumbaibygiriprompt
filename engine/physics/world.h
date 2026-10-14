@@ -46,7 +46,24 @@ struct PenetrationStats {
     f64 deepestDynamic = 0.0;   // dynamic vs dynamic
     u64 contacts = 0;
     u64 manifolds = 0;
-    void reset() { deepestStatic = deepestDynamic = 0.0; contacts = manifolds = 0; }
+    // Which bodies the deepest contact belonged to.  A depth with no name is a
+    // number nobody can act on: the first version of this instrument could say a
+    // body was 3.4 m inside something and not which vehicle, in a run that had
+    // 1,458 bodies in it.
+    JPH::BodyID deepestStaticBody;
+    JPH::BodyID deepestStaticPartner;
+    JPH::BodyID deepestDynamicBody;
+    JPH::BodyID deepestDynamicPartner;
+    // Where that contact was, in world metres: a depth without a place is a
+    // number nobody can act on.
+    Vec3 deepestStaticAt{};
+    Vec3 deepestDynamicAt{};
+    void reset() {
+        deepestStatic = deepestDynamic = 0.0;
+        contacts = manifolds = 0;
+        deepestStaticBody = deepestStaticPartner = JPH::BodyID();
+        deepestDynamicBody = deepestDynamicPartner = JPH::BodyID();
+    }
 };
 
 // A body the simulation owns, with the label it was created for.

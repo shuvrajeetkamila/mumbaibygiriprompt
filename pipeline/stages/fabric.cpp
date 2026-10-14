@@ -170,24 +170,44 @@ FacadeVariation variationFor(u64 seed, ZoningZone zone) {
 //  axes (every road that is not a cardinal grid street), so this is what keeps
 //  the massing legible instead of snapping the whole city to a lattice.
 // -----------------------------------------------------------------------------
-void emitProxy(CellData& cd, const geo2d::Ring& ring, const Vec2d& centre, f64 groundY,
-               f64 height, u32 materialId, u32 zoneId, bool surveyed) {
-    if (ring.size() < 3 || !(height > 0.5)) return;
+// The rectangle that fits a footprint ring, in the footprint's own frame: its
+// centre, the angle of its principal axis, and its half extents along that axis
+// and across it.  One function computes it, so the massing the player sees, the
+// collision proxy that stops a vehicle and the impostor that stands in for the
+// block at 2 km cannot disagree about where the building is — the first version
+// of this stage gave the *collision* the axis-aligned bounding box while giving
+// the massing the fitted rectangle, which put a 45-degree block's corners 3-4 m
+// into the street it stands beside (D-034's lane survey found 12 % of the model's
+// own lane points blocked by geometry the two layers otherwise agreed about).
+struct Massing {
+    Vec2d centre{};
+    f64 axisFromX = 0.0;  // angle of the principal axis measured from +X, radians
+    f64 yaw = 0.0;      // the same axis in the project's convention: atan2(dx, dz)
+    f64 along = 0.0;    // half extent along the principal axis
+    f64 across = 0.0;   // half extent perpendicular to it
+    Vec2d bbMin{}, bbMax{};
+};
 
-    // Second moments about the centroid -> principal axis.
+Massing massingOf(const geo2d::Ring& ring, const Vec2d& centre) {
+    Massing m;
+    m.bbMin = m.bbMax = centre;
+    if (ring.size() < 3) return m;
+
+    // Second moments about the centroid -> principal axis, in the (x, z) plane.
     f64 sxx = 0.0, syy = 0.0, sxy = 0.0;
     for (const Vec2d& p : ring) {
         const f64 dx = p.x - centre.x, dy = p.y - centre.y;
         sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
+        m.bbMin.x = std::min(m.bbMin.x, p.x); m.bbMax.x = std::max(m.bbMax.x, p.x);
+        m.bbMin.y = std::min(m.bbMin.y, p.y); m.bbMax.y = std::max(m.bbMax.y, p.y);
     }
     const f64 n = static_cast<f64>(ring.size());
     sxx /= n; syy /= n; sxy /= n;
-    f64 yaw = 0.0;
+    f64 phi = 0.0;
     if (std::abs(sxy) > 1e-9 || std::abs(sxx - syy) > 1e-9)
-        yaw = 0.5 * std::atan2(2.0 * sxy, sxx - syy);
+        phi = 0.5 * std::atan2(2.0 * sxy, sxx - syy);
 
-    // Extents along the principal axis and its perpendicular.
-    const f64 c = std::cos(yaw), sn = std::sin(yaw);
+    const f64 c = std::cos(phi), sn = std::sin(phi);
     f64 minU = 1e30, maxU = -1e30, minV = 1e30, maxV = -1e30;
     for (const Vec2d& p : ring) {
         const f64 dx = p.x - centre.x, dy = p.y - centre.y;
@@ -196,11 +216,30 @@ void emitProxy(CellData& cd, const geo2d::Ring& ring, const Vec2d& centre, f64 g
         minU = std::min(minU, u); maxU = std::max(maxU, u);
         minV = std::min(minV, v); maxV = std::max(maxV, v);
     }
-    f64 hx = (maxU - minU) * 0.5, hz = (maxV - minV) * 0.5;
-    if (!(hx > 0.5) || !(hz > 0.5)) { hx = std::max(hx, 0.5); hz = std::max(hz, 0.5); }
+    m.along = (maxU - minU) * 0.5;
+    m.across = (maxV - minV) * 0.5;
+    if (!(m.along > 0.5)) m.along = std::max(m.along, 0.5);
+    if (!(m.across > 0.5)) m.across = std::max(m.across, 0.5);
     // Re-centre on the fitted rectangle so the block is not offset from its hull.
     const f64 mu = (minU + maxU) * 0.5, mv = (minV + maxV) * 0.5;
-    const Vec2d fitted{centre.x + mu * c - mv * sn, centre.y + mu * sn + mv * c};
+    m.centre = Vec2d{centre.x + mu * c - mv * sn, centre.y + mu * sn + mv * c};
+    // `phi` measures the axis from +X; the project's yaw measures it from +Z with
+    // `atan2(dx, dz)`, which is what `emitProxy`'s consumer and the physics
+    // quaternion both use: q = (0, sin(yaw/2), 0, cos(yaw/2)) puts the box's own
+    // +Z along the axis.
+    m.axisFromX = phi;
+    m.yaw = std::atan2(c, sn);
+    return m;
+}
+
+void emitProxy(CellData& cd, const geo2d::Ring& ring, const Vec2d& centre, f64 groundY,
+               f64 height, u32 materialId, u32 zoneId, bool surveyed) {
+    if (ring.size() < 3 || !(height > 0.5)) return;
+
+    const Massing ms = massingOf(ring, centre);
+    const f64 yaw = ms.yaw;
+    const f64 hx = ms.along, hz = ms.across;
+    const Vec2d fitted = ms.centre;
 
     BuildingProxy bp{};
     bp.cx = static_cast<f32>(fitted.x - cd.origin.x);
@@ -209,7 +248,10 @@ void emitProxy(CellData& cd, const geo2d::Ring& ring, const Vec2d& centre, f64 g
     bp.hx = static_cast<f32>(hx);
     bp.hy = static_cast<f32>(height * 0.5);
     bp.hz = static_cast<f32>(hz);
-    bp.yaw = static_cast<f32>(yaw);
+    // The proxy keeps the angle-from-+X it has always carried (its consumer is the
+    // renderer, which owns that convention); the collision quaternion is built in
+    // `collisionBoxFor` from this same rectangle, so the two cannot drift apart.
+    bp.yaw = static_cast<f32>(ms.axisFromX);
     bp.baseY = static_cast<f32>(groundY);
     bp.materialId = materialId;
     bp.zoneId = zoneId;
@@ -245,6 +287,31 @@ u32 materialVariant(Context& ctx, const char* baseName, const FacadeVariation& v
     const u32 id = ctx.materials.add(def);
     cache.emplace(key, id);
     return id;
+}
+
+// A building's collision box: the same fitted rectangle as its massing, turned to
+// the footprint's own axis.  `flags` is the collider flag word the A2 harness
+// reads (bit0 building); `height` runs from `groundY` up, as the massing does.
+CollisionBox collisionBoxFor(const CellData& cd, const geo2d::Ring& ring, const Vec2d& centre,
+                             f64 groundY, f64 height, u32 materialId, u32 flags) {
+    const Massing ms = massingOf(ring, centre);
+    CollisionBox cb{};
+    cb.cx = static_cast<f32>(ms.centre.x - cd.origin.x);
+    cb.cy = static_cast<f32>(groundY + height * 0.5);
+    cb.cz = static_cast<f32>(ms.centre.y - cd.origin.y);
+    // Local +Z runs along the principal axis (half extent `along`), local +X
+    // across it (half extent `across`): the fitted rectangle, not its bounding box.
+    cb.hx = static_cast<f32>(ms.across);
+    cb.hy = static_cast<f32>(std::max(0.5, height * 0.5));
+    cb.hz = static_cast<f32>(ms.along);
+    const f64 half = ms.yaw * 0.5;
+    cb.qx = 0.0f;
+    cb.qy = static_cast<f32>(std::sin(half));
+    cb.qz = 0.0f;
+    cb.qw = static_cast<f32>(std::cos(half));
+    cb.flags = flags;
+    cb.materialId = materialId;
+    return cb;
 }
 
 } // namespace
@@ -373,20 +440,11 @@ void emitSyntheticFabric(Context& ctx) {
         }
 
         // --- collision --------------------------------------------------------
-        {
-            CollisionBox cb{};
-            cb.cx = static_cast<f32>(centre.x - cd.origin.x);
-            cb.cy = static_cast<f32>(groundY + height * 0.5);
-            cb.cz = static_cast<f32>(centre.y - cd.origin.y);
-            cb.hx = static_cast<f32>(bb.size().x * 0.5);
-            cb.hy = static_cast<f32>(height * 0.5);
-            cb.hz = static_cast<f32>(bb.size().y * 0.5);
-            cb.qw = 1.0f;
-            cb.flags = 1;
-            cb.materialId = wallMat;
-            cd.collision.push_back(cb);
-            ctx.stats.collisionBoxes++;
-        }
+        // The footprint's own rectangle, oriented: an axis-aligned box around a
+        // rotated block reaches metres into the street beside it, and a vehicle
+        // driven down that street is then stopped by a wall that is not there.
+        cd.collision.push_back(collisionBoxFor(cd, ring, centre, groundY, height, wallMat, 1u));
+        ctx.stats.collisionBoxes++;
 
         cd.counts.buildings++;
         ctx.stats.buildingCount++;
@@ -576,17 +634,7 @@ bool buildBuildings(Context& ctx) {
         // a small set of boxes so that the player cannot walk through a
         // courtyard-owning block.
         {
-            CollisionBox cb{};
-            cb.cx = static_cast<f32>(centre.x - cd.origin.x);
-            cb.cy = static_cast<f32>(groundY + height * 0.5);
-            cb.cz = static_cast<f32>(centre.y - cd.origin.y);
-            cb.hx = static_cast<f32>(bb.size().x * 0.5);
-            cb.hy = static_cast<f32>(height * 0.5);
-            cb.hz = static_cast<f32>(bb.size().y * 0.5);
-            cb.qx = 0; cb.qy = 0; cb.qz = 0; cb.qw = 1;
-            cb.flags = 1;
-            cb.materialId = wallMat;
-            cd.collision.push_back(cb);
+            cd.collision.push_back(collisionBoxFor(cd, ring, centre, groundY, height, wallMat, 1u));
             ctx.stats.collisionBoxes++;
 
             if (area > 2500.0) {

@@ -52,43 +52,120 @@ void configureWheel(J::WheelSettingsWV* w, f32 radius, f32 width, const J::Vec3&
     }
 }
 
-}  // namespace
+// The chassis of an archetype: the box the wheels hang from, and the wheels'
+// own geometry.  `spawnVehicle` builds bodies from it and `chassisRestHeight`
+// answers where such a body rests, so the two can never disagree — an earlier
+// version computed the wheel centre in one place and the spawn clearance in
+// another, and a 5 cm disagreement is a suspension that starts loaded.
+struct Chassis {
+    f64 wheelRadius = 0.30;
+    f64 wheelbase = 2.4;
+    f64 track = 1.4;
+    f64 halfWidth = 0.8;
+    f64 halfLength = 2.0;
+    f64 halfHeight = 0.7;
+    f64 bodyHeight = 1.4;
+    f64 comDrop = 0.28;
+    // Suspension travel and the frequency its spring is tuned to.  These decide
+    // where a vehicle actually rests, and they are the reason `chassisRestHeight`
+    // is not simply the wheel radius: see the note there.
+    f64 suspensionMin = 0.20;
+    f64 suspensionMax = 0.45;
+    f64 suspensionFrequency = 2.6;      // front axle, Hz
+    f64 suspensionFrequencyRear = 2.6;
+};
 
-Vehicle spawnVehicle(World& world, sim::Archetype kind, const Vec3& position, f64 yawRadians) {
-    Vehicle v;
+Chassis chassisFor(sim::Archetype kind) {
     const sim::ArchetypeSpec& spec = sim::archetypeSpec(kind);
-    v.kind = kind;
-    v.massKg = spec.massKg;
-    v.halfLength = spec.length * 0.5;
-    v.halfWidth = spec.width * 0.5;
-
+    Chassis c;
     const bool twoWheeler = spec.twoWheeler;
-    const f64 wheelRadius = twoWheeler ? 0.31
-                          : kind == sim::Archetype::AutoRickshaw ? 0.24
-                                                            : 0.34;
-    v.wheelRadius = wheelRadius;
+    c.halfLength = spec.length * 0.5;
+    c.halfWidth = spec.width * 0.5;
+    c.wheelRadius = twoWheeler ? 0.31
+                  : kind == sim::Archetype::AutoRickshaw ? 0.24
+                                                         : 0.34;
     // Body height is the *chassis* box the wheels hang from: the floor, the
     // suspension and the running gear.  A BEST double-decker is 4.3 m tall and
     // its mass is in the chassis, not the roof — which is exactly why its centre
     // of mass sits below its geometric centre and why it carries anti-roll bars.
-    const f64 bodyHeight = twoWheeler ? 0.62
-                          : kind == sim::Archetype::AutoRickshaw ? 1.20
-                          : kind == sim::Archetype::Bus ? 4.30
-                                                        : 1.45;
-    v.halfHeight = bodyHeight * 0.5;
+    c.bodyHeight = twoWheeler ? 0.62
+                 : kind == sim::Archetype::AutoRickshaw ? 1.20
+                 : kind == sim::Archetype::Bus ? 4.30
+                                               : 1.45;
+    c.halfHeight = c.bodyHeight * 0.5;
     // A two-wheeler's wheels are at its ends; a four-wheeler's are at 60 % of
     // its length, which is where real vehicles put them.
-    v.wheelbase = twoWheeler ? spec.length - 2.0 * wheelRadius : spec.length * 0.60;
-    const f64 track = twoWheeler ? 0.0 : spec.width * 0.80;
-
-    // Chassis: a box with its centre of mass dropped below the geometric centre.
+    c.wheelbase = twoWheeler ? spec.length - 2.0 * c.wheelRadius : spec.length * 0.60;
+    c.track = twoWheeler ? 0.0 : spec.width * 0.80;
     // A vehicle whose centre of mass sits at its geometric centre tips over at
     // the first roundabout — the failure the specification's rollover note is
     // about — and a 16 t double-decker is the worst case in the fleet.
-    const f64 comDrop = kind == sim::Archetype::Bus ? 1.00
-                      : twoWheeler ? 0.22
-                      : kind == sim::Archetype::AutoRickshaw ? 0.20
-                                                            : 0.28;
+    c.comDrop = kind == sim::Archetype::Bus ? 1.00
+              : twoWheeler ? 0.22
+              : kind == sim::Archetype::AutoRickshaw ? 0.20
+                                                     : 0.28;
+    c.suspensionMin = twoWheeler ? 0.30 : 0.20;
+    c.suspensionMax = twoWheeler ? 0.50 : 0.45;
+    c.suspensionFrequency = twoWheeler ? 1.5
+                          : kind == sim::Archetype::Bus ? 2.2
+                                                        : 2.6;
+    c.suspensionFrequencyRear = twoWheeler ? 2.0 : c.suspensionFrequency;
+    return c;
+}
+
+}  // namespace
+
+f64 chassisSuspensionSag(sim::Archetype kind) {
+    // A frequency-tuned spring sags by g / (2*pi*f)^2 under gravity: the wheels
+    // carry the vehicle, the springs compress, and the body sits *lower* than the
+    // geometry alone would put it.  A stiffer axle sags less, so the stiffest axle
+    // sets the height and the softer one keeps a little travel in hand.
+    const Chassis c = chassisFor(kind);
+    const auto sagOf = [](f64 frequencyHz) {
+        const f64 omega = 2.0 * 3.14159265358979323846 * frequencyHz;
+        return 9.81 / (omega * omega);
+    };
+    return std::min(sagOf(c.suspensionFrequency), sagOf(c.suspensionFrequencyRear));
+}
+
+f64 chassisHalfHeight(sim::Archetype kind) { return chassisFor(kind).halfHeight; }
+
+f64 chassisRestHeight(sim::Archetype kind) {
+    // Where a vehicle's chassis centre sits above the surface it rests on:
+    //
+    //   halfHeight          the chassis box top-to-centre is not it —
+    //   + 0.65 * radius     the wheel's axle is 0.35 r above the chassis floor, so
+    //                       the tyre's contact point is halfHeight + 0.65 r below
+    //                       the chassis centre at zero suspension length,
+    //   + suspension length which at rest is the minimum travel plus the spring's
+    //                       own sag (a car: 0.20 + 0.037 = 0.24 m).
+    //
+    // The first version of this function stopped at the second line, which put
+    // every body 0.2-0.4 m *inside* the road: the wheels are connected to the
+    // chassis by a suspension whose minimum length is 0.20 m, so a vehicle cannot
+    // be lower than that and still have its tyres on the ground.  The A2 harness
+    // measured the consequence as vehicles resting "proud" and as wheel contacts
+    // that never registered (D-034).
+    const Chassis c = chassisFor(kind);
+    return c.halfHeight + 0.65 * c.wheelRadius + c.suspensionMin + chassisSuspensionSag(kind);
+}
+
+Vehicle spawnVehicle(World& world, sim::Archetype kind, const Vec3& position, f64 yawRadians) {
+    Vehicle v;
+    const sim::ArchetypeSpec& spec = sim::archetypeSpec(kind);
+    const Chassis ch = chassisFor(kind);
+    v.kind = kind;
+    v.massKg = spec.massKg;
+    v.halfLength = ch.halfLength;
+    v.halfWidth = ch.halfWidth;
+    v.wheelRadius = ch.wheelRadius;
+    v.halfHeight = ch.halfHeight;
+    v.wheelbase = ch.wheelbase;
+
+    const bool twoWheeler = spec.twoWheeler;
+    const f64 wheelRadius = ch.wheelRadius;
+    const f64 track = ch.track;
+    const f64 comDrop = ch.comDrop;
     J::RefConst<J::Shape> chassis = new J::BoxShape(J::Vec3(static_cast<f32>(v.halfWidth),
                                                             static_cast<f32>(v.halfHeight),
                                                             static_cast<f32>(v.halfLength)));
@@ -126,11 +203,15 @@ Vehicle spawnVehicle(World& world, sim::Archetype kind, const Vec3& position, f6
         J::WheelSettingsWV* front = new J::WheelSettingsWV;
         configureWheel(front, static_cast<f32>(wheelRadius), 0.06f,
                        J::Vec3(0.0f, axleY, static_cast<f32>(v.wheelbase * 0.5)),
-                       J::DegreesToRadians(30.0f), 0.30f, 0.50f, 1.5f, 500.0f, 30.0f);
+                       J::DegreesToRadians(30.0f), static_cast<f32>(ch.suspensionMin),
+                       static_cast<f32>(ch.suspensionMax), static_cast<f32>(ch.suspensionFrequency),
+                       500.0f, 30.0f);
         J::WheelSettingsWV* back = new J::WheelSettingsWV;
         configureWheel(back, static_cast<f32>(wheelRadius), 0.07f,
                        J::Vec3(0.0f, axleY, static_cast<f32>(-v.wheelbase * 0.5)),
-                       0.0f, 0.30f, 0.50f, 2.0f, 250.0f, 0.0f);
+                       0.0f, static_cast<f32>(ch.suspensionMin),
+                       static_cast<f32>(ch.suspensionMax),
+                       static_cast<f32>(ch.suspensionFrequencyRear), 250.0f, 0.0f);
         settings.mWheels = { front, back };
         wheels = { front, back };
 
@@ -157,8 +238,9 @@ Vehicle spawnVehicle(World& world, sim::Archetype kind, const Vec3& position, f6
             J::WheelSettingsWV* w = new J::WheelSettingsWV;
             configureWheel(w, static_cast<f32>(wheelRadius),
                            kind == sim::Archetype::Bus ? 0.28f : 0.20f,
-                           J::Vec3(x, axleY, z), steer, 0.20f, 0.45f,
-                           kind == sim::Archetype::Bus ? 2.2f : 2.6f,
+                           J::Vec3(x, axleY, z), steer,
+                           static_cast<f32>(ch.suspensionMin), static_cast<f32>(ch.suspensionMax),
+                           static_cast<f32>(ch.suspensionFrequency),
                            kind == sim::Archetype::Bus ? 3000.0f : 900.0f, 0.0f);
             return w;
         };
@@ -292,6 +374,10 @@ f64 leanAngleDegrees(World& world, const Vehicle& v) {
     const J::Vec3 worldUp(0.0f, 1.0f, 0.0f);
     const f32 cosAngle = std::clamp(vehicleUp.Dot(worldUp), -1.0f, 1.0f);
     return static_cast<f64>(std::acos(cosAngle)) * 180.0 / 3.14159265358979323846;
+}
+
+int wheelCount(const Vehicle& v) {
+    return v.constraint == nullptr ? 0 : static_cast<int>(v.constraint->GetWheels().size());
 }
 
 int wheelsOnGround(const Vehicle& v) {

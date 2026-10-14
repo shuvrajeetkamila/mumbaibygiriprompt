@@ -45,6 +45,18 @@ struct BakeStats {
     u64 terrainShapes = 0;
     u64 roadShapes = 0;
     u64 roadTriangles = 0;
+    // Triangles dropped for being slivers.  Jolt's EPA asserts on a degenerate
+    // triangle, and the assert fires from a *query*, so a sliver anywhere in a
+    // mesh takes down whatever is probing near it.  A road mesh is built from
+    // kerb strips and sidewalks, which is exactly where a triangle with three
+    // distinct indices and no area comes from (D-034).
+    u64 roadSlivers = 0;
+    // Triangles dropped for being slivers.  Jolt's EPA asserts on a degenerate
+    // triangle (`!ioV.IsNearZero()`), and the assert fires from a *query*, so a
+    // sliver anywhere in a mesh takes down whatever is probing near it — the
+    // survey, the spawn gate, or a shape cast in the game loop.  A road mesh is
+    // built from kerb strips and sidewalks, which is exactly where a triangle
+    // with three distinct indices and no area comes from (D-034).
     u64 skippedChunks = 0;
     f64 seconds = 0.0;
     f64 minY = 1e30, maxY = -1e30;

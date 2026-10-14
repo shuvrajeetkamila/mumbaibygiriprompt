@@ -6,6 +6,8 @@
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
 
 #include <chrono>
+#include <cstdarg>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 
@@ -63,7 +65,18 @@ void PenetrationListener::record(const J::Body& b1, const J::Body& b2,
     if (penetration <= 0.0) return;
     const bool dynamicPair = b1.IsDynamic() && b2.IsDynamic();
     f64& slot = dynamicPair ? m_stats->deepestDynamic : m_stats->deepestStatic;
-    if (penetration > slot) slot = penetration;
+    if (penetration > slot) {
+        slot = penetration;
+        JPH::BodyID& slotBody = dynamicPair ? m_stats->deepestDynamicBody : m_stats->deepestStaticBody;
+        JPH::BodyID& slotPartner =
+            dynamicPair ? m_stats->deepestDynamicPartner : m_stats->deepestStaticPartner;
+        slotBody = b1.IsDynamic() ? b1.GetID() : b2.GetID();
+        slotPartner = b1.IsDynamic() ? b2.GetID() : b1.GetID();
+        Vec3& slotAt = dynamicPair ? m_stats->deepestDynamicAt : m_stats->deepestStaticAt;
+        const J::RVec3 at = m.GetWorldSpaceContactPointOn1(0);
+        slotAt = Vec3(static_cast<f32>(at.GetX()), static_cast<f32>(at.GetY()),
+                      static_cast<f32>(at.GetZ()));
+    }
 }
 
 void PenetrationListener::OnContactAdded(const J::Body& b1, const J::Body& b2,
@@ -80,11 +93,32 @@ void PenetrationListener::OnContactPersisted(const J::Body& b1, const J::Body& b
 // -----------------------------------------------------------------------------
 World::World() = default;
 
+namespace {
+
+// Jolt's trace channel: an assert or a warning now says what it was instead of
+// dying silently with a SIGTRAP.  (A variadic lambda cannot convert to the
+// function pointer Jolt wants, hence the free function.)
+void traceToStderr(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    std::fputs("Jolt: ", stderr);
+    std::vfprintf(stderr, fmt, args);
+    std::fputc('\n', stderr);
+    va_end(args);
+}
+
+}  // namespace
+
 World::~World() { shutdown(); }
 
 bool World::init(u32 maxBodies, u32 tempPoolBytes, int jobThreads) {
     if (m_ready) return true;
     if (g_worldInstances++ == 0) {
+        // Jolt's own trace channel, pointed at stderr.  When a Jolt assert fires
+        // in this project it now says *what* it asserted instead of dying
+        // silently with a SIGTRAP — the single most expensive thing to guess at
+        // in an engine integration (D-034).
+        J::Trace = &traceToStderr;
         J::RegisterDefaultAllocator();
         J::Factory::sInstance = new J::Factory();
         J::RegisterTypes();

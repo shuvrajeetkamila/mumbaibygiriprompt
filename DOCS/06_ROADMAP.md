@@ -14,7 +14,7 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
 | # | system | specification | what exists | buildable here? |
 |---|---|---|---|---|
 | A1 | **Renderer (S6)** | Vulkan 1.1: depth prepass + forward, clustered lights, WBOIT, TAA, filmic tonemap, compute post, dynamic resolution 720p–1080p | the chunk sections a renderer consumes are built and hash-verified; the three.js preview is a *viewer*, not this | no — no Vulkan headers, no ICD, no GPU |
-| A2 | **Physics (S4/S5)** | Jolt: vehicle dynamics, motorcycle handling, bulk transform update on origin shift, capsule colliders on Sea Link stays | **built and measured** (D-033): Jolt v5.6.0 vendored and built by a hand-written source list, `engine/physics/` (world, bake, vehicle) the only Jolt-facing code, `make physics` runs a 45-check acceptance harness — 164,594 boxes + 24 capsules + 924 heightfields baked from the pipeline's own chunks, the Sea Link's 3,987 m carriageway recovered from the collision records with a 0.00013 m record-vs-collider deviation, a motorcycle at 100 % wheels down on it, both controllers, a 22 m impact (0.0 mm penetration at rest, no tunnelling), 500 vehicles extrapolated at 8.9 ms, and the floating-origin shift at 0.25 ms mean / 0.31 ms worst over 1,454 bodies | **done** — remaining gap: the traffic layer still moves kinematic vehicles, not Jolt bodies, and road-mesh collision is not part of the default acceptance run |
+| A2 | **Physics (S4/S5)** | Jolt: vehicle dynamics, motorcycle handling, bulk transform update on origin shift, capsule colliders on Sea Link stays | **built and measured** (D-033): Jolt v5.6.0 vendored and built by a hand-written source list, `engine/physics/` (world, bake, vehicle) the only Jolt-facing code, `make physics` runs a 45-check acceptance harness — 164,594 boxes + 24 capsules + 924 heightfields baked from the pipeline's own chunks, the Sea Link's 3,987 m carriageway recovered from the collision records with a 0.00013 m record-vs-collider deviation, a motorcycle at 100 % wheels down on it, both controllers, a 22 m impact (0.0 mm penetration at rest, no tunnelling), 500 vehicles extrapolated at 8.9 ms, and the floating-origin shift at 0.25 ms mean / 0.31 ms worst over 1,454 bodies | **done** (D-033, extended by D-034): the traffic model's own vehicles are now promoted to Jolt bodies and driven from the model's own command (24 promotions / 24 demotions, 2,012 bodies back where they started, lane error 0.39 m mean, 97.3 % wheels down, 0.0420 m between driven vehicles), and road-mesh collision is on by default; the build's own stale-object defect that made `mumbai_sim` segfault (`sim_main.d` missing from `-include`) is fixed and the 60-minute run passes all 14 checks.  Remaining gap: one check, `no vehicle is driven into the city` — a **0.0370 m** motorcycle contact against a 0.020 m budget, measured to be a *city* disagreement (the road ribbon, the nav graph and the graded ground are three descriptions of one street: 84.7 % agree within 0.25 m, 4.84 % of footprints step by more than 0.35 m) |
 | A3 | **ECS + full traffic (S5)** | five vehicle archetypes with the named masses/dimensions, IDM + MOBIL for large vehicles, Boids flow field for two-wheelers, signal phases from the world | **built and validated** (`engine/sim/`): five archetypes (D-027), IDM + MOBIL, two-wheeler Boids field at 200 ms / 20 m, signals with amber and all-red, 18 cases in `tests/test_traffic.cpp`, and the 60-minute validation now drives this layer over the city's own nav graph (119 chunks, ~31k nodes / 86k edges) with the specification's fleet held around the camera (D-030) | **done** — remaining gap is the ECS container itself (D-015: plain vectors, not flecs) and per-entity component stores, which is a packaging decision, not a behaviour |
 | A4 | **GPU weather (S3)** | 2,400 mm/yr monsoon, GPU rain particles, screen-space wetness driving roughness→0 and albedo −30 %, normal flatten | the CPU hydrology is built and verified (D-026); the wetness *response* is a material parameter with nothing driving it | no — shader work, unverifiable without a GPU |
 | A5 | **Ocean (S3)** | 4–8 Gerstner waves (80–150 m swell, 0.5–2 m; monsoon 3–5 m), PBR + subsurface scattering, sun glitter, depth-buffer foam and runup | the sea/creek mesh exists (31,180 quads) | no — same reason |
@@ -71,11 +71,22 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
    per asset as `hero.<name>.triangles` beside `hero.<name>.triangleBudget`.
    What remains is not more procedural ornament but hand-modelled or
    photogrammetric assets, plus carved relief and signage text.
-4. ~~**A2 — Jolt, vendored**~~ — **done** (D-033): `engine/physics/`, the
-   hand-written `third_party/jolt_sources.mk` build, `make physics` and 45
-   passing checks.  The original entry read: a hand-written build file, then a headless
-   physics harness (drop a motorcycle on the Sea Link, measure penetration) so
-   the integration is validated the way the traffic layer is.
+4. ~~**A2 — Jolt, vendored**~~ — **done** (D-033), extended by **D-034**: the
+   traffic model and the bodies are one fleet, road-mesh collision is on by
+   default, and `make physics` runs **55 checks with one failure** — the 0.0370 m
+   motorcycle-vs-static contact, attributed by measurement to the disagreement
+   between the road ribbon, the nav graph and the graded ground rather than to
+   any driving or authoring defect.  The original entry read: a hand-written
+   build file, then a headless physics harness (drop a motorcycle on the Sea
+   Link, measure penetration) so the integration is validated the way the
+   traffic layer is.
+4b. **The road surface as one description.**  The next pipeline item, named by
+   D-034's own numbers: `pipeline/stages/output.cpp` grades the road into the
+   collision grid (`gradeRoadsIntoGrid`, n = 128) and `pipeline/stages/network.cpp`
+   builds the nav graph from the OSM centrelines, while the chunk's road mesh is
+   the render/collision ribbon — three surfaces for one street.  The fix is to
+   make the ribbon the authority and grade *from* it, so a lane point's collision
+   surface and the model's road agree to the centimetre the budget needs.
 5. **A1 — the renderer**, written against the chunk format, with the shaders of
    A4–A6.  It cannot be run here; it can be written, and its data contract is
    already proven by the runtime reader.

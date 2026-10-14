@@ -47,10 +47,15 @@
 #include "engine/core/math.h"
 #include "engine/physics/bake.h"
 #include "engine/physics/jolt.h"
+#include "engine/physics/driver.h"
 #include "engine/physics/vehicle.h"
 #include "engine/physics/world.h"
 #include "engine/sim/traffic.h"
 #include "engine/world/chunk.h"
+
+#include <execinfo.h>
+#include <signal.h>
+#include <unistd.h>
 
 #include <algorithm>
 #include <chrono>
@@ -154,8 +159,14 @@ struct Options {
     f64 deckKph = 45.0;                  // motorcycle cruise speed
     u32 fleet = 24;                      // vehicles in the fleet-cost section
     u32 props = 200;                     // dynamic crates in the soak
+    u32 drive = 24;                      // vehicles handed to the physical driver
+    f64 surveySpacing = 0.0;             // metres between lane/collision survey samples
     u32 maxChunks = 0;                   // 0 = every cell
-    bool roads = false;                  // bake road meshes city-wide (heavy)
+    // Road-mesh collision on by default: a vehicle drives on the road, and the
+    // graded heightfield under it is a 32 m approximation of the same surface.  The
+    // measured difference is the wheels: 92.6 % of wheel contacts down on wheels
+    // that follow the heightfield, 97.6 % on wheels that follow the road (D-034).
+    bool roads = true;                   // bake road meshes city-wide (heavy)
     bool quick = false;
     bool noSteer = false;                // diagnostic: run the ride with hands off
     f64 holdSteer = std::numeric_limits<f64>::quiet_NaN();   // diagnostic: constant steering
@@ -178,14 +189,18 @@ Options parse(int argc, char** argv, bool& help) {
         else if (a == "--deck-kph") opt.deckKph = nextD(opt.deckKph);
         else if (a == "--fleet") opt.fleet = nextI(opt.fleet);
         else if (a == "--props") opt.props = nextI(opt.props);
+        else if (a == "--drive") opt.drive = nextI(opt.drive);
+        else if (a == "--survey") opt.surveySpacing = std::atof(argv[++i]);
         else if (a == "--max-chunks") opt.maxChunks = nextI(0);
         else if (a == "--roads") opt.roads = true;
+        else if (a == "--no-roads") opt.roads = false;
         else if (a == "--quick") {
             opt.quick = true;
             opt.minutes = std::min(opt.minutes, 0.25);
             opt.seconds = std::min(opt.seconds, 8.0);
             opt.fleet = std::min(opt.fleet, 8u);
             opt.props = std::min(opt.props, 60u);
+            opt.drive = std::min(opt.drive, 12u);
         } else if (a == "--quiet") g_quiet = true;
         else if (a == "--no-steer") opt.noSteer = true;
         else if (a == "--hold-steer") opt.holdSteer = nextD(opt.holdSteer);
@@ -845,7 +860,36 @@ Json rideJson(const RideResult& r) {
 }  // namespace
 
 // =============================================================================
+namespace {
+
+// A trap (Jolt's own `JPH_BREAKPOINT`) used to kill this harness with no message
+// and no location, which is the slowest possible way to debug an engine
+// integration.  This prints the stack and the instruction pointer, then exits
+// with a distinct code.
+void trapHandler(int sig) {
+    void* frames[32];
+    const int n = static_cast<int>(backtrace(frames, 32));
+    const char msg[] = "\n  trap: the process hit a breakpoint trap; stack:\n";
+    const ssize_t ignored = write(STDERR_FILENO, msg, sizeof(msg) - 1);
+    (void)ignored;
+    backtrace_symbols_fd(frames, n, STDERR_FILENO);
+    _exit(100 + sig);
+}
+
+void installTrapHandler() {
+    struct sigaction sa{};
+    sa.sa_handler = trapHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_NODEFER;
+    sigaction(SIGTRAP, &sa, nullptr);
+    sigaction(SIGABRT, &sa, nullptr);
+    sigaction(SIGSEGV, &sa, nullptr);
+}
+
+}  // namespace
+
 int main(int argc, char** argv) {
+    installTrapHandler();
     bool help = false;
     const Options opt = parse(argc, argv, help);
     if (help) {
@@ -857,9 +901,9 @@ int main(int argc, char** argv) {
                     "  --fleet <n>        vehicles in the fleet-cost section (default 24)\n"
                     "  --props <n>        dynamic crates in the soak (default 200)\n"
                     "  --max-chunks <n>   bake only the first n cells (smoke runs)\n"
-                    "  --roads            bake road meshes for every cell (heavy)\n"
+                    "  --no-roads         skip road-mesh collision (heightfield only)\n"
                     "  --report <path>    JSON summary (default build/physics_report.json)\n"
-                    "  --quick --quiet --trace\n");
+                    "  --quick --quiet --trace --survey M\n");
         return 0;
     }
 
@@ -921,12 +965,14 @@ int main(int argc, char** argv) {
             stats.firstError.empty() ? sfmt("%zu cells in %.1f s", cells.size(), bakeSeconds)
                                      : stats.firstError);
     require(stats.boxes > 100000, "the city has colliders",
-            sfmt("%llu boxes, %llu capsules, %llu terrain, %llu road meshes in %llu compounds",
+            sfmt("%llu boxes, %llu capsules, %llu terrain, %llu road meshes in %llu compounds "
+                 "(%llu sliver triangles rejected)",
                  static_cast<unsigned long long>(stats.boxes),
                  static_cast<unsigned long long>(stats.capsules),
                  static_cast<unsigned long long>(stats.terrainShapes),
                  static_cast<unsigned long long>(stats.roadShapes),
-                 static_cast<unsigned long long>(stats.compoundGroups)));
+                 static_cast<unsigned long long>(stats.compoundGroups),
+                 static_cast<unsigned long long>(stats.roadSlivers)));
     {
         Json j = Json::object();
         j.set("cells", Json(static_cast<f64>(cells.size())));
@@ -935,6 +981,7 @@ int main(int argc, char** argv) {
         j.set("terrainShapes", Json(static_cast<f64>(stats.terrainShapes)));
         j.set("roadShapes", Json(static_cast<f64>(stats.roadShapes)));
         j.set("roadTriangles", Json(static_cast<f64>(stats.roadTriangles)));
+        j.set("roadSlivers", Json(static_cast<f64>(stats.roadSlivers)));
         j.set("compoundGroups", Json(static_cast<f64>(stats.compoundGroups)));
         j.set("staticBodies", Json(static_cast<f64>(world.bodyCount())));
         j.set("seconds", Json(bakeSeconds));
@@ -1034,6 +1081,7 @@ int main(int argc, char** argv) {
         j.set("surfaceSpreadM", Json(deck.surfaceSpread));
         j.set("surfaceMissing", Json(static_cast<f64>(deck.surfaceMissing)));
         j.set("surfaceObstructed", Json(static_cast<f64>(deck.surfaceObstructed)));
+        (void)0;
         reportSet("deck", j);
     }
 
@@ -1318,6 +1366,317 @@ int main(int argc, char** argv) {
         for (phys::Vehicle& v : vehicles) phys::destroyVehicle(world, v);
     }
 
+    // --- Section 5: the traffic model, driven by physics ----------------------
+    // Until this section existed, the model and the bodies were two fleets that
+    // never met: `engine/sim` decided where every vehicle goes and moved points
+    // along a graph, `engine/physics` built real bodies and drove four of them by
+    // hand along the Sea Link.  Here the model keeps deciding and the bodies do
+    // the moving, with the body's actual position fed back into the model every
+    // tick (D-034).
+    section("physical traffic (S5)");
+    {
+        Vec2d anchor = deckAnchor;
+        for (const Landmark& l : landmarks)
+            if (l.name.find("Marine Drive") != std::string::npos) anchor = Vec2d(l.x, l.z);
+        // The model's own population: enough vehicles around the anchor that a
+        // driven one has someone to follow.  The population device keeps this
+        // number near the anchor as the fleet drives, which is what makes the
+        // handoff testable at a fixed point in the city rather than on the deck.
+        const u32 population = std::max<u32>(opt.drive * 6, 120);
+        std::vector<std::string> files;
+        files.reserve(cells.size());
+        for (const CellRef& c : cells) files.push_back(c.path);
+        auto tBuild0 = std::chrono::steady_clock::now();
+        sim::Traffic traffic(files, std::vector<Vec2d>{anchor}, anchor, population, 0x50485953ull);
+        const f64 buildMs =
+            std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - tBuild0).count();
+        // Ten seconds of model-only running, so the disc fills and the platoons
+        // form; a handoff test on a fleet that has not started moving yet would
+        // measure the population device, not the driver.
+        for (int i = 0; i < 600; ++i) traffic.step(kStep);
+        const sim::TrafficMetrics before = traffic.metrics(anchor, 500.0);
+        require(before.vehicles > opt.drive && before.meanSpeedKph > 5.0,
+                "the traffic model runs before anything is handed over",
+                sfmt("%zu vehicles around the anchor, mean %.1f km/h, %zu edges, %zu signals, "
+                     "built in %.1f s", before.vehicles, before.meanSpeedKph, before.edges,
+                     before.signals, buildMs / 1000.0));
+        // The graph's own connectivity, measured rather than assumed.  A node
+        // whose only out-arm is its own reversal is a place the model can only
+        // turn a vehicle around — a cul-de-sac, or a hole where the producer
+        // dropped a segment.  The two are told apart by whether another node
+        // with arms stands within two metres of it (D-034).
+        {
+            const sim::Traffic::GraphAudit ga = traffic.graphAudit();
+            const f64 n = static_cast<f64>(std::max<u64>(ga.nodes, 1u));
+            std::printf("      graph: %llu nodes — out-degree 1: %llu (%.2f %%), 2: %llu, "
+                        "3: %llu, 4+: %llu\n"
+                        "        of the one-arm nodes %llu (%.1f %%) are their own reversal and "
+                        "%llu (%.1f %%) have another node with arms within 2 m\n",
+                        static_cast<unsigned long long>(ga.nodes),
+                        static_cast<unsigned long long>(ga.out1), 100.0 * ga.out1 / n,
+                        static_cast<unsigned long long>(ga.out2),
+                        static_cast<unsigned long long>(ga.out3),
+                        static_cast<unsigned long long>(ga.out4plus),
+                        static_cast<unsigned long long>(ga.oneArmIsReversal),
+                        ga.out1 ? 100.0 * static_cast<f64>(ga.oneArmIsReversal) /
+                                      static_cast<f64>(ga.out1) : 0.0,
+                        static_cast<unsigned long long>(ga.oneArmHasTwinNearby),
+                        ga.out1 ? 100.0 * static_cast<f64>(ga.oneArmHasTwinNearby) /
+                                      static_cast<f64>(ga.out1) : 0.0);
+        }
+
+        // --- Section 5a: the model's roads against the collision layer ------------
+        // The one measurement of the whole city rather than of a test track: every
+        // `--survey` metres along every lane, ask the collision layer where the road
+        // is.  Where the two layers disagree, some system in this project is wrong —
+        // the survey says how often, how badly, and where; it does not decide which
+        // layer is right.
+        if (opt.surveySpacing > 0.0 && !traffic.edges().empty()) {
+            section("road/collision survey");
+            phys::DriverSettings surveySettings;
+            const auto surveyT0 = std::chrono::steady_clock::now();
+            phys::PhysicalFleet surveyor;
+            const phys::PhysicalFleet::LaneSurvey lv =
+                surveyor.surveyLanes(world, traffic, opt.surveySpacing);
+            const f64 secs = std::chrono::duration<f64>(std::chrono::steady_clock::now() -
+                                                        surveyT0).count();
+            const f64 n = static_cast<f64>(lv.samples);
+            std::printf("      %llu lane samples every %.0f m (%.0f s), collision surface vs model road:\n"
+                        "        within 0.25 m %5.1f %%   within 0.5 m %5.1f %%   within 2 m %5.1f %%"
+                        "   worst %.2f m\n"
+                        "        blocked for a car %llu (%.2f %%)   stepped > %.2f m %llu (%.2f %%)\n",
+                        static_cast<unsigned long long>(lv.samples), opt.surveySpacing, secs,
+                        n > 0 ? 100.0 * lv.withinQuarter / n : 0.0,
+                        n > 0 ? 100.0 * lv.withinHalf / n : 0.0,
+                        n > 0 ? 100.0 * lv.withinTwo / n : 0.0, lv.worstErrorM,
+                        static_cast<unsigned long long>(lv.blocked),
+                        n > 0 ? 100.0 * static_cast<f64>(lv.blocked) / n : 0.0,
+                        surveySettings.footprintStepTolerance, static_cast<unsigned long long>(lv.stepped),
+                        n > 0 ? 100.0 * static_cast<f64>(lv.stepped) / n : 0.0);
+            if (lv.worstErrorM > 0.5)
+                std::printf("        worst height disagreement at (%.1f, %.1f) on edge %llu\n",
+                            lv.worstAt.x, lv.worstAt.y, static_cast<unsigned long long>(lv.worstEdge));
+            std::printf("        of the blocked points, %llu have the two layers agreeing on "
+                        "height to %.1f m and %llu do not; %llu have no collision surface at all\n",
+                        static_cast<unsigned long long>(lv.blockedHeightAgrees),
+                        surveySettings.heightTolerance,
+                        static_cast<unsigned long long>(lv.blockedHeightDiffers),
+                        static_cast<unsigned long long>(lv.noSurface));
+            for (const phys::PhysicalFleet::BlockedSample& b : lv.examples)
+                std::printf("          blocked at (%8.1f, %8.1f) cls %u lanes %u: model %.2f, "
+                            "collision %.2f, box base %.2f, %.2f m deep — %s\n",
+                            b.at.x, b.at.y, static_cast<unsigned>(b.cls),
+                            static_cast<unsigned>(b.lanes), b.model, b.ground, b.probeY - 0.36,
+                            b.depth, b.what.c_str());
+            if (lv.blocked > 0)
+                std::printf("        deepest blockage at (%.1f, %.1f): %.2f m — %s\n", lv.blockedAt.x,
+                            lv.blockedAt.y, lv.blockedDepthM, lv.blockedWhat.c_str());
+            Json sv = Json::object();
+            sv.set("spacing", Json(opt.surveySpacing));
+            sv.set("samples", Json(n));
+            sv.set("withinQuarter", Json(static_cast<f64>(lv.withinQuarter)));
+            sv.set("withinHalf", Json(static_cast<f64>(lv.withinHalf)));
+            sv.set("withinTwo", Json(static_cast<f64>(lv.withinTwo)));
+            sv.set("blocked", Json(static_cast<f64>(lv.blocked)));
+            sv.set("stepped", Json(static_cast<f64>(lv.stepped)));
+            sv.set("worstErrorM", Json(lv.worstErrorM));
+            sv.set("seconds", Json(secs));
+            reportSet("survey", sv);
+        }
+
+        world.penetration().reset();
+        phys::PhysicalFleet fleet;
+        phys::DriverSettings ds;
+        ds.count = opt.drive;
+        ds.attachRadius = 260.0;
+        ds.trace = g_trace;
+        // The penetration budget of *this* section: the sections before it (deck
+        // drop, impact) leave their own deepest contact in the shared stats, and a
+        // section that inherits a number cannot be said to have met it (D-034).
+        world.penetration().reset();
+        const size_t bodiesBefore = world.bodyCount();
+        const size_t promoted = fleet.attach(world, traffic, anchor, ds);
+        require(promoted >= std::min<size_t>(4, opt.drive),
+                "the traffic model hands its vehicles to physics",
+                sfmt("%zu of %u requested vehicles promoted near (%.0f, %.0f), %zu bodies, "
+                     "model hands over %zu", promoted, opt.drive, anchor.x, anchor.y,
+                     world.bodyCount(), traffic.promotedCount()));
+
+        traffic.setAuditTrace(g_trace);
+        const u64 ticks = static_cast<u64>(opt.seconds * 60.0);
+        for (u64 i = 0; i < ticks; ++i) {
+            traffic.step(kStep);
+            fleet.step(world, traffic, kStep);
+        }
+        const phys::DriverMetrics dm = fleet.metrics();
+        traffic.audit(extentMin.x, extentMin.x + 22528.0, extentMin.y, extentMin.y + 43008.0);
+        const sim::TrafficMetrics after = traffic.metrics(anchor, 500.0);
+
+        require(dm.promoted > 0, "vehicles are still driven at the end of the run",
+                sfmt("%zu of %zu promoted vehicles still driven after %.0f s, %llu handed back",
+                     dm.promoted, promoted, opt.seconds,
+                     static_cast<unsigned long long>(dm.handedBack)));
+        // The lane error is split into its two causes: `side` is the driver's own
+        // distance from the lane line, `along` is how far the model's `s` is from
+        // where the body actually is — which no driver can fix, and which is
+        // reported beside it (D-034).
+        require(dm.meanSideErrorM < 1.0 && dm.sideOffShare < 0.10,
+                "a driven vehicle holds the lane the model put it in",
+                sfmt("side error mean %.2f m, %.1f %% of samples more than %.0f m beside the "
+                     "lane, worst side %.2f m; the model's own s was %.2f m from the body on "
+                     "average, over %zu vehicles and %llu ticks", dm.meanSideErrorM,
+                     dm.sideOffShare * 100.0, ds.offRoadMetres, dm.worstSideErrorM,
+                     dm.meanAlongErrorM, promoted, static_cast<unsigned long long>(dm.ticks)));
+        // Judged on the road the model put the vehicle on: a sample where the model
+        // asked for 40 km/h on a road the collision does not have is an off-road
+        // event (counted above), not a speed-tracking failure.  Both directions are
+        // measured, so the check cannot pass by having no input.
+        require(dm.onRoadMeanSpeedErrorMs < 2.5 && dm.onRoadWorstSpeedErrorMs < 9.0 &&
+                    dm.onRoadSamples > 0,
+                "a driven vehicle tracks the speed its model decided, on its own road",
+                sfmt("mean speed %.1f km/h; over %llu driving samples on its own road the error "
+                     "to the model's command was %.2f m/s mean / %.2f m/s worst (over every "
+                     "sample: %.2f / %.2f m/s)", dm.meanSpeedKph,
+                     static_cast<unsigned long long>(dm.onRoadSamples), dm.onRoadMeanSpeedErrorMs,
+                     dm.onRoadWorstSpeedErrorMs, dm.meanSpeedErrorMs, dm.worstSpeedErrorMs));
+        // A vehicle standing still in a jam is not evidence about wheels; a
+        // vehicle driving at 40 km/h with three of its four wheels in the air is.
+        // The criterion is therefore about the moving samples, and the count of
+        // samples with *nothing* touching is reported beside it.
+        require(dm.movingWheelFraction > 0.9,
+                "a driven vehicle keeps its wheels on the road while it is moving",
+                sfmt("%.1f %% of wheel contacts down over %llu moving samples (of %llu), "
+                     "%llu samples with no wheel touching at all, over %zu vehicles",
+                     dm.movingWheelFraction * 100.0,
+                     static_cast<unsigned long long>(dm.movingSamples),
+                     static_cast<unsigned long long>(dm.ticks),
+                     static_cast<unsigned long long>(dm.airborneSamples), promoted));
+        require(dm.deepestDrivenStaticM < kPenetrationBudget,
+                "no vehicle is driven into the city",
+                sfmt("deepest contact of a driven vehicle with the city %.4f m (budget %.3f); "
+                     "deepest over everything the section touched %.4f m; %llu of %zu vehicles "
+                     "handed back to the model", dm.deepestDrivenStaticM, kPenetrationBudget,
+                     dm.deepestPenetrationM, static_cast<unsigned long long>(dm.handedBack),
+                     promoted));
+        // A driven vehicle against another body is a different event with a different
+        // budget: two solver objects resolving a contact.  The allowance is Jolt's
+        // own, the same 0.30 m of linear-cast transient the deck impact is graded
+        // against, and the measured worst here is a 16 t double-decker shunting a
+        // 1.15 t taxi (0.1007 m).  Before this check existed the harness read the
+        // *static* depth for both cases, so every vehicle-against-vehicle contact in
+        // the section was invisible (D-034).
+        require(dm.deepestDrivenDynamicM < kImpactTransientBudget,
+                "no two driven vehicles are driven through each other",
+                sfmt("deepest contact between driven vehicles and other bodies %.4f m "
+                     "(allowance %.2f m, Jolt's linear-cast transient); %llu of %zu vehicles "
+                     "handed back to the model", dm.deepestDrivenDynamicM,
+                     kImpactTransientBudget, static_cast<unsigned long long>(dm.handedBack),
+                     promoted));
+
+        // The model must be no worse for having been driven: its own invariants,
+        // over a fleet that is now half bodies and half points on a graph.
+        const bool modelClean = after.badState == 0 && after.badSpeed == 0 &&
+                                after.badPosition == 0 && after.laneViolations == 0;
+        require(modelClean && after.edgeCompletions > before.edgeCompletions,
+                "the model keeps its invariants while half its fleet is physical",
+                sfmt("%zu vehicles (%.1f km/h mean), %llu edge completions (+%llu), %llu lane "
+                     "changes, 0 invalid states, %llu lane violations",
+                     after.vehicles, after.meanSpeedKph,
+                     static_cast<unsigned long long>(after.edgeCompletions),
+                     static_cast<unsigned long long>(after.edgeCompletions - before.edgeCompletions),
+                     static_cast<unsigned long long>(after.laneChanges),
+                     static_cast<unsigned long long>(after.laneViolations)));
+        if (g_trace)
+            std::printf("      model: %llu anchor releases, %llu lane-list repairs, %llu junction "
+                        "holds, %llu dead-end holds, %llu U-turns at dead ends\n",
+                        static_cast<unsigned long long>(after.anchorReleases),
+                        static_cast<unsigned long long>(after.orphanRepairs),
+                        static_cast<unsigned long long>(after.junctionHolds),
+                        static_cast<unsigned long long>(after.deadEndHolds),
+                        static_cast<unsigned long long>(after.deadEndUTurns));
+
+        if (g_trace) {
+            std::printf("      penetration: deepest static %.4f m (dynamic body %u vs %u), "
+                        "deepest dynamic %.4f m (body %u vs %u)\n",
+                        world.penetration().deepestStatic,
+                        world.penetration().deepestStaticBody.GetIndex(),
+                        world.penetration().deepestStaticPartner.GetIndex(),
+                        world.penetration().deepestDynamic,
+                        world.penetration().deepestDynamicBody.GetIndex(),
+                        world.penetration().deepestDynamicPartner.GetIndex());
+            std::printf("      deepest static contact at (%.1f, %.1f, %.1f), dynamic at "
+                        "(%.1f, %.1f, %.1f)\n",
+                        world.penetration().deepestStaticAt.x, world.penetration().deepestStaticAt.y,
+                        world.penetration().deepestStaticAt.z,
+                        world.penetration().deepestDynamicAt.x, world.penetration().deepestDynamicAt.y,
+                        world.penetration().deepestDynamicAt.z);
+            fleet.report();
+        }
+
+        // Reversibility: the handoff is not a one-way door.
+        fleet.detach(world, traffic);
+        const size_t bodiesAfter = world.bodyCount();
+        for (int i = 0; i < 120; ++i) traffic.step(kStep);
+        const sim::TrafficMetrics handed = traffic.metrics(anchor, 500.0);
+        require(traffic.promotedCount() == 0 && bodiesAfter == bodiesBefore &&
+                    handed.badState == 0 && handed.badPosition == 0 &&
+                "vehicles handed back resume as model vehicles, with nothing left behind",
+                sfmt("%zu bodies before the handover and %zu after the handback (%zu vehicle "
+                     "bodies created and destroyed), %zu promotions / %zu demotions, model at "
+                     "%zu vehicles and %llu %s", bodiesBefore, bodiesAfter, promoted,
+                     traffic.promotions(), traffic.demotions(), handed.vehicles,
+                     static_cast<unsigned long long>(handed.badPosition),
+                     handed.badPosition ? "positions out of the world's extent"
+                                        : "positions in extent"));
+
+        {
+            Json j = Json::object();
+            j.set("population", Json(static_cast<f64>(population)));
+            j.set("graphBuildSeconds", Json(buildMs / 1000.0));
+            j.set("modelVehiclesBefore", Json(static_cast<f64>(before.vehicles)));
+            j.set("modelVehiclesAfter", Json(static_cast<f64>(after.vehicles)));
+            j.set("modelMeanSpeedKphAfter", Json(after.meanSpeedKph));
+            j.set("promoted", Json(static_cast<f64>(promoted)));
+            j.set("rejectedSpawns", Json(static_cast<f64>(dm.rejectedSpawns)));
+            j.set("promotedAtEnd", Json(static_cast<f64>(dm.promoted)));
+            j.set("handedBack", Json(static_cast<f64>(dm.handedBack)));
+            j.set("ticks", Json(static_cast<f64>(dm.ticks)));
+            j.set("meanLateralOffM", Json(dm.meanLateralOffM));
+            j.set("meanSideErrorM", Json(dm.meanSideErrorM));
+            j.set("meanAlongErrorM", Json(dm.meanAlongErrorM));
+            j.set("sideOffShare", Json(dm.sideOffShare));
+            j.set("laneErrorRmsM", Json(dm.laneErrorRmsM));
+            j.set("onRoadSamples", Json(static_cast<f64>(dm.onRoadSamples)));
+            j.set("onRoadMeanSpeedErrorMs", Json(dm.onRoadMeanSpeedErrorMs));
+            j.set("onRoadWorstSpeedErrorMs", Json(dm.onRoadWorstSpeedErrorMs));
+            j.set("handedBackWrongWay", Json(static_cast<f64>(dm.handedBackWrongWay)));
+            j.set("worstLateralOffM", Json(dm.worstLateralOffM));
+            j.set("meanSpeedErrorMs", Json(dm.meanSpeedErrorMs));
+            j.set("worstSpeedErrorMs", Json(dm.worstSpeedErrorMs));
+            j.set("wheelsDownFraction", Json(dm.wheelsDownFraction));
+            j.set("movingWheelFraction", Json(dm.movingWheelFraction));
+            j.set("movingSamples", Json(static_cast<f64>(dm.movingSamples)));
+            j.set("airborneSamples", Json(static_cast<f64>(dm.airborneSamples)));
+            j.set("offRoadShare", Json(dm.offRoadShare));
+            j.set("meanHeightErrorM", Json(dm.meanHeightErrorM));
+            j.set("worstHeightErrorM", Json(dm.worstHeightErrorM));
+            j.set("handedBackHeight", Json(static_cast<f64>(dm.handedBackHeight)));
+            j.set("handedBackAhead", Json(static_cast<f64>(dm.handedBackAhead)));
+            j.set("handedBackOffRoad", Json(static_cast<f64>(dm.handedBackOffRoad)));
+            j.set("meanSpeedKph", Json(dm.meanSpeedKph));
+            j.set("deepestPenetrationM", Json(dm.deepestPenetrationM));
+            j.set("deepestDrivenM", Json(dm.deepestDrivenM));
+            j.set("deepestDrivenStaticM", Json(dm.deepestDrivenStaticM));
+            j.set("deepestDrivenDynamicM", Json(dm.deepestDrivenDynamicM));
+            j.set("rejectedOnTraffic", Json(static_cast<f64>(dm.rejectedOnTraffic)));
+            j.set("rejectedOnCity", Json(static_cast<f64>(dm.rejectedOnCity)));
+            j.set("laneChanges", Json(static_cast<f64>(after.laneChanges)));
+            j.set("edgeCompletions", Json(static_cast<f64>(after.edgeCompletions)));
+            j.set("laneViolations", Json(static_cast<f64>(after.laneViolations)));
+            reportSet("physicalTraffic", j);
+        }
+    }
+
     // --- 8. floating origin ---------------------------------------------------
     section("floating origin");
     {
@@ -1424,6 +1783,10 @@ int main(int argc, char** argv) {
                 sfmt("%zu crates, worst authored clearance %+.3f m (a negative value would be "
                      "the harness authoring its own penetration)",
                      props.size(), worstPropClearance));
+        // The soak measures its own penetration, so its instrument starts clean:
+        // without this it reports the deepest contact the world has ever seen,
+        // which was the 22 m impact in the section above.
+        world.penetration().reset();
         const u64 steps = static_cast<u64>(opt.minutes * 60.0 * 60.0);
         std::vector<f64> costs;
         costs.reserve(static_cast<size_t>(steps));

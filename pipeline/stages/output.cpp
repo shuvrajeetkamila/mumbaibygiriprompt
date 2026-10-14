@@ -20,6 +20,75 @@ std::string cellFileName(i64 relX, i64 relZ) {
                   static_cast<long long>(relX), static_cast<long long>(relZ));
     return buf;
 }
+// -----------------------------------------------------------------------------
+//  Roads graded into the drivable ground.
+//
+//  The chunk's heightfield is not only a query surface: the physics world builds
+//  a Jolt height field from it and every vehicle in the game drives on it.  A
+//  real road is *graded* — the ground under the carriageway is the road's own
+//  level, not the terrain's — and the navigation graph already knows that level
+//  (its nodes carry absolute road-surface heights).  Grading it in here is what
+//  makes the two layers agree by construction instead of by tolerance: the
+//  survey in D-034 found the model's own lanes disagreeing with the collision
+//  ground by 0.3-1 m on 12 % of samples, which is exactly the error a car feels
+//  as a wheel leaving the road.
+//
+//  Each segment is a straight run between two navigation nodes, the same line the
+//  traffic model drives (`SimEdge`), so the graded surface and the model's road
+//  are the same line rather than two approximations of it.
+// -----------------------------------------------------------------------------
+void gradeRoadsIntoGrid(const CellData& cd, u32 n, f32 step, std::vector<f32>& grid) {
+    const size_t dim = static_cast<size_t>(n) + 1;
+    if (cd.navNodes.size() < 2 || cd.navEdges.empty()) return;
+    std::vector<f32> weight(dim * dim, 0.0f);
+    std::vector<f32> target(dim * dim, 0.0f);
+
+    const f64 kBlend = 10.0;   // metres over which a graded road rejoins the DEM
+    for (const NavNode& u : cd.navNodes) {
+        for (u32 k = 0; k < u.edgeCount; ++k) {
+            const u32 ei = u.firstEdge + k;
+            if (ei >= cd.navEdges.size()) break;
+            const NavEdge& e = cd.navEdges[ei];
+            if (e.toNode >= cd.navNodes.size()) continue;
+            const NavNode& v = cd.navNodes[e.toNode];
+            // The carriageway, plus its shoulders: a vehicle's wheels run on the
+            // whole width, and the kerb is a step the collision should still see.
+            const f64 lanes = std::max<f64>(e.laneCount == 0 ? 2 : e.laneCount, 1.0);
+            const f64 flat = lanes * 3.5 * 0.5 + 1.5;
+            const f64 ax = u.x, az = u.z, ay = u.y;
+            const f64 bx = v.x, bz = v.z, by = v.y;
+            const f64 dx = bx - ax, dz = bz - az;
+            const f64 len2 = dx * dx + dz * dz;
+            if (len2 < 1e-6) continue;
+            const f64 reach = flat + kBlend;
+            const i64 i0 = static_cast<i64>(std::floor((std::min(ax, bx) - reach) / step));
+            const i64 i1 = static_cast<i64>(std::ceil((std::max(ax, bx) + reach) / step));
+            const i64 j0 = static_cast<i64>(std::floor((std::min(az, bz) - reach) / step));
+            const i64 j1 = static_cast<i64>(std::ceil((std::max(az, bz) + reach) / step));
+            for (i64 i = std::max<i64>(0, i0); i <= std::min<i64>(n, i1); ++i) {
+                for (i64 j = std::max<i64>(0, j0); j <= std::min<i64>(n, j1); ++j) {
+                    const f64 px = i * step, pz = j * step;
+                    f64 t = ((px - ax) * dx + (pz - az) * dz) / len2;
+                    t = std::clamp(t, 0.0, 1.0);
+                    const f64 cx = ax + dx * t, cz = az + dz * t;
+                    const f64 d = std::hypot(px - cx, pz - cz);
+                    if (d > reach) continue;
+                    const f64 w = std::clamp((reach - d) / kBlend, 0.0, 1.0);
+                    const size_t at = static_cast<size_t>(j) * dim + static_cast<size_t>(i);
+                    if (w <= weight[at]) continue;
+                    weight[at] = static_cast<f32>(w);
+                    target[at] = static_cast<f32>(ay + (by - ay) * t);
+                }
+            }
+        }
+    }
+    for (size_t i = 0; i < grid.size(); ++i) {
+        if (weight[i] <= 0.0f) continue;
+        const f32 w = weight[i] > 1.0f ? 1.0f : weight[i];
+        grid[i] = grid[i] * (1.0f - w) + target[i] * w;
+    }
+}
+
 } // namespace
 
 bool writeChunks(Context& ctx) {
@@ -70,7 +139,11 @@ bool writeChunks(Context& ctx) {
 
         // --- Terrain heightfield (quantised u16 for runtime queries) ----------
         if (!cd.terrain[0].empty()) {
-            const u32 n = 32;
+            // 8 m samples rather than 32 m: this grid is the ground a vehicle
+            // drives on, and a road graded into a 32 m grid is not a road.  It
+            // costs 33 KB per cell (31 MB over the city) and it is the difference
+            // between wheels that follow the road and wheels that leave it.
+            const u32 n = 128;
             const f32 minH = cd.minHeight, maxH = cd.maxHeight;
             const f32 range = std::max(1e-3f, maxH - minH);
             HeightfieldHeader hh{};
@@ -86,15 +159,17 @@ bool writeChunks(Context& ctx) {
             std::vector<u8> payload(sizeof(HeightfieldHeader) + static_cast<size_t>(n + 1) * (n + 1) * sizeof(u16));
             std::memcpy(payload.data(), &hh, sizeof(hh));
             u16* heights = reinterpret_cast<u16*>(payload.data() + sizeof(HeightfieldHeader));
+            std::vector<f32> grid(static_cast<size_t>(n + 1) * (n + 1));
             for (u32 j = 0; j <= n; ++j) {
                 for (u32 i = 0; i <= n; ++i) {
                     const f64 wx = cd.origin.x + i * hh.stepX;
                     const f64 wz = cd.origin.y + j * hh.stepZ;
-                    const f32 h = ctx.terrainHF.sample(wx, wz);
-                    heights[j * (n + 1) + i] =
-                        static_cast<u16>(clamp((h - minH) / range, 0.0f, 1.0f) * 65535.0f);
+                    grid[static_cast<size_t>(j) * (n + 1) + i] = ctx.terrainHF.sample(wx, wz);
                 }
             }
+            gradeRoadsIntoGrid(cd, n, hh.stepX, grid);
+            for (size_t k = 0; k < grid.size(); ++k)
+                heights[k] = static_cast<u16>(clamp((grid[k] - minH) / range, 0.0f, 1.0f) * 65535.0f);
             writer.addSection(SectionType::TerrainHeight, payload.data(), payload.size(),
                               (n + 1) * (n + 1), sizeof(u16));
         }

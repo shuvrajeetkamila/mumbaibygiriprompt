@@ -41,6 +41,30 @@ struct Vehicle {
     bool valid() const { return body.valid() && constraint != nullptr; }
 };
 
+// The height of the chassis centre above the surface a vehicle rests on: the
+// wheel radius, the suspension's minimum travel and the spring's own sag, in one
+// place.  A body is placed at `surfaceHeight + chassisRestHeight(kind)` plus
+// whatever clearance the caller wants, and never by a number invented at the
+// call site (D-034).
+f64 chassisRestHeight(sim::Archetype kind);
+
+// The static sag of the suspension under the vehicle's own weight: how much
+// further the body sits below the vehicles' minimum suspension travel.
+f64 chassisSuspensionSag(sim::Archetype kind);
+
+// The chassis box's half height, exactly as `spawnVehicle` builds it.  Anything
+// that reasons about whether a vehicle fits somewhere (a spawn probe, a path
+// probe) must use this box and no other: a probe that is a different shape is
+// answering a different question (D-034).
+f64 chassisHalfHeight(sim::Archetype kind);
+
+// The chassis box's own half-extents, exactly as `spawnVehicle` builds them.
+// Anything that reasons about whether a vehicle fits somewhere (a spawn probe, a
+// path probe, a parking check) must use these and nothing else: a box that is not
+// the box is a lie, and the first version of D-034's spawn probe put a 1.5 m half
+// height on a 0.7 m car and refused a quarter of the city for it.
+f64 chassisHalfHeight(sim::Archetype kind);
+
 // Creates a physical vehicle at `position` facing `yawRadians`, using the
 // archetype's published length, width and mass (traffic.h).  The chassis is a
 // box with its centre of mass dropped below the geometric centre — a bus whose
@@ -64,5 +88,10 @@ f64 leanAngleDegrees(World& world, const Vehicle& v);
 
 // How many of the vehicle's wheels are touching something.
 int wheelsOnGround(const Vehicle& v);
+
+// How many wheels the vehicle has at all: the denominator of every "on the
+// ground" criterion, so that a three-wheeled auto-rickshaw is not judged by a
+// car's four.
+int wheelCount(const Vehicle& v);
 
 }  // namespace mumbai::phys

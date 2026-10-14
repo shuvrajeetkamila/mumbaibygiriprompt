@@ -79,6 +79,15 @@ PIPE_OBJ    := $(patsubst %.cpp,$(OBJ)/%.o,$(PIPE_SRC))
 
 MAIN_OBJ     := $(OBJ)/pipeline/main.o
 PIPELINE_BIN := $(BIN)/mumbai_pipeline
+# One object per binary gets a name of its own when it has to be listed in the
+# dependency include below — see the note there.  `sim_main.o` is the second of
+# the two, and it is the one that was forgotten: the runtime harness includes
+# `engine/sim/traffic.h`, whose `Traffic` object is built by value on the stack,
+# and an object compiled against a different layout of it wrote the model's own
+# containers with the wrong offsets.  The symptom was a segmentation fault at
+# tick 45 of a 60-minute run with `m_nodes.size()` reading 0x3333333333333332 —
+# plausible-looking traffic code blamed for a missing `-include` (D-034).
+SIM_MAIN     := $(OBJ)/engine/app/sim_main.o
 SIM_BIN      := $(BIN)/mumbai_sim
 TEST_BIN     := $(BIN)/mumbai_tests
 PHYS_BIN     := $(BIN)/mumbai_phys
@@ -99,22 +108,31 @@ $(OBJ)/%.o: %.cpp
 # the same binary: the ABI mismatch corrupts containers and manifests as
 # impossible failures (a std::bad_alloc inside an unrelated stage was the
 # symptom that motivated adding this).
-# main.o is listed explicitly as a prerequisite of the pipeline binary, and its
-# dependency file must be included with the rest: leaving it out means no header
-# edit ever rebuilds main.cpp, and a header that changes the layout of Context
-# then links a stale main against fresh stages.  That is not a missing rebuild,
-# it is a segmentation fault at startup.
--include $(ENGINE_OBJ:.o=.d) $(PIPE_OBJ:.o=.d) $(MAIN_OBJ:.o=.d) $(PHYS_OBJ:.o=.d) $(PHYS_MAIN:.o=.d) $(JOLT_OBJ:.o=.d)
+# main.o and sim_main.o are named explicitly as prerequisites of their binaries
+# and their dependency files must be included with the rest: leaving one out
+# means no header edit ever rebuilds it, and a header that changes the layout of
+# the type it builds by value then links a stale object against fresh ones.  That
+# is not a missing rebuild, it is a segmentation fault — at startup for Context,
+# mid-run for Traffic.  Both have now happened once; every object named on a link
+# line below belongs on this line too.
+-include $(ENGINE_OBJ:.o=.d) $(PIPE_OBJ:.o=.d) $(MAIN_OBJ:.o=.d) $(SIM_MAIN:.o=.d) \
+         $(PHYS_OBJ:.o=.d) $(PHYS_MAIN:.o=.d) $(JOLT_OBJ:.o=.d)
 
 $(PIPELINE_BIN): $(PIPE_OBJ) $(ENGINE_OBJ) $(MAIN_OBJ)
 	@mkdir -p $(BIN)
 	@echo "  LD   $@"
 	@$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
-$(SIM_BIN): $(ENGINE_OBJ) $(OBJ)/engine/app/sim_main.o
+$(SIM_BIN): $(ENGINE_OBJ) $(SIM_MAIN)
 	@mkdir -p $(BIN)
 	@echo "  LD   $@"
 	@$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+
+# The runtime harness builds `sim::Traffic` by value, so the model's header is a
+# hard prerequisite of its object in the strong sense: a layout change must
+# recompile it whatever the generated dependency file says.  (It does not include
+# a Jolt header, so the generic rule's flags are the right ones for it.)
+$(SIM_MAIN): engine/sim/traffic.h
 
 # The harness reads Jolt headers too, so it uses the same flag set as the
 # physics sources (an explicit rule, because it lives outside engine/physics).

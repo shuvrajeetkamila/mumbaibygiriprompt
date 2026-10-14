@@ -1113,12 +1113,165 @@ written to `build/physics_report.json`):
 | authoring | every one of the 200 crates is placed on the surface under its own footprint and the clearance is measured back: **+0.020 m** — the harness's own overlap (up to 20 cm before this fix) is separated from the solver's |
 
 **What is not covered by any of this.**  Nothing here is a device frame time (see
-`04_RUNTIME.md`); the vehicles are driven by the harness's own driver, not yet by
-the traffic layer's IDM/MOBIL and Boids (the two share the archetypes but not yet
-the bodies); road-mesh collision is baked per cell but off by default in the
-acceptance run (it is the streaming layer's interest set, and the deck is a
-*building* collider); and there is no audio, no tyre model beyond Jolt's, no
-damage model, and no GPU water or rain, so nothing here claims Section 3.
+`04_RUNTIME.md`); ~~the vehicles are driven by the harness's own driver, not yet
+by the traffic layer's IDM/MOBIL and Boids~~ and ~~road-mesh collision is baked
+per cell but off by default in the acceptance run~~ — both were closed by D-034,
+which promotes the traffic model's own vehicles to Jolt bodies and turns the
+road-mesh collision on by default; and there is no audio, no tyre model beyond
+Jolt's, no damage model, and no GPU water or rain, so nothing here claims
+Section 3.
+
+---
+
+## D-034 — The traffic model and the physics bodies are one fleet, and every number about their disagreement is measured
+
+**Decision.** A traffic vehicle is *one* vehicle with two halves.  The model
+(`sim::Traffic`: IDM, MOBIL, the Boids field, signals, lanes) keeps deciding;
+Jolt owns the motion of the bodies near the camera.  `PhysicalFleet`
+(`engine/physics/driver.{h,cpp}`) promotes a vehicle with `Traffic::promote`,
+drives its body from the model's own command, and reads the body's state back
+with `Traffic::adoptPosition` every tick, so perception (leaders, gaps, signals)
+sees what the physics actually did.  What the model no longer does for a
+promoted vehicle is *integrate* — that is the whole point: a vehicle that is
+teleported cannot have tyres, suspension, lean, momentum or rollover, and the
+specification asks for all five.
+
+The handoff is reversible by construction (`demote` resumes from the body's own
+last state) and the acceptance run proves it: **2,012 bodies before the handover
+and 2,012 after the handback, 24 promotions / 24 demotions**, with the model at
+its original 141 vehicles.
+
+**How a promoted vehicle is driven.** Pure pursuit to the model's lane centre
+with a speed-dependent lookahead `clamp(6.0 + 0.55 v, 6.0, 24.0)` m, steering
+`clamp((1.8 · heading error + 0.10 · lateral error) / (1 + 0.06 |v|), ±1)`, and a
+throttle/brake pair that follows the model's commanded speed inside a deadband.
+Live, that is:
+
+| what is measured | number |
+|---|---|
+| lane discipline (24 vehicles, 1,800 ticks) | side error **0.39 m** mean, **4.7 %** of samples more than 2 m beside the lane, worst 2.88 m |
+| the model's own reading of the body | `s` within **0.01 m** of the body on average |
+| wheels on the road while moving | **97.3 %** of wheel contacts down over 21,718 moving samples, 140 samples with nothing touching |
+| speed | worst on-road error to the model's command **0.28 m/s** |
+| driven against driven | deepest contact **0.0420 m** against Jolt's own 0.30 m linear-cast transient |
+| frame | 500 vehicles extrapolated at **13.85 ms** — inside a 33 ms frame at 30 Hz |
+
+**Six defects the handoff found, each with the measurement that found it.**
+
+1. **The model turned the frame under a moving body.**  At a junction the model
+   chose an arm round-robin, ignoring the body's heading, so a northbound car was
+   put on an eastbound edge — and from then on every number about it was measured
+   in a frame it was not travelling in: full-lock spins, wheels in the air, kerb
+   penetration (12 of 24 vehicles handed back).  A promoted vehicle now takes the
+   arm whose direction best matches its **own body's heading** (`kBodyArmMinDot`
+   0.2), and a node whose only arm fights the body is a *graph contradiction*: the
+   model keeps the frame, stops the vehicle at the end of the road it knows, and
+   hands it back after 0.5 s.  Measured after: side error 0.61 → **0.09 m**,
+   samples more than 2 m beside the lane 15.0 → **1.7 %**, transitions taken
+   against the body **200 → 0**.
+2. **Vehicles were authored inside geometry and then ejected by the solver.**  A
+   body created overlapping the city or another vehicle is a solver overlap from
+   its first tick, and the ejection arrives as metres per second while the model
+   is asking for zero (measured: a **9.18 m/s** speed error).  Every spawn is now
+   gated twice — an all-bodies probe first (so a vehicle is never created on top
+   of another: two 16 t double-deckers authored 0.1007 m into each other were the
+   first 24-vehicle run), then the city-only chassis probe — and a rejected spawn
+   is counted with its reason (`rejectedOnTraffic`, `rejectedOnCity`).
+3. **The lane audit counted two physical bodies as a model violation.**  The
+   0.50 m floor is an invariant of the *model's* motion; where both members of a
+   pair are bodies, their distance is Jolt's to keep.  The audit now exempts a
+   promotion pair and reports **0 lane violations** over the 60-minute run.
+4. **The penetration accounting read the static depth for both kinds**, so every
+   contact between two driven vehicles was invisible to the check that exists to
+   catch it.  Split into driven-against-city (budget **0.020 m**) and
+   driven-against-driven (Jolt's linear-cast transient): the previously hidden
+   0.1007 m double-decker pair is now reported as what it is.
+5. **`describeBody` rebuilt a `BodyID` from its 32-bit index**, which drops
+   Jolt's sequence number, so `TryGetBody` always failed and every contact was
+   described as "the smallest static AABB containing the point" — terrain.  The
+   id is now taken whole, and every line names the vehicle, its archetype, its
+   lane error and its corridor.
+6. **The driving corridor allowed a body's box to overhang the graded flat
+   zone.**  The corridor is now `min(lane corridor, flat zone corridor)` with the
+   lane's own offset and half the vehicle's width subtracted, so a bus's
+   footprint cannot hang off the graded surface the model believes is there.
+
+**Road-mesh collision is on by default** — and the two measurements it moves
+disagree with each other, which is the finding rather than a footnote.  The
+fleet's wheel contacts go **92.6 → 97.3 %** and the heightfield-only failure
+(0.0401 m) drops to 0.0370 m, for 0.4 ms of a step at 8 vehicles and 0.67 ms at
+24 (the 500-vehicle frame budget is unaffected).  But the survey's agreement with
+the model's own road at lane centres *falls*: within 0.25 m **89.6 → 84.7 %**,
+footprint steps over 0.35 m **1.99 → 4.84 %** (41,332), blocked for a car
+1.52 → 1.53 %.  Before the ribbon was baked, the survey was measuring one ground
+description against another; now the collision contains *two* — the graded
+heightfield and the road mesh — and the survey measures their disagreement.
+That is the honest reason the ribbon is on (a vehicle drives on the road surface,
+not on the field the road was graded into) and also the next pipeline item: the
+ribbon, the nav graph and the graded ground are three descriptions of one street.
+
+**The build was lying, and that mattered more than any of the above.**  The
+plainest symptom in this whole document: `mumbai_sim` began segfaulting at tick
+45 of a 60-minute run, right after printing its fleet.  The cause was not the
+traffic code: `build/obj/engine/app/sim_main.o` had been compiled against the
+*previous* `Traffic` layout, and `sim_main.d` was missing from the Makefile's
+`-include` list, so no header edit ever rebuilt it.  The evidence that it was a
+layout mismatch and not a logic error came from two symptoms the same bug made:
+`m_nodes.size()` printing `3689348814741910322` (0x3333333333333332) and the load
+line reporting "0 motorcycles, 0 autos, 0 taxis" out of a 572-vehicle fleet —
+both readings taken at wrong offsets inside the object.  With the dependency
+included and `SIM_MAIN` named like `MAIN_OBJ` already was, the same run reports
+**246 motorcycles, 88 autos, 77 taxis, 101 cars, 60 buses** and passes all 14 of
+its checks.  The rule the Makefile now states: every object named on a link line
+belongs in the `-include` list, and the two objects whose layout staleness is
+silent are named with explicit header prerequisites.
+
+**A Jolt assert on a triangle, and why the probe should not have been asking.**
+`--survey` died with a breakpoint trap (RC 105) inside
+`EPAPenetrationDepth::GetPenetrationDepthStepGJK<…TriangleConvexSupport>` — Jolt's
+own comment says what that assert means: a degenerate triangle in a mesh shape.
+The survey's box probe was computing the penetration of a box *inside the
+ground*, which is both the wrong question (the ground is measured exactly by the
+rays that read the surface under the box's corners) and the one Jolt cannot
+always answer.  The box probes now filter triangle shapes out (`BuiltShapeFilter`)
+and answer only "is anything **built** standing here"; the road meshes are also
+sliver-filtered at bake time (which found **0** slivers — the triangles were the
+heightfields', not the meshes').  The survey now completes: 854,696 lane samples,
+RC 2 from the one check below rather than a crash.
+
+**The one check that still fails, and what it means.**  `no vehicle is driven into
+the city`: the deepest contact of a driven vehicle with the city is **0.0370 m**
+against a 0.020 m budget.  It is named, to the tick and the centimetre: at
+t = 27.4 s a motorcycle (**body 2014**, 1.7 × 0.7 × 2.0 m footprint) touches
+`static 193` at (−8079.5, 2.5, 8208.4).  It is worth reporting precisely because
+of what it is *not*: the value is **identical** across the stop-at-the-end rule,
+a tightened driving corridor, and a new whole-vehicle spawn gate that probes from
+the road surface to the chassis roof, so it is neither driving nor authoring.
+The same run's survey says what it is — a *city* disagreement, not a vehicle one:
+with the road ribbon in the collision, **84.7 %** of lane points have the
+collision surface within 0.25 m of the model's road, 4.84 % have a step over
+0.35 m under a car's footprint and 1.53 % are blocked by built geometry, where the
+graded heightfield *without* the ribbon scores 89.6 % / 1.99 % / 2.14 %.  The
+ribbon mesh, the nav graph and the graded ground are three descriptions of the
+same street and they do not agree.  That is the next pipeline item, not a
+parameter to relax: the budget stays at 20 mm.
+
+**The graph's own connectivity, measured rather than assumed** (`graphAudit`,
+called by the acceptance run): **117,652 nodes**, of which out-degree 1:
+17,940 (**15.25 %**), 2: 38,484, 3: 10,829, 4+: 50,399 — and of the one-arm
+nodes **0 are their own reversal** and **544 (3.0 %)** have another node with
+arms within 2 m — the unjoined chunk seams, named rather than guessed.  In other words the graph is not full of holes: a node with one way out is a
+node on a one-way street, which is what Mumbai is made of.  The hold-and-handback
+path is a containment for a *body* the graph cannot describe, not a workaround
+for a broken graph — and the number that would say otherwise (a one-arm node
+whose only arm is the way back) is zero.
+
+**Files.**  `engine/physics/driver.{h,cpp}` (the fleet, the driver, the probes,
+the metrics), `engine/sim/traffic.{h,cpp}` (promotion, adoption, arms by heading,
+the stop at the end of the road, the graph audit, the promotion exemption in the
+audit), `engine/physics/bake.{h,cpp}` (the sliver filter), `engine/sim/traffic.h`
++ `Makefile` (the dependency defect), and `engine/app/phys_main.cpp` (the S5
+section, its checks and its JSON).
 
 ---
 

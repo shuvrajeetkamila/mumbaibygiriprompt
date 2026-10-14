@@ -110,6 +110,16 @@ struct Vehicle {
     f64 v = 0.0;             // m/s
     f64 v0 = 0.0;            // desired speed (m/s)
     f64 lateral = 0.0;       // metres right of the edge centreline
+    // Heading, radians, of a vehicle whose motion is external (the physics body's
+    // own yaw, `atan2(dx, dz)`).  A driven vehicle's path through a junction is the
+    // driver's, not the graph's: the model follows the body (see `advanceEdges`).
+    f32 heading = 0.0f;
+    bool headingValid = false;
+    // The body's own position along the model's edge, *unclamped*: negative behind
+    // the edge's start, beyond `length` past its end.  `s` is the model's clamped
+    // reading of the same thing; this is what says whether the model's frame still
+    // contains the body at all (D-034).
+    f64 bodyAlong = 0.0;
     f64 lateralVel = 0.0;    // m/s, the animation of the line the vehicle takes
     f64 latAccelCommand = 0.0;  // m/s^2, set by the Boids field every 200 ms
     f64 a = 1.4, b = 2.0;    // effective IDM parameters (m/s^2)
@@ -131,6 +141,22 @@ struct Vehicle {
     // A vehicle the population device could not place waits this long before it
     // is tried again: a jammed disc must cost nothing to stay jammed.
     f64 recycleIn = 0.0;
+    // --- motion handoff (D-034) ---------------------------------------------
+    // A *promoted* vehicle's position and heading are owned by a physics body.
+    // The model still perceives (leaders, gaps, signals) and still decides — the
+    // two fields below are what it decided — but it does not integrate, because
+    // the body is the authority on where the vehicle went.  The body is driven
+    // to `commandSpeed`, and the achieved state comes back through
+    // `adoptPosition()`, so perception sees what the physics actually did.
+    bool external = false;
+    f64 commandAccel = 0.0;    // m/s^2, IDM's answer this tick
+    f64 commandSpeed = 0.0;    // m/s, where IDM would have put it this tick
+    // How long an external vehicle has been held at the end of an edge (a dead
+    // end, or a junction that will not take it).  A vehicle whose position is
+    // owned by a body cannot be teleported, so a hold that never ends has to end
+    // some other way: after `kAnchorHoldSeconds` the model takes the vehicle back
+    // outright, and the owner sees `external` cleared and destroys the body.
+    f64 heldSeconds = 0.0;
 };
 
 // -----------------------------------------------------------------------------
@@ -154,6 +180,11 @@ struct SimEdge {
     Vec2d a, b;
     Vec2d dir{1, 0};         // unit, a -> b
     Vec2d normal{0, 1};      // unit, right of dir
+    // Absolute road-surface height at each end, from the nav graph's own node
+    // elevations.  The physics layer needs to know where the road is before it
+    // can put a body on it, and this is the model's own knowledge of its road —
+    // a probe cast from an assumed height would be a guess about the city.
+    f32 ay = 0.0f, by = 0.0f;
     std::vector<std::vector<u32>> laneVehicles;   // sorted by s
 };
 
@@ -193,7 +224,10 @@ struct TrafficMetrics {
     u64 nodesMerged = 0;           // nodes jointed to another node by position
     u64 nodesMergedAcrossChunks = 0;   // ...of which the seam between files
     u64 deadEndUTurns = 0;
+    u64 graphContradictions = 0;   // bodies whose node had no arm they could take
     u64 laneViolations = 0;        // pairs in one lane closer than the floor
+    u64 anchorReleases = 0;        // external vehicles the model took back
+    u64 orphanRepairs = 0;         // lane-list entries rebuilt for a driven vehicle
     f64 maxLateralG = 0.0;         // worst lean seen, across all two-wheelers
     u64 archetypeCount[static_cast<int>(Archetype::Count)] = {0, 0, 0, 0, 0};
 };
@@ -214,6 +248,10 @@ public:
 
     void step(f64 dt);
     void audit(f64 minX, f64 maxX, f64 minZ, f64 maxZ);
+    // The audit's findings are counted always and named on request: a violation is a
+    // fact about the fleet, and which pair is in it is what says whose motion is
+    // wrong (D-034).
+    void setAuditTrace(bool on) { m_auditTrace = on; }
     TrafficMetrics metrics(const Vec2d& camera, f64 radius) const;
 
     // Exposed for tests and for a renderer that wants to draw them.
@@ -238,6 +276,65 @@ public:
     // reappears — the disc is a place, never a behaviour.
     void setDenseAnchor(const Vec2d& anchor, f64 radius = 500.0);
 
+    // --- motion handoff (D-034) ---------------------------------------------
+    // Promotes a vehicle's motion to an external body: from this tick the model
+    // decides but does not integrate.  Returns false if the index is not a
+    // vehicle, or if it is already promoted.
+    bool promote(u32 idx);
+    // Hands the motion back.  The model resumes from whatever state the body
+    // last reported, so a handback is continuous by construction.
+    void demote(u32 idx);
+    bool isPromoted(u32 idx) const;
+    u64 promotions() const { return m_promotions; }
+    u64 anchorReleases() const { return m_anchorReleases; }
+    u64 orphanRepairs() const { return m_orphanRepairs; }
+    u64 demotions() const { return m_demotions; }
+    size_t promotedCount() const { return m_promotedNow; }
+
+    // A reading of the loaded graph's own connectivity, for the acceptance run
+    // to publish: how many nodes have exactly one out-arm (their own reversal),
+    // i.e. places where a body can arrive and the model can only turn it around.
+    // A road graph in which a node's only exit is the way back is either a
+    // genuine cul-de-sac or a hole; naming the count is what separates the two
+    // from a guess (D-034).
+    struct GraphAudit {
+        u64 nodes = 0, out1 = 0, out2 = 0, out3 = 0, out4plus = 0;
+        u64 oneArmIsReversal = 0u;      // the single out-arm goes back the way in
+        u64 oneArmHasTwinNearby = 0u;   // ...and another node with arms is within 2 m
+    };
+    GraphAudit graphAudit() const;
+
+    // The route the model has the vehicle on, as a point in world space `ahead`
+    // metres along its lane — what a driver needs to steer at, and the only
+    // thing about the graph an external body has to know.
+    Vec2d lanePoint(const Vehicle& v, f64 ahead) const;
+    // Heading of that lane, radians, in the world's yaw convention
+    // (`atan2(dx, dz)`, the one `spawnVehicle` and the renderer share).
+    f64 laneHeading(const Vehicle& v) const;
+
+    // The model's road at an arbitrary point on an arbitrary edge — the *lane*
+    // centreline of lane `lane` (0-based, out of `e.lanes`) at `s` metres along
+    // the edge, and the model's height there.  This is what a survey of the whole
+    // city needs and what a per-vehicle query cannot give: the road as the model
+    // believes it to be, independent of which vehicle happens to be on it (D-034).
+    Vec2d laneCentre(const SimEdge& e, u32 lane, f64 s) const;
+    // The lateral offset of a lane's centreline from the edge's centreline, in metres
+    // (right positive): the number that says where a lane is, exposed so a driver can
+    // reason about the road's own flat zone the way the model does (D-034).
+    static f64 laneOffsetFor(u16 lane, u16 lanes);
+    // The direction the model has the vehicle travelling along its edge.
+    Vec2d edgeDir(const Vehicle& v) const { return m_edges[v.edge].dir; }
+    f64 laneHeight(const SimEdge& e, f64 s) const;
+
+    // A body reports where it actually is, in world space.  The model projects
+    // the point onto the vehicle's own edge, updates its own `s`/`lateral`/`v`
+    // and re-orders its lane list, so perception downstream is exact.
+    void adoptPosition(u32 idx, const Vec2d& p, f64 speed, f64 heading = 0.0);
+
+    const Vehicle& vehicleAt(u32 idx) const { return m_vehicles[idx]; }
+    size_t vehicleCount() const { return m_vehicles.size(); }
+    const SimEdge& edgeOf(const Vehicle& v) const { return m_edges[v.edge]; }
+
     // Places one vehicle of a given archetype at an exact point on an exact
     // edge.  Used by the harness for scripted scenarios and by the validation
     // suite to build a fleet by hand.  Returns kNoVehicle if the point is
@@ -247,6 +344,12 @@ public:
 
     // Position of a vehicle in world space.
     Vec2d positionOf(const Vehicle& v) const;
+
+    // The height of the road surface under a vehicle, interpolated along its own
+    // edge from the nav graph's node elevations.  Used to place a physical body
+    // on the road (D-034) and by anything that needs the model's idea of where
+    // the ground is — the renderer, and the audio layer's distance cues.
+    f64 surfaceHeightOf(const Vehicle& v) const;
 
 private:
     void leadersAndSignals();
@@ -273,6 +376,14 @@ private:
     void placeHeld(Vehicle& veh, const SimEdge& e, u16 lane, f64 limit);
 
     std::vector<SimNode> m_nodes;
+    // The elevation of each node, kept beside its plan position and merged the
+    // same way.  A junction whose arms lie in two chunk files is two node records
+    // with the same position *and different heights* (each file sampled the
+    // terrain for itself), so merging only the position left the model's road
+    // height stepping by up to a metre at a chunk seam — invisible to the model,
+    // which only ever used x and z, and immediately visible to a body being driven
+    // across it (D-034).
+    std::vector<f32> m_nodeY;
     std::vector<SimEdge> m_edges;
     // Nodes are jointed by position across the whole world, not per file: a
     // junction whose arms lie in two neighbouring cells is two nodes in two
@@ -302,10 +413,14 @@ private:
     u64 m_derivedSignals = 0, m_deadEndUTurns = 0;
     u64 m_signalStops = 0, m_junctionHolds = 0, m_signalCrossings = 0, m_holdCaps = 0;
     u64 m_edgeCompletions = 0, m_deadEndHolds = 0, m_recycleFailures = 0;
+    u64 m_graphContradictions = 0;
     u64 m_laneTick = 0;
+    u64 m_promotions = 0, m_demotions = 0, m_anchorReleases = 0, m_orphanRepairs = 0;
+    size_t m_promotedNow = 0;
     u64 m_boidsUpdates = 0, m_separationEvents = 0;
     u64 m_tipLimits = 0, m_hailStops = 0, m_hardBrakes = 0;
     u64 m_badState = 0, m_badSpeed = 0, m_badPosition = 0, m_laneViolations = 0;
+    bool m_auditTrace = false;
     // Scratch reused every tick so that no tick allocates.
     std::vector<std::vector<u32>> m_edgeOrder;    // vehicles per edge, sorted by s
     // The edges that hold a vehicle this tick.  The city graph has ~170k edges
@@ -327,6 +442,17 @@ private:
     u32 rng(u32 bound);
     f64 rng01();
 };
+
+// Lane geometry: 3.5 m centre to centre, the width a carriageway is divided
+// into.  It lives here rather than in the .cpp because a physical driver has to
+// know what "the carriageway" is to drive one (D-034).
+inline constexpr f64 kLaneWidth = 3.5;
+
+// How long the model holds an *external* vehicle at the end of an edge before it
+// takes the vehicle back.  Mumbai jams last longer than this; a vehicle that
+// cannot be placed anywhere on the graph, by contrast, is not in a jam and the
+// model should not keep pretending it is (D-034).
+inline constexpr f64 kAnchorHoldSeconds = 12.0;
 
 // Minimum bumper-to-bumper separation the safety projection enforces.  A floor,
 // not a target: IDM normally holds 2-15 m.
