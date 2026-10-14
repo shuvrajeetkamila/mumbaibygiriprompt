@@ -37,6 +37,16 @@ std::string cellFileName(i64 relX, i64 relZ) {
 //  traffic model drives (`SimEdge`), so the graded surface and the model's road
 //  are the same line rather than two approximations of it.
 // -----------------------------------------------------------------------------
+// The grading's own audit counters, published by `writeChunks` (see the loop
+// below).  File scope because the grader is called once per cell and the
+// question — "what does grading the road into the terrain do to the city?" — is
+// about the whole city, not one cell (D-035).
+f64 s_maxDropM = 0.0, s_maxRaiseM = 0.0, s_maxDropAt = 0.0;
+u64 s_droppedOver1m = 0, s_raisedOver1m = 0, s_seabedLiftedToLand = 0, s_landDroppedToSeabed = 0;
+// Samples left at their own DEM height because the road is a structure there,
+// not an embankment (see `kMaxGradeM`).
+u64 s_leftAsDem = 0;
+
 void gradeRoadsIntoGrid(const CellData& cd, u32 n, f32 step, std::vector<f32>& grid) {
     const size_t dim = static_cast<size_t>(n) + 1;
     if (cd.navNodes.size() < 2 || cd.navEdges.empty()) return;
@@ -82,10 +92,39 @@ void gradeRoadsIntoGrid(const CellData& cd, u32 n, f32 step, std::vector<f32>& g
             }
         }
     }
+    // The grading is a *physical* claim — the collision ground is the road — so
+    // what it moves is measured, not assumed.  A grid sample is a terrain sample;
+    // grading it by more than the road's own embankment is grading the city to
+    // suit the road, and the cells that lose the most are the ones to look at
+    // (D-035).
+    // How far a road may move the ground under it.  A carriageway is graded into
+    // a terrain by an embankment or a cutting — metres, not tens of metres — and
+    // where the DEM is far from the road's own elevation the road is a
+    // *structure*: a viaduct over a valley, a flyover over a street, a deck over
+    // water.  The ground under a viaduct is the ground, and the deck carries the
+    // traffic; the collision layer already has the road ribbon and the bridge
+    // meshes for that.  Grading it anyway is what this constant stops, and the
+    // first run without it moved samples by up to +69.81 m and −64.60 m, lifted
+    // 1,015 seabed samples above the seabed pick line into "land" (which is what
+    // the flood QA's sea test then counted as the sea being flooded), and dropped
+    // 12 land samples below it (D-035).
+    constexpr f32 kMaxGradeM = 3.0f;
     for (size_t i = 0; i < grid.size(); ++i) {
         if (weight[i] <= 0.0f) continue;
         const f32 w = weight[i] > 1.0f ? 1.0f : weight[i];
-        grid[i] = grid[i] * (1.0f - w) + target[i] * w;
+        const f32 before = grid[i];
+        if (std::fabs(target[i] - before) > kMaxGradeM) {
+            ++s_leftAsDem;
+            continue;
+        }
+        grid[i] = before * (1.0f - w) + target[i] * w;
+        const f32 delta = grid[i] - before;
+        if (delta < s_maxDropM) { s_maxDropM = delta; s_maxDropAt = before; }
+        if (delta > s_maxRaiseM) s_maxRaiseM = delta;
+        if (delta < -1.0f) ++s_droppedOver1m;
+        if (delta > 1.0f) ++s_raisedOver1m;
+        if (before <= -1.1f && grid[i] > -1.1f) ++s_seabedLiftedToLand;
+        if (before > -1.1f && grid[i] <= -1.1f) ++s_landDroppedToSeabed;
     }
 }
 
@@ -371,6 +410,26 @@ bool writeChunks(Context& ctx) {
     ctx.qa.add("chunks.bytes", static_cast<f64>(bytes));
     ctx.qa.add("chunks.verified", static_cast<f64>(verified));
     ctx.qa.add("chunks.failed", static_cast<f64>(failed), failed > 0 ? 2u : 0u);
+    // What grading the road into the terrain did to the city (see the counters'
+    // declaration).  A drop of metres under the carriageway is a claim that the
+    // road is that far below the DEM; a *seabed lifted to land* is the one that
+    // would break the flood QA's sea test, and a *land dropped to seabed* is one
+    // that would flood a street from below (D-035).
+    MLOG_INFO("chunks: road grading left %llu samples at their DEM height (the road there is a "
+              "structure, more than 3 m above or below the ground)", (unsigned long long)s_leftAsDem);
+    MLOG_INFO("chunks: road grading moved samples by %+.2f m (raise) / %+.2f m (drop, "
+              "from %.2f m); %llu samples raised > 1 m, %llu dropped > 1 m; %llu seabed "
+              "samples lifted to land, %llu land samples dropped to seabed",
+              s_maxRaiseM, s_maxDropM, s_maxDropAt, (unsigned long long)s_raisedOver1m,
+              (unsigned long long)s_droppedOver1m, (unsigned long long)s_seabedLiftedToLand,
+              (unsigned long long)s_landDroppedToSeabed);
+    ctx.qa.add("chunks.gradeLeftAsDem", static_cast<f64>(s_leftAsDem));
+    ctx.qa.add("chunks.gradeRaiseM", s_maxRaiseM);
+    ctx.qa.add("chunks.gradeDropM", s_maxDropM);
+    ctx.qa.add("chunks.gradeRaisedOver1m", static_cast<f64>(s_raisedOver1m));
+    ctx.qa.add("chunks.gradeDroppedOver1m", static_cast<f64>(s_droppedOver1m));
+    ctx.qa.add("chunks.gradeSeabedLiftedToLand", static_cast<f64>(s_seabedLiftedToLand));
+    ctx.qa.add("chunks.gradeLandDroppedToSeabed", static_cast<f64>(s_landDroppedToSeabed));
     return failed == 0;
 }
 

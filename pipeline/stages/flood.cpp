@@ -455,6 +455,43 @@ bool buildFloodModel(Context& ctx) {
         const f64 cm = std::min<f64>(255.0, results[1].maxDepth[k] * 100.0);
         ctx.floodSevere[k] = static_cast<u8>(std::lround(cm));
     }
+    // What the published raster says, against the surface it came from.  This
+    // exists because the export QA (tests/verify_export.mjs) asks a *different*
+    // question — "is this cell below the seabed pick line in the exported
+    // terrain?" — and the two answers disagreed by 20,394 cells.  Counted
+    // rather than argued about, and cheap: one pass over the raster (D-035).
+    {
+        u64 wetOnSeaByHeight = 0, wetOnSeaByMask = 0, maskDisagreesWithHeight = 0;
+        u64 raisedAbovePick = 0, deepestWetOnSeaCm = 0;
+        for (size_t k = 0; k < surface.cellCount(); ++k) {
+            const f64 raw = hf.samples[k];
+            const f64 cond = surface.filled[k];
+            const bool seaByRawHeight = raw <= sopt.seaLevel - sopt.seaPickThreshold;
+            const bool seaByCondHeight = cond <= sopt.seaLevel - sopt.seaPickThreshold;
+            if (seaByCondHeight != (surface.isSea[k] != 0)) ++maskDisagreesWithHeight;
+            if (seaByRawHeight && !seaByCondHeight) ++raisedAbovePick;
+            const u8 v = ctx.floodSevere[k];
+            if (v > 1) {
+                if (seaByRawHeight) {
+                    ++wetOnSeaByHeight;
+                    if (v > deepestWetOnSeaCm) deepestWetOnSeaCm = v;
+                }
+                if (surface.isSea[k]) ++wetOnSeaByMask;
+            }
+        }
+        ctx.qa.add("flood.severe.wetOnSeaByRawHeight", static_cast<f64>(wetOnSeaByHeight));
+        ctx.qa.add("flood.severe.wetOnSeaByMask", static_cast<f64>(wetOnSeaByMask));
+        ctx.qa.add("flood.severe.maskDisagreesWithHeight", static_cast<f64>(maskDisagreesWithHeight));
+        ctx.qa.add("flood.severe.seabedRaisedAbovePickByFill", static_cast<f64>(raisedAbovePick));
+        MLOG_INFO("flood: raster vs surface — %llu wet cells are sea by the DEM's own height "
+                  "(deepest %llu cm), %llu by the mask; the mask disagrees with the height it was "
+                  "derived from on %llu cells, and %llu seabed cells were raised above the pick "
+                  "line by pit filling",
+                  (unsigned long long)wetOnSeaByHeight, (unsigned long long)deepestWetOnSeaCm,
+                  (unsigned long long)wetOnSeaByMask,
+                  (unsigned long long)maskDisagreesWithHeight,
+                  (unsigned long long)raisedAbovePick);
+    }
     ctx.floodWidth = w;
     ctx.floodHeight = h;
     ctx.floodStep = step;

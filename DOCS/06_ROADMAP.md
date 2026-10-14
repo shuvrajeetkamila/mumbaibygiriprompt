@@ -80,6 +80,15 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
    build file, then a headless physics harness (drop a motorcycle on the Sea
    Link, measure penetration) so the integration is validated the way the
    traffic layer is.
+4c. ~~**The published terrain sampled a quarter of every cell**~~ — **fixed**
+   (D-035): `export.cpp` read the collision heightfield with the published index
+   at 4× the stride, so the viewer's terrain raster was the first 256 m of each
+   1024 m cell stretched over the whole cell, and the flood QA's sea test was
+   reading that against the flood model's own surface.  With the stride derived
+   from the header, wet sea cells go 20,394 → **72** and `verify_export.mjs` is
+   **396 checks, 0 failing**.  The same decision clamps road grading to a 3 m
+   embankment (it was moving samples by up to +69.81 m / −64.60 m, lifting 1,015
+   seabed samples onto land).
 4b. **The road surface as one description.**  The next pipeline item, named by
    D-034's own numbers: `pipeline/stages/output.cpp` grades the road into the
    collision grid (`gradeRoadsIntoGrid`, n = 128) and `pipeline/stages/network.cpp`

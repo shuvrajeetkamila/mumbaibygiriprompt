@@ -1275,6 +1275,95 @@ section, its checks and its JSON).
 
 ---
 
+## D-035 — The published terrain was sampling a quarter of every cell, and the ground under a viaduct is the ground
+
+**Decision.** Two pipeline defects, found by following one failing check to the
+bottom rather than by reading the code, and both now measured rather than
+reasoned about.
+
+**1. `make all-checks` never reached the export QA, and the export was wrong.**
+`all-checks` stops at the first failing stage, and `physics` was failing, so
+`tests/verify_export.mjs` had not run since the last green world.  Run against a
+freshly built world it failed twice: *"open water is not drawn as flooding —
+20,394 wet sea cells of 501,620"* (severe) and 16,575 (moderate), against a 2 %
+budget.
+
+The trail, in the order it was followed — each step a measurement, because every
+plausible explanation was wrong:
+
+* the **flood raster itself is clean.**  Instrumented in `flood.cpp`: **0** wet
+  cells are sea by the DEM's own height, **0** by the hydrology's mask, the mask
+  disagrees with the height it was derived from on **0** cells, and **0** seabed
+  cells were raised above the pick line by pit filling (`flood.severe.*` in the
+  QA record).  The hydrology publishes 499,391 sea cells; the QA counted 501,620.
+* the **transpose hypothesis** was tested and died: of 20,394 wet cells, only
+  17.9 % land at the transposed index.
+* the **grading hypothesis** was tested *after* being instrumented.  Road grading
+  moved chunk samples by **+69.81 m / −64.60 m** (33,422 samples raised more than
+  a metre, 35,582 dropped more than a metre) — indefensible, and now clamped, see
+  below — but the flood counts did not move by a single cell when it was clamped,
+  so grading was not the mechanism.
+* what was left was the export's own terrain raster, and there the defect is
+  plain: `export.cpp` declared `TN = 32` *"heightfield samples per cell edge"* and
+  read the collision grid with `i` as the published index — but the collision grid
+  is 129 samples at 8 m, so it took the **first 33 samples of each 1024 m cell and
+  stretched them across all of it**, never reading the last 768 m.  The published
+  terrain was a quarter-cell strip magnified four times, and the flood QA's sea
+  test was reading *that* against the flood model's own 32 m surface.
+
+Fixed by deriving the stride from the header (`(hh.width - 1) / TN`), which is
+what it should always have been.  Measured after: sea cells **499,340** (the
+hydrology's own count is 499,391), wet sea cells **72** severe / **62** moderate —
+0.014 % against a 2 % budget — and `verify_export.mjs` **396 checks, 0 failing**.
+The flood model's own geography is untouched (low ground >15 cm wet: 69.8 %
+severe / 20.7 % moderate; high ground 40.6 % / 3.9 %), so this was a sampling
+defect, not a hydrology defect.
+
+**2. Grading a road into the terrain is an embankment, not a teleport.**
+`gradeRoadsIntoGrid` pulls each 8 m grid sample toward the road's own elevation,
+with a flat zone of `lanes · 3.5 / 2 + 1.5` m and a 10 m blend.  That is right for
+a road on an embankment or in a cutting — and wrong by tens of metres where the
+DEM is nowhere near the road's elevation, because there the road is a *structure*:
+a viaduct over a valley, a flyover over a street, a deck over water.  Measured
+before the clamp: **+69.81 m / −64.60 m** of movement, 1,015 seabed samples lifted
+above the seabed pick line into "land", 12 land samples dropped below it.
+
+The clamp is 3 m — beyond that the ground stays the ground, and the deck carries
+the traffic exactly as the collision layer already intends (the road ribbon and
+the bridge meshes).  Measured after: movement **+3.00 m / −3.00 m**, 44,455
+samples left at their DEM height, and the city-scale lane-height survey moves from
+84.7 % within 0.25 m to **84.8 %**, footprint steps over 0.35 m from 4.84 % to
+**4.72 %**, blocked 1.53 %.  The clamp is a correctness fix with a small
+city-scale effect; the survey's residual disagreement has a different cause, named
+below.
+
+**What is *not* claimed.**  The physics acceptance is unchanged by both fixes
+(55 checks, 1 failed, 0.0370 m, 97.3 % wheels down), and the 60-minute run is
+unchanged (PASS).  The survey's remaining disagreement is concentrated where the
+model's road is *elevated*: the worst height disagreement is 29.54 m at
+(−8456.0, 19223.5), which is the Sea Link's own corridor, and the survey compares
+the model's road surface against the ground under it.  On a deck that is a
+category error in the *instrument*, not in the collision: the next revision of
+`surveyLanes` should compare against the deck (the mesh it drives on) wherever the
+edge is a bridge, and against the ground elsewhere.  The road ribbon, the nav
+graph and the graded ground remain three descriptions of one street; this decision
+makes them agree better and says exactly where they still do not.
+
+**Instrumentation kept, not discarded.**  Both defects were found by counting
+things the code did not previously count, so the counters stay and are published
+in the QA record: `flood.severe.wetOnSeaByRawHeight`, `flood.severe.wetOnSeaByMask`,
+`flood.severe.maskDisagreesWithHeight`, `flood.severe.seabedRaisedAbovePickByFill`,
+`chunks.gradeLeftAsDem`, `chunks.gradeRaiseM`, `chunks.gradeDropM`,
+`chunks.gradeRaisedOver1m`, `chunks.gradeDroppedOver1m`,
+`chunks.gradeSeabedLiftedToLand`, `chunks.gradeLandDroppedToSeabed`.
+
+**Files.**  `pipeline/stages/export.cpp` (the stride, derived from the header),
+`pipeline/stages/output.cpp` (the 3 m grade clamp and its counters),
+`pipeline/stages/flood.cpp` (the raster-versus-surface counters), and the world
+artifacts rebuilt from both.
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

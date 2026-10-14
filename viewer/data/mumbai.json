@@ -1836,7 +1836,7 @@
   "stride": 6
  },
  "qa": {
-  "counters": 196,
+  "counters": 207,
   "failures": 0,
   "passed": true,
   "warnings": 0
@@ -1850,7 +1850,7 @@
  "terrain": {
   "bias": -32,
   "height": 1345,
-  "maxHeight": 90.8696289,
+  "maxHeight": 91.356308,
   "minHeight": -13.5,
   "offset": 0,
   "span": 192,

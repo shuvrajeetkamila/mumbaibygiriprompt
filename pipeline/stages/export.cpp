@@ -133,12 +133,24 @@ bool exportViewer(Context& ctx) {
             const i64 ti = static_cast<i64>(std::llround((cellOX - minX) / MACRO_CELL_SIZE));
             const i64 tj = static_cast<i64>(std::llround((cellOZ - minZ) / MACRO_CELL_SIZE));
             if (ti < 0 || tj < 0) continue;
-            for (u32 j = 0; j <= TN && j < hh.height; ++j) {
-                for (u32 i = 0; i <= TN && i < hh.width; ++i) {
+            // The published grid is `TN` nodes per cell; the chunk's heightfield
+            // is not — it is the *collision* grid, and today that is 129 samples
+            // at 8 m (n = 128).  Reading it with `i` as the published index (the
+            // first version did) took the first 33 samples of the cell and
+            // stretched them across all 1024 m of it: the whole terrain raster was
+            // a quarter-cell strip magnified four times, and the last 768 m of
+            // every cell was never read at all.  The stride is derived, not
+            // assumed, and it is what every later consumer of this raster — the
+            // viewer, and the flood QA's own sea test — has been measuring (D-035).
+            const u32 strideX = hh.width > 1 ? std::max<u32>(1, (hh.width - 1) / TN) : 1;
+            const u32 strideZ = hh.height > 1 ? std::max<u32>(1, (hh.height - 1) / TN) : 1;
+            for (u32 j = 0; j <= TN && j * strideZ < hh.height; ++j) {
+                for (u32 i = 0; i <= TN && i * strideX < hh.width; ++i) {
                     const u32 gx = static_cast<u32>(ti) * TN + i;
                     const u32 gz = static_cast<u32>(tj) * TN + j;
                     if (gx >= TW || gz >= TH) continue;
-                    const f32 h = hh.baseY + hgrid[j * hh.width + i] * hh.scaleY;
+                    const f32 h = hh.baseY +
+                                  hgrid[(j * strideZ) * hh.width + (i * strideX)] * hh.scaleY;
                     if (h < terrainMin) terrainMin = h;
                     if (h > terrainMax) terrainMax = h;
                     const f32 norm = std::max(0.0f, std::min(1.0f, (h - heightBias) / heightSpan));
