@@ -124,6 +124,39 @@ balance is unchanged, that every varying is declared on both sides, that the
 geometry supplies the attributes the shader reads, and that the payload
 publishes `tex` / `tileMetres` / `tileMean` for every textured material.
 
+### 3c. Physics acceptance — `build/bin/mumbai_phys`
+
+**44 checks, 0 failing**, run by `make physics` (the full configuration:
+`--minutes 1 --seconds 30 --props 200 --fleet 24`) and part of `all-checks`.
+The report is `build/physics_report.json`; every number below is read from it,
+and the solver configuration is printed by the harness itself so a claim about
+penetration is a claim about a slop:
+
+```
+Jolt 5.6.0 (solver 10 velocity / 2 position steps, slop 5 mm, linear cast at 0.25 r, speculative 20 mm)
+```
+
+| group | check | measured |
+|---|---|---|
+| bake | every cell bakes | 924 cells in 0.14 s — 164,594 boxes, 24 capsules, 924 heightfields, 526 compounds, 1,450 static bodies |
+| coverage | every probe across the built extent finds ground | 3,696 / 3,696, surface −13.5 … 103.4 m |
+| Sea Link | the deck is recovered from the collision records | 207 slabs, 3,987 m, y 8.93 … 25.76 m, 18.0 m wide, heading −154.9° |
+| Sea Link | every slab's collider matches its collision record | top face 0.340 m above the record's centre, **worst deviation 0.000 m**; 8 slabs obscured by the bridge's own pylon and stays, 0 unprobeable |
+| ride | a motorcycle rides the carriageway | 343 m in 30 s, 41.2 km/h mean, **100 % wheels down**, peak lean 6.4°, worst 1.0 m off the chain, 0.0000 m penetration |
+| ride | the lean controller leans and returns | slalom peak 16.1° → 6.1° at the end, 210 m covered |
+| ride | car / taxi / BEST double-decker / auto-rickshaw | 49.2 / 46.2 / 31.0 / 30.2 km/h, peak roll 1.6 / 1.4 / 0.9 / 4.0°, 98–99 % wheels down, 0.0000 m penetration on all four |
+| braking | a car brakes in a plausible distance | 32.1 m from 60 km/h (analytic 15.7 m at μ = 0.9, the gap being the vehicle model's brake torque and the deck's grade) |
+| impact | 300 kg dropped 22 m onto the deck | meets it at 19.4 m/s, settles in 2.75 s, **lowest corner 27 mm from the surface**, 0.0 mm penetration at rest, no tunnelling, one-tick transient of 0.2484 m (Jolt's `mLinearCastMaxPenetration`, published) |
+| fleet | 500 vehicles fit a 30 Hz frame | 24 bodies at 18 µs each = **9.1 ms** extrapolated (budget 33 ms) |
+| floating origin | 20 crossings of 1,454 bodies | mean 0.28 ms, **worst 0.77 ms** (criterion < 1 ms), 0.00e+00 m displacement, no velocity impulse |
+| soak | one simulated minute, 200 props | 3,600 steps, mean 0.495 ms, p99 0.886, worst 2.382 ms; deepest penetration **5.2 mm** (the slop) |
+
+This layer is what caught five defects the world build could not see — both
+carriageways of the Sea Link on one line, the slab pitch, a constraint double
+free, the double-decker's shift point above its redline, and Jolt's
+left-positive steering input (D-033).  It is the first verification layer that
+exercises the *engine*, not the pipeline.
+
 ### 4. Artifact integrity — `tools/verify_artifacts.sh`
 
 `viewer/data/SHA256SUMS` pins the published payload (the build is
@@ -165,11 +198,11 @@ the pinned hashes).
 | 3 | landmark detail / material content | partly met | **textures are no longer the gap** (D-031): 115 materials with albedo, normal and ORM maps at a physical tile size, mean-preserving, verified from the shipped bytes; the remaining gap at this row is hero *geometry*, below |
 | 3b | landmarks recognisable at 100 m, unlabelled | partly met | published dimensions plus the identifying ornament at the survey tier (D-032): coursed ashlar cut around the openings, voussoir arches with the barrel behind them, jali lattices, gallery balustrades, pinnacles, deck rails/kerbs/stiffeners, the Art Deco row. 193,330 triangles across five assets (Gateway 19,126, Taj 84,556, CSMT 30,628, Sea Link 34,476, Marine Drive 41,288). The specification's budgets (500k / 800k / 1.2M / 300k per pylon / 50k per building) are hand-modelled asset budgets and are **2.39 % met** — published per asset (`hero.<name>.triangles` beside `hero.<name>.triangleBudget`), not concealed |
 | 4 | zero vertex jitter at 4 corners + centre | **met** | unit test (1 mm survives, tol 2e-4) and 105 live crossings at 0.00e+00 m |
-| 5 | ≥500 vehicles in a 500 m radius at 30 FPS | CPU-side met | 547 peak / 451 median within 500 m of the moving camera over 60 min; solver + origin CPU p99 3.64 ms against a 16.6 ms budget, with chunk I/O timed apart. The GPU frame is not measurable here |
+| 5 | ≥500 vehicles in a 500 m radius at 30 FPS | CPU-side met | 547 peak / 451 median within 500 m of the moving camera over 60 min; solver + origin CPU p99 3.64 ms against a 16.6 ms budget, with chunk I/O timed apart. Jolt separately puts a 24-vehicle physical fleet at 18 µs per vehicle per step = **9.1 ms extrapolated to 500** (D-033). The GPU frame is not measurable here |
 | 6 | weather and ocean valid | partly met | **monsoon hydrology is built and verified** (D-026): two design storms on a 705 × 1345 hydrology grid, mass balance closed to 10⁻¹⁰ relative, published peak-depth rasters for both storms, and the specification's own sites (Hindmata 274 mm, King's Circle 280 mm, Andheri subway 408 mm in the 2005 analogue; Marine Drive dry in both) flooding as an emergent consequence of the DEM. GPU rain, wetness shading, Gerstner ocean and scattering remain specified-not-built in `04_RUNTIME.md` |
 | 7 | 30 FPS worst case (monsoon + traffic + South Bombay) | **not verifiable here** | needs a device; no GPU in the build environment |
 | 8 | ≤160 GB installed | met at this tier | 708 MB of chunks for 968.9 km²; scales with hero density and texture budget, both of which are currently far below the specification's |
-| 9 | 60-minute continuous run, zero crashes | **met** | `mumbai_sim` driving `engine/sim/` over the city graph, 216,000 ticks, exit 0, 14/14 checks, 0 penetrations, 0 lane violations |
+| 9 | 60-minute continuous run, zero crashes | **met** | `mumbai_sim` driving `engine/sim/` over the city graph, 216,000 ticks, exit 0, 14/14 checks, 0 penetrations, 0 lane violations; and `mumbai_phys` steps a 1,650-body world for a simulated minute with the step at p99 0.886 ms (D-033) |
 
 ## What this proves, and what it does not
 
@@ -185,8 +218,10 @@ hash-verified sources.
 
 **Not proved, and not claimed.** Anything requiring a GPU or a device: frame
 rate, rendering artifacts, TAA/WBOIT behaviour, the weather and ocean shaders,
-Jolt physics behaviour, Android installation size, and the actual visual
-appearance of the world. Those are specified in `04_RUNTIME.md` and gated on
+Android installation size, and the actual visual appearance of the world.
+Physics *is* now exercised (layer 3c) but only on this machine's CPU, with the
+harness's own driver rather than the traffic layer's, and it is not a device
+frame time. Those are specified in `04_RUNTIME.md` and gated on
 hardware this environment does not have (D-001).
 
 ## Known gaps, in priority order

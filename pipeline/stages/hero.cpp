@@ -46,6 +46,63 @@ void ribbonWall(mesh::MeshBuilder& mb, const Vec3& a0, const Vec3& a1,
 }
 
 
+// -----------------------------------------------------------------------------
+//  Physics colliders (A2)
+// -----------------------------------------------------------------------------
+// The collision section is what the physics engine sees, and a physics engine
+// needs shapes, not approximations of them: a 5.6 km bridge deck that no vehicle
+// can stand on is not a bridge.  These are the collider flags (CollisionBox::flags
+// in engine/world/chunk.h) that hero geometry writes, and the two helpers that
+// build oriented colliders — a deck segment is not axis-aligned and a raked stay
+// is a capsule, not a box.
+//
+//   bit2 (4)  hero mesh box collider — landmark bodies, deck slabs, pier caps
+//   bit3 (8)  capsule collider — the cable stays, oriented by the quaternion
+enum : u32 {
+    kColliderHeroBox = 4,
+    kColliderCapsule = 8,
+};
+
+// Quaternion from a yaw about +Y (radians) and a pitch about the resulting right
+// axis (radians).  yaw-only when pitch is zero, which is the common case.
+// Orientation of a surface whose direction is `yaw` and whose slope is `pitch`
+// (positive where the surface *rises* along its own forward direction, which is
+// how the deck's own builder computes it: atan2(y1 - y0, length)).
+//
+// The sign convention is the one thing to get right here, and the A2 harness
+// found it the hard way: a positive rotation about +X tips the local +Z axis
+// *down* (R_x(+phi) * z = (0, -sin phi, cos phi)), so a surface that rises along
+// its forward direction needs a rotation of -phi about X.  With the sign the
+// wrong way the Sea Link's collision became a staircase: each 19.6 m slab tilted
+// against the deck's own grade, leaving a 0.65 m ledge at every joint that no
+// vehicle could ride over.
+inline void yawPitchToQuat(f64 yaw, f64 pitch, f32* qx, f32* qy, f32* qz, f32* qw) {
+    const f64 hy = yaw * 0.5, hp = -pitch * 0.5;
+    const f64 cy = std::cos(hy), sy = std::sin(hy);
+    const f64 cp = std::cos(hp), sp = std::sin(hp);
+    // q = qYaw * qPitch, with the pitch about the local X axis.
+    *qw = static_cast<f32>(cy * cp);
+    *qx = static_cast<f32>(cy * sp);
+    *qy = static_cast<f32>(sy * cp);
+    *qz = static_cast<f32>(-sy * sp);
+}
+
+// Quaternion whose local +Y axis points along `axis` (the capsule convention in
+// Jolt and in this project's collider layout).  Used for raked cable stays.
+inline void axisYToQuat(const Vec3& axis, f32* qx, f32* qy, f32* qz, f32* qw) {
+    const Vec3 up = axis.normalized();
+    const f32 d = up.y;
+    if (d > 0.99999f) { *qx = *qy = *qz = 0.0f; *qw = 1.0f; return; }
+    if (d < -0.99999f) { *qx = 1.0f; *qy = *qz = 0.0f; *qw = 0.0f; return; }
+    // Shortest arc from +Y to `up`: axis = up x Y, angle = acos(up . Y).
+    const Vec3 c{up.z, 0.0f, -up.x};
+    const f32 len = std::sqrt(c.x * c.x + c.z * c.z);
+    const f32 s = std::sqrt((1.0f + d) * 0.5f);
+    const f32 w = std::sqrt((1.0f - d) * 0.5f);
+    *qx = c.x / len * w; *qy = 0.0f; *qz = c.z / len * w; *qw = s;
+    (void)s;
+}
+
 // A normal vector from a 2D outward direction (B1/B3 detail passes).
 inline Vec3 out3(const Vec2d& outward, f64 up) {
     return V3(outward.x, up, outward.y);
@@ -1787,6 +1844,8 @@ void buildSeaLink(Context& ctx, u32 matPylon, u32 matCable, u32 matDeck, u32 zon
     const f64 deckHalf = gapHalf + cwWidth;
     const f64 soffit = 0.95;            // box-girder depth
 
+    u64 deckColliders = 0, cableColliders = 0;
+
     // --- deck, parapets and median ------------------------------------------
     for (size_t i = 0; i + 1 < path.pts.size(); ++i) {
         const Vec2d a = path.pts[i], b = path.pts[i + 1];
@@ -1832,6 +1891,36 @@ void buildSeaLink(Context& ctx, u32 matPylon, u32 matCable, u32 matDeck, u32 zon
                 addDeckRailing(cd.hero, a - cd.origin, b - cd.origin, left,
                                sgn * (deckHalf - 0.35), y0 + 1.45, 1.05, railPosts,
                                matDeck, zone, V3(0, 0, 0));
+            }
+            // A deck collider per carriageway per segment: 0.40 m thick, full
+            // width, following the segment's yaw and pitch so the approach ramps
+            // are ramps (a vehicle climbing a 5 % grade on a level box would be
+            // fine visually and wrong physically).  This is what makes the
+            // crossing drivable by anything other than the traffic graph.
+            {
+                const Vec2d mid = (a + b) * 0.5;
+                const f64 len = (b - a).length();
+                const f64 yaw = std::atan2(dir.x, dir.y);
+                const f64 pitch = std::atan2(y1 - y0, len);
+                CollisionBox cb{};
+                // `inner` and `outer` already carry the side sign, so the centre
+                // is their plain midpoint: writing `sgn * (...)` here multiplies
+                // the sign in twice and lands *both* carriageways on the same
+                // line, which is what the physics harness found (A2).  The half
+                // extent is a magnitude: a negative one is not a smaller box,
+                // it is an inverted AABB, and Jolt drops it silently.
+                const Vec2d c = mid + left * ((inner + outer) * 0.5);
+                cb.cx = static_cast<f32>(c.x - cd.origin.x);
+                cb.cy = static_cast<f32>((y0 + y1) * 0.5 - 0.22);
+                cb.cz = static_cast<f32>(c.y - cd.origin.y);
+                cb.hx = static_cast<f32>((deckHalf - gapHalf) * 0.5);
+                cb.hy = 0.34f;
+                cb.hz = static_cast<f32>(len * 0.5);
+                yawPitchToQuat(yaw, pitch, &cb.qx, &cb.qy, &cb.qz, &cb.qw);
+                cb.flags = kColliderHeroBox;
+                cb.materialId = matDeck;
+                cd.collision.push_back(cb);
+                ++deckColliders;
             }
             if (ctx.cfg.heroDetail >= 3) {
                 // Survey tier: the deck's transverse stiffeners, the raised kerb
@@ -1989,15 +2078,23 @@ void buildSeaLink(Context& ctx, u32 matPylon, u32 matCable, u32 matDeck, u32 zon
                     // capsule-equivalent collider so a car leaving the deck
                     // interacts with the cable array instead of passing through.
                     if (along <= 70.0) {
+                        // A capsule, oriented along the stay: radius 0.22 m,
+                        // length half the stay.  The collider is the cable's own
+                        // axis, so a vehicle that clips the array is stopped by
+                        // the cable rather than by a box standing in for it.
                         CollisionBox cb{};
-                        cb.cx = static_cast<f32>((topPt.x + botPt.x) * 0.5f);
-                        cb.cy = static_cast<f32>((topPt.y + botPt.y) * 0.5f);
-                        cb.cz = static_cast<f32>((topPt.z + botPt.z) * 0.5f);
+                        const Vec3 mid3 = (topPt + botPt) * 0.5f;
+                        const f32 halfLen = (botPt - topPt).length() * 0.5f;
+                        cb.cx = mid3.x;
+                        cb.cy = mid3.y;
+                        cb.cz = mid3.z;
                         cb.hx = 0.22f; cb.hz = 0.22f;
-                        cb.hy = static_cast<f32>((botPt - topPt).length() * 0.5);
-                        cb.qw = 1.0f;
-                        cb.flags = 4;              // 4 = cable collider
+                        cb.hy = halfLen;
+                        axisYToQuat((botPt - topPt), &cb.qx, &cb.qy, &cb.qz, &cb.qw);
+                        cb.flags = kColliderCapsule;
+                        cb.materialId = matCable;
                         cd.collision.push_back(cb);
+                        ++cableColliders;
                         ctx.stats.collisionBoxes++;
                     }
                 }
@@ -2013,7 +2110,7 @@ void buildSeaLink(Context& ctx, u32 matPylon, u32 matCable, u32 matDeck, u32 zon
         pc.hx = 20.0f; pc.hz = 7.5f;
         pc.hy = static_cast<f32>((deckY - pileCapY) * 0.5);
         pc.qw = 1.0f;
-        pc.flags = 2;                              // 2 = hero structure collider
+        pc.flags = kColliderHeroBox;               // hero mesh box collider
         cd.collision.push_back(pc);
         ctx.stats.collisionBoxes++;
     }
@@ -2047,6 +2144,11 @@ void buildSeaLink(Context& ctx, u32 matPylon, u32 matCable, u32 matDeck, u32 zon
     ctx.qa.add("hero.seaLink.lengthMetres", path.total);
     ctx.qa.add("hero.seaLink.osmFragmentMetres", path.osmFragment);
     ctx.qa.add("hero.seaLink.pylons", static_cast<f64>(pylonCount));
+    ctx.qa.add("hero.seaLink.deckColliders", static_cast<f64>(deckColliders));
+    ctx.qa.add("hero.seaLink.cableColliders", static_cast<f64>(cableColliders));
+    // Every pylon carries one hard box collider around its legs, from the pile
+    // cap to the deck — the pylon loop adds it, so the count is the pylon count.
+    ctx.qa.add("hero.seaLink.pylonColliders", static_cast<f64>(pylonCount));
     ctx.qa.add("hero.seaLink.stays", static_cast<f64>(stays));
     MLOG_INFO("hero: Bandra-Worli Sea Link — %.0f m published alignment "
               "(the OSM extract holds a %.0f m fragment), %llu cable-stayed pylons, "
@@ -2177,6 +2279,17 @@ void buildMarineDrive(Context& ctx, u32 matConcrete, u32 matBuilding, u32 matPav
                 hash ^= hash >> 29;
                 artDecoFront(bcd.buildings[0], local, left, g, matBuilding, zone,
                              Detail{ctx.cfg.heroDetail}, hash);
+                // The row is a wall of buildings: without a collider a vehicle
+                // drives straight through the Queen's Necklace.
+                CollisionBox cb{};
+                cb.cx = static_cast<f32>(front.x - bcd.origin.x);
+                cb.cz = static_cast<f32>(front.y - bcd.origin.y);
+                cb.cy = static_cast<f32>(g + 11.0);
+                cb.hx = 9.0f; cb.hz = 9.0f; cb.hy = 11.0f;
+                cb.qw = 1.0f;
+                cb.flags = kColliderHeroBox;
+                bcd.collision.push_back(cb);
+                ctx.stats.collisionBoxes++;
                 ++decoFronts;
             }
         }
@@ -2258,13 +2371,20 @@ bool buildHeroAssets(Context& ctx) {
         MLOG_INFO("hero: %s at %.4f,%.4f — %llu triangles (spec target 300k-1.2M)",
                   lm.name, lm.lat, lm.lon, (unsigned long long)tris);
 
+        // One collider per landmark, sized to the building rather than to a
+        // cube around it: a 20 m box in front of the Taj would stop a vehicle
+        // 10 m short of its wall and let it drive through the corner.
+        struct Extent { f32 hx, hz, top; };
+        const Extent ext = lm.kind == 0 ? Extent{9.5f, 9.5f, 31.0f}      // Gateway
+                          : lm.kind == 1 ? Extent{30.5f, 22.5f, 64.0f}   // Taj block
+                                         : Extent{42.5f, 30.5f, 38.5f};  // CSMT wings
         CollisionBox cb{};
         cb.cx = static_cast<f32>(base.x - cd.origin.x);
         cb.cz = static_cast<f32>(base.y - cd.origin.y);
-        cb.cy = static_cast<f32>(groundY + 12.0);
-        cb.hx = 20.0f; cb.hz = 20.0f; cb.hy = 12.0f;
+        cb.cy = static_cast<f32>(groundY + ext.top * 0.5);
+        cb.hx = ext.hx; cb.hz = ext.hz; cb.hy = ext.top * 0.5f;
         cb.qw = 1.0f;
-        cb.flags = 2;     // hero mesh collider
+        cb.flags = 4;     // hero mesh box collider (kColliderHeroBox)
         cd.collision.push_back(cb);
         ctx.stats.collisionBoxes++;
     }

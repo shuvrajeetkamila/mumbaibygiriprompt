@@ -996,6 +996,115 @@ paving, lamp pairs and stepped, fluted, banded Art Deco frontage.
 
 ---
 
+## D-033 — The physics world is Jolt, configured to the specification's numbers, and every one of them is measured
+
+**Decision.** The runtime's physics is [JoltPhysics](https://github.com/jrouwe/JoltPhysics)
+v5.6.0, vendored under `third_party/Jolt/` and built by a hand-written source
+list (`third_party/jolt_sources.mk`) because this environment has no CMake.  The
+engine side is `engine/physics/` — `World` (the Jolt instance, layers, filters,
+ray casts, the bulk transform shift, the penetration instrument), `bake` (the
+pipeline's own collision, read straight out of the `.mumbai_chunk` sections) and
+`vehicle` (the five archetypes of `engine/sim/traffic.h` as real bodies with
+wheels, suspension and Jolt's two controllers).  The acceptance harness is
+`engine/app/phys_main.cpp`, built as `build/bin/mumbai_phys` and run by
+`make physics`.
+
+Writing a solver was never on the table: Jolt is used in shipped vehicle games,
+its `VehicleConstraint` is the only open engine that models a *motorcycle*
+(lean spring, lean-limited steering) rather than a two-wheeled car, and a
+hand-rolled solver in this repository would be exactly the "rough" the master
+prompt forbids.  The vendored drop list (no `Shaders/`, no `Renderer/`, no
+`ObjectStream/`, no `Hair/`) and the flags are in the Makefile and
+`third_party/Jolt/README.md`.
+
+**Configuration, and why each number is what it is** (all of it reported by the
+harness, so a claim about penetration is a claim about a slop):
+
+| setting | value | why |
+|---|---|---|
+| position type | f32 (`JPH_DOUBLE_PRECISION` off) | bodies live in the 1024 m macro cell (D-024), so the worst position magnitude in a cell is ~1.5 km, where an f32 ulp is 0.12 mm — inside the millimetre the criteria ask for, for half the solver bandwidth |
+| `mPenetrationSlop` | 5 mm | Jolt defaults to 20 mm: a "resting" body is allowed to sit 20 mm inside what it rests on, which is 20× the accuracy this project claims.  5 mm keeps the solver stable and makes the instrument mean something |
+| `mSpeculativeContactDistance` | 20 mm | default, kept explicit: contacts are found *before* they touch |
+| `mLinearCastThreshold` | 0.25 r | **measured.** Jolt only sweeps a linear-cast body when it moves more than `threshold × inner radius` in one tick; at the default 0.75 a 300 kg crate dropped 22 m onto the Sea Link deck (19.4 m/s, 0.33 m/tick, inner radius 0.8 m, threshold 0.6 m) was never cast at all, and its first tick inside the deck measured 0.21 m.  At 0.25 a vehicle sweeps from ~50 km/h up and a crate from ~9 m/s |
+| solver steps | 10 velocity / 2 position | Jolt's defaults, kept: the fleet measurement below says the cost is affordable |
+| motion quality | `LinearCast` on every vehicle and every dynamic box | a body at 100 km/h moves 0.46 m per tick and the Sea Link's deck slab is 0.68 m thick: a discrete body can be inside it for a tick before the solver pushes it back out |
+
+**How penetration is measured, and what "no penetration" means for an impact.**
+`PenetrationListener` records Jolt's own `ContactManifold::mPenetrationDepth`
+for every contact, split into dynamic-vs-static and dynamic-vs-dynamic.  A
+contact under the slop is *touching*, not penetrating, so the acceptance budget
+is 20 mm — and an impact is judged by three separate numbers, because one number
+cannot describe it honestly:
+
+* **at rest**, after the impact, the deepest penetration must be inside the
+  ordinary 20 mm budget (measured: 0.0 mm — the crate settles on the deck);
+* **it never ends a tick below the surface it hit** (measured: lowest centre
+  18.746 m against the 18.069 m the surface allows — no tunnelling);
+* **it comes to rest on the surface**: the body's own lowest corner, computed
+  from its rotated extents, is within 5 cm of the surface (measured: −27 mm);
+* the *transient* is published, not hidden: 0.2484 m for one tick at 19.4 m/s,
+  which is Jolt's `mLinearCastMaxPenetration` (0.25 × inner radius) doing what it
+  says it does — the shape cast's penetration over the swept interval.
+
+**Five defects the instrument found**, each fixed in the pipeline or the engine,
+each with the measurement that found it:
+
+1. **The Sea Link deck colliders put both carriageways on one line.**
+   `buildSeaLink()` applied the side sign twice (`mid + left * (sgn * (inner +
+   outer) * 0.5)`) and could compute a *negative* half extent, which Jolt drops
+   silently as an inverted AABB.  Found by the harness's survey of the baked
+   collision: the two carriageways 23 m apart were a single 19 m ribbon.
+2. **The deck slabs were pitched the wrong way.**  `yawPitchToQuat` used
+   `+pitch/2`, but `R_x(+φ)·ẑ` tips the local forward *down*, so each 19.6 m slab
+   tilted against the grade and left a 0.65 m ledge at every joint.  Measured by
+   walking `groundHeightStatic` north from the survey station: 24.99 → −0.077 per
+   4 m, then +0.646 m and +0.532 m ledges.
+3. **A constraint double free.**  Jolt's constraint list is
+   `Array<Ref<Constraint>>` and holds the *only* reference:
+   `PhysicsSystem::RemoveConstraint` releases it and deletes the constraint, so
+   the wrapper's `delete` afterwards was a double free (SIGSEGV on the first
+   destroyed vehicle).  The wrapper now takes its own reference (`AddRef`) and
+   releases it (`Release`).
+4. **The double-decker's gearbox asked for a 4000 rpm shift-up below a 3000 rpm
+   redline.**  Jolt asserts `mShiftUpRPM < mEngine.mMaxRPM` for an automatic box;
+   a 16 t BEST bus aborted the harness with SIGTRAP.  The shift points are now
+   derived per class from the engine's own redline (90 % up, 45 % down).
+5. **Jolt's `SetDriverInput(inRight)` is left-positive.**  `WheeledVehicleController::Drive`
+   applies `SetSteerAngle(-mRightInput * max)` and the motorcycle controller
+   applies `steer_sign = -Sign(mRightInput)`; with the world frame's x east and z
+   north, a positive wheel steer angle turns right, so a positive *input* turns
+   left.  The first driver on the bridge drove off the carriageway because of it
+   (two rides with a constant input of +0.35 and −0.35 are the evidence).
+   `phys::driveVehicle` negates the input so every caller in this project — the
+   traffic layer next — gets navigational steering.
+
+**Measured result** (`make physics`: `mumbai_phys --minutes 1 --seconds 30
+--props 200 --fleet 24`, 924 cells, 44 checks, **0 failed**; the full report is
+written to `build/physics_report.json`):
+
+| what | number |
+|---|---|
+| colliders | 164,594 boxes, 24 capsules, 924 heightfields, 526 compounds, 1,450 static bodies; every one of 3,696 probe points across every cell finds ground (−13.5 m … 103.4 m) |
+| Sea Link | 207 slabs recovered from the collision records, **3,987 m** of carriageway, 18.0 m wide, every slab's top face 0.340 m above the record's centre with a **0.000 m** worst deviation (8 slabs are obscured by the bridge's own pylon and stays) |
+| motorcycle | 343 m in 30 s, 41.2 km/h mean, **100 % wheels down**, peak lean 6.4°, 1.0 m worst deviation from the carriageway centreline, 0.0000 m penetration |
+| slalom | peak lean 16.1°, recovering to 6.1° — the lean controller leans and returns |
+| car / taxi / BEST bus / auto-rickshaw | 49.2 / 46.2 / 31.0 / 30.2 km/h, peak body roll 1.6 / 1.4 / 0.9 / 4.0°, 98–99 % wheels down, 0.0000 m penetration |
+| braking | 32.1 m from 60 km/h against the analytic 15.7 m at μ = 0.9 (the deck's own grade and the vehicle model's brake torque, both reported) |
+| impact | 300 kg from 22 m: meets the deck at 19.4 m/s, rests with its lowest corner **27 mm** from the surface, 0.0 mm penetration at rest, no tunnelling, transient 0.2484 m for one tick |
+| fleet | 24 driving vehicles = **18 µs per vehicle per step**, i.e. **9.1 ms** extrapolated to the specification's 500 vehicles in 500 m — inside a 33 ms frame |
+| floating origin | 20 macro-cell crossings of 1,454 bodies: mean 0.28 ms, **worst 0.77 ms** (the criterion is < 1 ms), 0.00e+00 m position error, no velocity impulse |
+| soak | 3,600 steps (one simulated minute) with 200 dynamic props and 1,650 bodies live: mean 0.495 ms, p50 0.430, p99 0.886, worst 2.382 ms per step; deepest penetration **5.2 mm** (the slop) |
+
+**What is not covered by any of this.**  Nothing here is a device frame time (see
+`04_RUNTIME.md`); the vehicles are driven by the harness's own driver, not yet by
+the traffic layer's IDM/MOBIL and Boids (the two share the archetypes but not yet
+the bodies); road-mesh collision is baked per cell but off by default in the
+acceptance run (it is the streaming layer's interest set, and the deck is a
+*building* collider); and there is no audio, no tyre model beyond Jolt's, no
+damage model, and no GPU water or rain, so nothing here claims Section 3.
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

@@ -134,6 +134,33 @@ three.js and checks it still lands.
 Serve it with `make serve` (an HTTP server is required: a `file://` page cannot
 fetch the payload, and the sandboxed preview iframe cannot either).
 
+## Physics (implemented, D-033)
+
+Jolt v5.6.0, vendored, driven by the pipeline's own collision.  `engine/physics/`
+is the only part of the engine that includes a Jolt header; the rest of the
+engine and the traffic layer speak `World`, `BodyHandle`, `Vehicle` and
+`MotionQuality`.  `make physics` runs the acceptance harness
+(`build/bin/mumbai_phys`), which bakes every cell, surveys the Sea Link out of
+the baked collision, drives both vehicle controllers over it, drops a body on it,
+steps a fleet, crosses 20 macro-cell boundaries and soaks the world — 44 checks,
+and the numbers below are from the run that passed it (full report:
+`build/physics_report.json`).
+
+| system | specification | measured |
+|---|---|---|
+| collision from the world build | baked per chunk, no second authoring | 164,594 boxes + 24 capsules in 526 compounds + 924 heightfields = 1,450 static bodies in 0.14 s; 3,696 / 3,696 probe points across all 924 cells find ground |
+| Sea Link drivability | the marquee shot: a motorcycle on the carriageway | 207 slabs = 3,987 m of carriageway, 18.0 m wide; the collider's top face matches the record's centre to **0.000 m** on every slab; a motorcycle rides 343 m at 41.2 km/h with **100 % wheels down**, 6.4° peak lean and zero penetration |
+| rollover geometry | auto-rickshaw 400 kg, motorcycles 110–160 kg | rickshaw 4.0° peak roll at 30 km/h (it *can* be tipped — 60° under a held full-lock input, which is the point of a three-wheeler); the lean controller's slalom peaks at 16.1° and returns to 6.1° |
+| fleet | ≥500 vehicles in a 500 m radius without frame impact | 24 bodies at 18 µs per vehicle per step = **9.1 ms** extrapolated to 500, inside a 33 ms frame |
+| floating origin (S4) | bulk transform, <1 ms, no pop | 1,454 bodies shifted in **0.28 ms mean / 0.77 ms worst** over 20 crossings, 0.00e+00 m error, no velocity impulse |
+| no penetration (S0) | zero collision penetration | resting contacts: **5.2 mm** (the solver's slop) over 200 props and a minute of simulation; a 22 m / 19.4 m/s impact: 0.0 mm at rest, no tunnelling, a 0.2484 m one-tick transient that is Jolt's own linear-cast allowance and is published as such |
+| step cost | 30 FPS worst case | 1,650 bodies live: mean 0.495 ms, p99 0.886 ms, worst 2.382 ms per 60 Hz step on this (2-core) machine |
+
+What is *not* done on this side: the traffic layer's vehicles are still kinematic
+(they route on the nav graph and are drawn, they do not yet push Jolt bodies), the
+road-mesh collision is baked but off in the acceptance run by default (it belongs
+to the streaming interest set), and no device frame time has been measured.
+
 ## The device target (specified)
 
 The specification's Android/Vulkan target maps onto the interfaces above as
@@ -145,14 +172,14 @@ follows. None of this runs in the build environment (D-001).
 | LOD / impostors | <100 m hero, 100–500 m simplified, 500 m–2 km blockout, >2 km impostors | LOD0/1/2 meshes + `BuildingImpostor` | LOD chain built; impostor quads emitted |
 | Weather | monsoon 2,400 mm/yr, >100 mm/h, GPU rain, screen-space wetness driving roughness→0 and albedo −30 % | material wetness response; terrain drainage basins | water material and 19 drainage basins exist; the weather system is not built |
 | Ocean | 4–8 Gerstner waves (80–150 m swell, 0.5–2 m amplitude; monsoon 3–5 m), PBR + SSS, sun glitter, shoreline foam from depth-buffer intersection | `WaterMesh` displacement grid at sea level | mesh exists (31,180 quads); shader not built |
-| Physics | Jolt, bulk transform on origin shift, baked collision geometry | `TerrainCollision`, `BuildingCollision` (OBB list) | collision geometry baked per chunk |
-| ECS | flecs, vehicle archetypes, lane/signal behaviour | `RoadNavGraph` (+ signals) | graph built; ECS not built |
+| Physics | Jolt, bulk transform on origin shift, baked collision geometry | `TerrainCollision`, `BuildingCollision` (OBB list) | **built and measured** (D-033): vehicles, wheels, suspension, both controllers, the shift at 0.77 ms worst, penetration instrumented |
+| ECS | flecs, vehicle archetypes, lane/signal behaviour | `RoadNavGraph` (+ signals) | behavioural layer built (D-030, plain vectors per D-015); the physical bodies are not yet driven by it |
 | Dynamic resolution | 720p–1080p, 30 FPS worst case on Adreno 730 / Mali-G710 class | — | not measurable here |
 
 ## What a device build still needs
 
 1. a Vulkan renderer consuming the chunk sections in place;
-2. Jolt wired to `BuildingCollision`/`TerrainCollision`;
+2. the traffic layer driving the physical vehicles instead of kinematic ones;
 3. the weather/ocean shaders and the flood model (with the drainage-sentinel
    filter noted in `02_DECISIONS.md`);
 4. MOBIL + Boids on top of the existing nav graph;

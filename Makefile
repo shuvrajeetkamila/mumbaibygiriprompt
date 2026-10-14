@@ -35,8 +35,44 @@ RENDER_SRC  := $(wildcard engine/render/*.cpp)
 MGEOM_SRC   := $(wildcard pipeline/mgeo/*.cpp)
 STAGE_SRC   := $(wildcard pipeline/stages/*.cpp)
 
+PHYS_SRC    := $(wildcard engine/physics/*.cpp)
+PHYS_OBJ    := $(patsubst %.cpp,$(OBJ)/%.o,$(PHYS_SRC))
+PHYS_MAIN   := $(OBJ)/engine/app/phys_main.o
 ENGINE_SRC  := $(CORE_SRC) $(WORLD_SRC) $(SIM_SRC) $(RENDER_SRC)
 PIPE_SRC    := $(MGEOM_SRC) $(STAGE_SRC)
+
+# --- Vendored physics engine (A2) -------------------------------------------
+# Jolt ships CMake; this environment has none, so its file list is transcribed
+# into third_party/jolt_sources.mk and built by the rules below.  The flags are
+# Jolt's own Distribution preset: no asserts, no profiler, no debug renderer, no
+# object stream, x86-64 baseline SIMD (SSE4.2 + popcnt — not AVX2, so a binary
+# built here runs on any host).  Warnings are silenced: it is vendored code and
+# its warnings are not this project's to fix.
+include third_party/jolt_sources.mk
+
+JOLT_OBJ    := $(patsubst %.cpp,$(OBJ)/third_party/%.o,$(JOLT_SRC))
+# LZCNT/TZCNT are deliberately *not* defined: the macros make Jolt call the
+# `_tzcnt_u32`/`_lzcnt_u32` intrinsics, which need -mbmi/-mlzcnt, and -mbmi
+# would raise the deployed binary's instruction-set floor above the x86-64
+# baseline this project targets.  Undefined, Math.h uses its software fallback.
+JOLT_FLAGS  := -std=c++17 $(OPT) -g -pthread -w -fno-rtti -fno-exceptions \
+               -msse4.2 -mpopcnt -Ithird_party \
+               -DJPH_USE_SSE4_1 -DJPH_USE_SSE4_2
+
+# engine/physics includes Jolt's headers, so it needs the same defines and the
+# same include root.  It is the only engine source that does.
+PHYS_FLAGS  := $(CXXFLAGS) -fno-rtti -fno-exceptions -msse4.2 -mpopcnt \
+               -Ithird_party -DJPH_USE_SSE4_1 -DJPH_USE_SSE4_2
+
+$(OBJ)/engine/physics/%.o: engine/physics/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "  CXX  $<"
+	@$(CXX) $(PHYS_FLAGS) -c $< -o $@
+
+$(OBJ)/third_party/%.o: third_party/%.cpp
+	@mkdir -p $(dir $@)
+	@echo "  CXX  $< (jolt)"
+	@$(CXX) $(JOLT_FLAGS) -MMD -MP -c $< -o $@
 
 ENGINE_OBJ  := $(patsubst %.cpp,$(OBJ)/%.o,$(ENGINE_SRC))
 PIPE_OBJ    := $(patsubst %.cpp,$(OBJ)/%.o,$(PIPE_SRC))
@@ -45,12 +81,13 @@ MAIN_OBJ     := $(OBJ)/pipeline/main.o
 PIPELINE_BIN := $(BIN)/mumbai_pipeline
 SIM_BIN      := $(BIN)/mumbai_sim
 TEST_BIN     := $(BIN)/mumbai_tests
+PHYS_BIN     := $(BIN)/mumbai_phys
 
 TEST_SRC := $(wildcard tests/*.cpp)
 
-.PHONY: all test world simulate viewer serve clean all-checks stats verify-artifacts
+.PHONY: all test world simulate physics viewer serve clean all-checks stats verify-artifacts
 
-all: $(PIPELINE_BIN) $(SIM_BIN) $(TEST_BIN)
+all: $(PIPELINE_BIN) $(SIM_BIN) $(TEST_BIN) $(PHYS_BIN)
 
 $(OBJ)/%.o: %.cpp
 	@mkdir -p $(dir $@)
@@ -67,7 +104,7 @@ $(OBJ)/%.o: %.cpp
 # edit ever rebuilds main.cpp, and a header that changes the layout of Context
 # then links a stale main against fresh stages.  That is not a missing rebuild,
 # it is a segmentation fault at startup.
--include $(ENGINE_OBJ:.o=.d) $(PIPE_OBJ:.o=.d) $(MAIN_OBJ:.o=.d)
+-include $(ENGINE_OBJ:.o=.d) $(PIPE_OBJ:.o=.d) $(MAIN_OBJ:.o=.d) $(PHYS_OBJ:.o=.d) $(PHYS_MAIN:.o=.d) $(JOLT_OBJ:.o=.d)
 
 $(PIPELINE_BIN): $(PIPE_OBJ) $(ENGINE_OBJ) $(MAIN_OBJ)
 	@mkdir -p $(BIN)
@@ -78,6 +115,18 @@ $(SIM_BIN): $(ENGINE_OBJ) $(OBJ)/engine/app/sim_main.o
 	@mkdir -p $(BIN)
 	@echo "  LD   $@"
 	@$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
+
+# The harness reads Jolt headers too, so it uses the same flag set as the
+# physics sources (an explicit rule, because it lives outside engine/physics).
+$(PHYS_MAIN): engine/app/phys_main.cpp
+	@mkdir -p $(dir $@)
+	@echo "  CXX  $<"
+	@$(CXX) $(PHYS_FLAGS) -c $< -o $@
+
+$(PHYS_BIN): $(PHYS_OBJ) $(PHYS_MAIN) $(ENGINE_OBJ) $(JOLT_OBJ)
+	@mkdir -p $(BIN)
+	@echo "  LD   $@"
+	@$(CXX) $(CXXSTD) $(OPT) -g -pthread -I. -fno-rtti -fno-exceptions $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
 $(TEST_BIN): $(TEST_SRC) $(ENGINE_OBJ) $(PIPE_OBJ)
 	@mkdir -p $(BIN)
@@ -102,10 +151,17 @@ world: $(PIPELINE_BIN)
 simulate: $(SIM_BIN)
 	@$(SIM_BIN) --minutes 60 --vehicles 620
 
+# Physics acceptance harness (A2): the world's own baked collision geometry,
+# the Sea Link's stay capsules, both vehicle controllers, and the bulk
+# floating-origin shift — measured, not asserted.
+physics: $(PHYS_BIN)
+	@$(PHYS_BIN) --chunks data/processed/cells --minutes 1 --seconds 30 --props 200 \
+	             --fleet 24 --report build/physics_report.json
+
 # Independent verification of the published artifacts: the unit suite, the
 # runtime validation run, the viewer payload re-derived from its own offsets by
 # the Node verifier, and the integrity of the raw source data.
-all-checks: test simulate
+all-checks: test simulate physics
 	@node tests/verify_export.mjs
 	@node tests/verify_viewer_shaders.mjs
 	@bash tools/verify_artifacts.sh
