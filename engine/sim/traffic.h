@@ -102,6 +102,14 @@ struct BoidsWeights {
 // -----------------------------------------------------------------------------
 //  Vehicle
 // -----------------------------------------------------------------------------
+// The model's gap floor is an invariant of its own motion.  Where a body authored a
+// position (a promotion, or a handback that adopted the body's position), the model
+// needs a window to answer for the gap with the braking it can actually apply — 2 s
+// at 60 Hz.  Pairs inside that window are counted, not ignored (D-040).
+constexpr u64 kReconcileTicks = 120;
+// No tick has authored a position yet.
+constexpr u64 kNoTick = ~0ull;
+
 struct Vehicle {
     Archetype kind = Archetype::Car;
     u32 edge = 0;
@@ -149,6 +157,12 @@ struct Vehicle {
     // to `commandSpeed`, and the achieved state comes back through
     // `adoptPosition()`, so perception sees what the physics actually did.
     bool external = false;
+    // The last tick whose position this vehicle's `s` was authored by something
+    // other than the model's own integration — a promoted body (`adoptPosition`) or
+    // a handback (`demote`).  The lane-gap floor is an invariant of the model's own
+    // motion, so the audit exempts a pair inside the reconciliation window and
+    // *counts* it (D-040): an exemption that is not measured is a hole in a check.
+    u64 physicsAuthoredTick = kNoTick;
     f64 commandAccel = 0.0;    // m/s^2, IDM's answer this tick
     f64 commandSpeed = 0.0;    // m/s, where IDM would have put it this tick
     // How long an external vehicle has been held at the end of an edge (a dead
@@ -231,6 +245,9 @@ struct TrafficMetrics {
     u64 deadEndUTurns = 0;
     u64 graphContradictions = 0;   // bodies whose node had no arm they could take
     u64 laneViolations = 0;        // pairs in one lane closer than the floor
+    // Pairs that were closer than the floor but whose positions physics authored
+    // within the reconciliation window: not a model failure, and not hidden either.
+    u64 laneViolationsExempted = 0;
     u64 anchorReleases = 0;        // external vehicles the model took back
     u64 orphanRepairs = 0;         // lane-list entries rebuilt for a driven vehicle
     f64 maxLateralG = 0.0;         // worst lean seen, across all two-wheelers
@@ -261,6 +278,9 @@ public:
 
     // Exposed for tests and for a renderer that wants to draw them.
     const std::vector<Vehicle>& vehicles() const { return m_vehicles; }
+    // The model's own tick counter.  The reconciliation window is measured in ticks,
+    // so a test (and the harness) can see where the window is.
+    u64 tick() const { return m_tick; }
     const std::vector<SimEdge>& edges() const { return m_edges; }
     const std::vector<SignalPhase>& signals() const { return m_signals; }
     const BoidsWeights& boids() const { return m_boids; }
@@ -425,6 +445,10 @@ private:
     u64 m_boidsUpdates = 0, m_separationEvents = 0;
     u64 m_tipLimits = 0, m_hailStops = 0, m_hardBrakes = 0;
     u64 m_badState = 0, m_badSpeed = 0, m_badPosition = 0, m_laneViolations = 0;
+    u64 m_laneViolationsExempted = 0;
+    // The simulation's own tick counter, so an exemption window is measured in ticks
+    // and not in wall-clock time.
+    u64 m_tick = 0;
     bool m_auditTrace = false;
     // Scratch reused every tick so that no tick allocates.
     std::vector<std::vector<u32>> m_edgeOrder;    // vehicles per edge, sorted by s
@@ -462,6 +486,10 @@ inline constexpr f64 kAnchorHoldSeconds = 12.0;
 // Minimum bumper-to-bumper separation the safety projection enforces.  A floor,
 // not a target: IDM normally holds 2-15 m.
 inline constexpr f64 kMinGap = 0.5;
+// The model's gap floor is an invariant of its own motion.  Where a body authored a
+// position (a promotion, or a handback that adopted the body's position), the model
+// needs a window to answer for the gap with braking it can actually apply — 2 s at
+// 60 Hz.  Pairs inside that window are counted, not ignored (D-040).
 // Admissions — a vehicle joining a lane, whether it drove in, changed into it, or
 // was placed there by the population device — are held to the floor plus this
 // margin, so that corrections, which hold exactly the floor, always have slack to

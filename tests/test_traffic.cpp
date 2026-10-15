@@ -996,3 +996,86 @@ TEST(theRuntimeSignalsAJunctionNoSingleChunkCouldDescribe) {
     CHECK(along > 0u);
     CHECK(cross > 0u);
 }
+
+// -----------------------------------------------------------------------------
+//  The gap floor after a handback (D-040, roadmap 4i)
+// -----------------------------------------------------------------------------
+// The floor is an invariant of the model's own motion: where a promoted body drove
+// the vehicle and a handback adopted the body's position, the model has not yet had
+// a tick in which to answer for the gap with the braking it can apply — and it
+// cannot push a body away, only brake for it.  The excuse is bounded by
+// `kReconcileTicks` and *counted*, so it cannot become a hole in the check.
+TEST(aGapFloorFailsForAModelPairAndIsExemptedAndCountedAfterAHandback) {
+    SyntheticWorld w;
+    Straight s;
+    s.segments = 10;
+    s.segLen = 60.0;
+    s.lanes = 1;
+    s.limit = 50.0f;
+    s.loop = true;
+    w.add(s);
+    const std::string path = w.write("handbackgap");
+    CHECK_FALSE(path.empty());
+    if (path.empty()) return;
+
+    // Both cars on ONE edge of the loop, 45 m apart, so the lane list holds both and
+    // the pairwise floor is what is measured.  `spawn` is called directly rather than
+    // through the file's `place()` helper: that helper returns 0 both for a refusal
+    // and for the first vehicle the model ever created, and a test cannot tell those
+    // apart.  `spawn` refuses an occupied point by design, so the overlap is written
+    // onto the model afterwards instead of being spawned.
+    struct Pair { u32 lead = 0, follower = 0; };
+    const auto makePair = [&](sim::Traffic& t) -> Pair {
+        Pair p;
+        const size_t before = t.vehicles().size();
+        p.lead = t.spawn(sim::Archetype::Car, 1, 0, 55.0, 0.5);
+        CHECK_EQ(t.vehicles().size(), before + 1);
+        const size_t mid = t.vehicles().size();
+        p.follower = t.spawn(sim::Archetype::Car, 1, 0, 10.0, 0.5);
+        CHECK_EQ(t.vehicles().size(), mid + 1);
+        return p;
+    };
+    const auto overlap = [&](sim::Traffic& t, const Pair& p) {
+        const sim::Vehicle& lead = t.vehicles()[p.lead];
+        const_cast<sim::Vehicle&>(t.vehicles()[p.follower]).s = lead.s - 2.0;
+    };
+
+    {
+        // (a) the model owns both positions: the violation is counted, nothing excused.
+        sim::Traffic t({path}, {}, Vec2d{0, 0}, 0, 7);
+        const Pair p = makePair(t);
+        CHECK_EQ(t.vehicles().size(), 2u);
+        CHECK_EQ(t.vehicles()[p.lead].edge, t.vehicles()[p.follower].edge);
+        overlap(t, p);
+        t.audit(1e9, -1e9, 1e9, -1e9);
+        const sim::TrafficMetrics m = t.metrics(Vec2d{0, 0}, 1e9);
+        CHECK(m.laneViolations >= 1u);
+        CHECK_EQ(m.laneViolationsExempted, 0u);
+    }
+    {
+        // (b) the same overlap after a handback in this tick: excused, and counted as
+        //     excused, so the excuse is visible in the harness output.
+        sim::Traffic t({path}, {}, Vec2d{0, 0}, 0, 7);
+        const Pair p = makePair(t);
+        CHECK_EQ(t.vehicles().size(), 2u);
+        CHECK(t.promote(p.follower));
+        t.adoptPosition(p.follower, Vec2d{100.0, 0.0}, 0.0, 0.0);
+        t.demote(p.follower);
+        CHECK_EQ(t.tick() - t.vehicles()[p.follower].physicsAuthoredTick, 0u);
+        overlap(t, p);
+        t.audit(1e9, -1e9, 1e9, -1e9);
+        {
+            const sim::TrafficMetrics m = t.metrics(Vec2d{0, 0}, 1e9);
+            CHECK_EQ(m.laneViolations, 0u);
+            CHECK(m.laneViolationsExempted >= 1u);
+        }
+        // Bounded in time: two seconds of ticks later the model owns the position
+        // again and the same overlap is a violation.
+        for (u64 i = 0; i < sim::kReconcileTicks + 1; ++i) t.step(1.0 / 60.0);
+        CHECK(t.tick() - t.vehicles()[p.follower].physicsAuthoredTick >= sim::kReconcileTicks);
+        CHECK_EQ(t.vehicles()[p.lead].edge, t.vehicles()[p.follower].edge);
+        overlap(t, p);
+        t.audit(1e9, -1e9, 1e9, -1e9);
+        CHECK(t.metrics(Vec2d{0, 0}, 1e9).laneViolations >= 1u);
+    }
+}

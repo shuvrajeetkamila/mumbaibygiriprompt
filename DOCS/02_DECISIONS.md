@@ -1738,6 +1738,91 @@ names the owner of each member of a violating pair).
 
 ---
 
+## D-040 — The gap floor gets a bounded, counted excuse; the junction patch was being laid on the ground instead of on the road
+
+**Decision.** Two roadmap items, both of which had been filed from measurements and
+neither of which could be closed by reasoning.  One is closed; the other is *narrowed*
+with the instrument that produced the number, and the road surface is now one function
+of position for every part of it.
+
+**1. Item 4i — the model's gap floor after a handback.**  A pair of vehicles in one
+lane closer than the floor was counted as a model failure even when physics had
+authored one of the two positions: the audit runs once at the end of the section, by
+which time a handback has adopted the body's position (`adoptPosition`) and the model
+has not had a tick to answer for the gap with braking it can actually apply — the
+model can slow down, it cannot push a body away.  The rule now: a pair whose member
+had its position authored by something other than the model's own integration within
+`kReconcileTicks` (2 s) is **excused and counted** (`laneViolationsExempted`), and the
+excuse expires, after which the floor is strict again.  Both halves are proved by a
+new unit test: an overlap the model owns is a violation with nothing excused; the same
+overlap after `promote → adoptPosition → demote` is excused and counted; and 2 s of
+ticks later, the same overlap is a violation again.  The harness prints the excuse
+count beside the violations, so the exemption cannot become a hole in the check:
+
+```
+[PASS] the model keeps its invariants while half its fleet is physical — 141 vehicles
+       (25.4 km/h mean), 923 edge completions (+812), 50 lane changes, 0 invalid
+       states, 0 lane violations, 0 gap pairs exempt (physics authored a position
+       within the last 2 s)
+```
+
+`make test` is **59 cases / 1546 checks / 0 failing** (58/1529 before).
+
+**2. Item 4h — the ceilings above lanes.**  8.96 % of lane points had a road surface
+within a car's 2.6 m above them.  Three instruments were added and the population was
+measured layer by layer: a clearance histogram (28,035 under 0.25 m — kerb and sidewalk
+strips of a crossing street, which is what a junction of two strips *is*), a layer
+attribution (of 85,596 ceilings: **74,605 are a road/structure mesh**, 10,968 a terrain
+heightfield, 23 a built compound), a named dump (edge, class, the ceiling's body and
+the heights of every other street passing within 3 m), a **cross-section probe** (the
+clearance at −2, −1, 0, +1, +2 m across the lane) and a **per-cell census**.
+
+The census is what made the answer unavoidable: 29,800 ceilings in **485 cells**, worst
+cells the junction-dense ones, and the cross-section says a *slab across the whole
+street* rather than a strip beside it: at (−9427.9, 2738.7) the clearance is
+`1.84 1.84 [1.84] 1.84 1.84` from −2 m to +2 m.  Reading the ribbon builder against
+that, one candidate was exactly the right shape:
+
+```cpp
+// before
+const f64 y = ctx.terrainHF.sample(j.position.x, j.position.y) + 0.045;
+```
+
+**The junction patch — the octagon that fills the trimmed gap at every junction — was
+laid on the raw DEM while the ribbons around it were draped on the smoothed profile.**
+Wherever the DEM is above the smoothed surface (every step, kerb, seawall and embankment
+the smoothing exists to hide) the patch floated above the street it fills, and a car at
+that junction had a slab over its lane at the height of the smoothing's own amplitude.
+
+Two changes: the drape is now a **function of position** (`roadDrapeAt`, the separable
+[1 4 6 4 1]/16 equivalent of the two-pass 1-2-1; the ribbon, the navigation graph and
+the patch all sample it, so they cannot disagree about where the road is), and the patch
+is laid 2 cm above that surface instead of on the ground.
+
+**What that fixed, honestly.**  The ceiling population moved from 29,800 to 29,025 —
+about 775, i.e. the patches were a real defect with a small share of the population.
+The remainder (17,129 in the 0.5–1 m bin, 9,914 in the 1–2 m bin, all road meshes, no
+strip geometry) is **not explained yet**, and this entry does not pretend otherwise:
+what is recorded is the evidence — a full-width slab, a road mesh, spread over 485
+cells, present at every lateral offset — so that the next pass starts from the
+instrument rather than from a guess.  A hypothesis worth testing next: the survey's
+headroom ray starts 0.2 m above the measured ground and the *same* mesh it is standing
+on has a surface above that point within the band (a mesh ray reports a hit on a
+triangle it exits, not only one it meets), which would make these *exit* hits of the
+surface the vehicle is on — to be answered by casting from above and walking down.
+
+**What is unchanged and green.**  `make physics` 56 checks / 0 failed; `make test` 59 /
+1546 / 0; `verify_export` 396 / 0; the lane survey `within 0.25 m 99.3 %`, worst
+2.98 m, signed mean +0.007 m; the nav-node-in-building measurement 0.01 %.
+
+**Files.**  `engine/sim/traffic.{h,cpp}` (the reconciliation window, its counter, the
+audit's rule), `tests/test_traffic.cpp` (both halves of the rule, 3 cases of 13 checks),
+`pipeline/stages/network.cpp` (`roadDrapeAt`, the junction patch), `engine/physics/driver.{h,cpp}`
+(the clearance histogram, the layer attribution, the cross-section probe, the per-cell
+census), `engine/app/phys_main.cpp` (the reports).
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

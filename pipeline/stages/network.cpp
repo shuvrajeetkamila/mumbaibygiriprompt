@@ -304,21 +304,34 @@ void planarizeCrossings(Context& ctx, std::vector<detail::WaySpec>& ways) {
 // ground under it.  The graph samples it *by position* (`heightAlong`) rather than
 // by index: `points` is the mesh chain and `navPoints` is that chain plus a vertex
 // at every at-grade crossing, so the two lists are not the same list.
+// The surface the road is *deposited* on, as a pure function of position.  It is
+// the two-pass 1-2-1 the ribbon has always used, applied as its separable
+// equivalent ([1 4 6 4 1]/16, a six-metre Gaussian): the smoothing exists so a road
+// does not inherit the heightfield's metre-scale steps as visible ridges, and making
+// it a function of the place rather than of each way's chain is what lets *every*
+// road surface — the ribbon, the navigation graph and the junction patches — be the
+// same surface (D-040).
+f64 roadDrapeAt(const Context& ctx, f64 x, f64 z) {
+    constexpr f64 kStep = 6.0;
+    constexpr f64 w[5] = {1.0 / 16.0, 4.0 / 16.0, 6.0 / 16.0, 4.0 / 16.0, 1.0 / 16.0};
+    f64 sum = 0.0;
+    for (int i = 0; i < 5; ++i)
+        for (int j = 0; j < 5; ++j)
+            sum += w[i] * w[j] * ctx.terrainHF.sample(x + (i - 2) * kStep,
+                                                      z + (j - 2) * kStep);
+    return sum;
+}
+
 std::vector<f64> drapeRoadHeights(const Context& ctx, const detail::WaySpec& wi,
                                   const std::vector<Vec2d>& pts) {
     std::vector<f64> heights(pts.size());
     for (size_t i = 0; i < pts.size(); ++i) {
-        f64 h = ctx.terrainHF.sample(pts[i].x, pts[i].y);
-        if (wi.bridge) h += 6.0 + 0.02 * static_cast<f64>(i);   // bridges clear the ground
+        // A bridge is a structure, not a drape: it clears the ground and is never
+        // smoothed into it.
+        const f64 h = wi.bridge ? ctx.terrainHF.sample(pts[i].x, pts[i].y) +
+                                      6.0 + 0.02 * static_cast<f64>(i)
+                                : roadDrapeAt(ctx, pts[i].x, pts[i].y);
         heights[i] = h + wi.profile.layerOffset;
-    }
-    if (!wi.bridge) {
-        std::vector<f64> smoothed = heights;
-        for (int pass = 0; pass < 2; ++pass) {
-            for (size_t i = 1; i + 1 < smoothed.size(); ++i)
-                smoothed[i] = (heights[i - 1] + heights[i] * 2.0 + heights[i + 1]) * 0.25;
-            heights.swap(smoothed);
-        }
     }
     return heights;
 }
@@ -899,7 +912,16 @@ bool buildRoads(Context& ctx) {
         if (!cdp) continue;                       // outside the world extent
         CellData& cd = *cdp;
         const Vec3 off{static_cast<f32>(cd.origin.x), 0.0f, static_cast<f32>(cd.origin.y)};
-        const f64 y = ctx.terrainHF.sample(j.position.x, j.position.y) + 0.045;
+        // The patch must be the *road*, not the ground under it.  It used to be the
+        // raw DEM plus 4.5 cm, while the ribbons around it were draped on the smoothed
+        // profile: at every junction where the DEM is higher than the smoothed surface
+        // — every step, kerb, seawall and embankment the smoothing exists to hide —
+        // the octagon floated above the street it fills, and a car at that junction had
+        // a slab 0.5-2.6 m above its lane (measured: 29,800 lane points in 485 cells,
+        // the worst cells the ones with the most junctions, D-040).  2 cm above the
+        // drape keeps it out of the ribbons' own 2-7 cm layer offsets while staying
+        // inside the pavement.
+        const f64 y = roadDrapeAt(ctx, j.position.x, j.position.y) + 0.02;
         const u32 zone = static_cast<u32>(ZoningZone::Unknown);
         cd.roads.beginSubmesh(matJunction, zone);
         const int sides = 8;

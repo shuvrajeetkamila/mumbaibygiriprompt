@@ -587,6 +587,80 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
                 const u32 hb = clear < 0.25 ? 0u : clear < 0.5 ? 1u : clear < 1.0 ? 2u
                                : clear < 2.0 ? 3u : clear < 2.6 ? 4u : 5u;
                 ++out.headroomBins[hb];
+                const u8 hl = layerOfBody(world, up.body);
+                if (hl < 3) ++out.headroomLayer[hl];
+                // A non-kerb ceiling deserves a name: the edge, what it is measured
+                // against, and the height of every *other* street passing within
+                // three metres of the lane centre — which is the whole question.
+                if (clear > 0.5 && clear < 2.6) {
+                    ++out.ceilingsTotal;
+                    const i64 cx = static_cast<i64>(std::floor(at.x / 1024.0));
+                    const i64 cz = static_cast<i64>(std::floor(at.y / 1024.0));
+                    ++out.ceilingsByCell[(static_cast<u64>(static_cast<u32>(cx)) << 32) |
+                                         static_cast<u32>(cz)];
+                }
+                if (m_settings.surveyTrace && clear > 0.5 && clear < 2.6 && out.ceilingNamed < 6) {
+                    ++out.ceilingNamed;
+                    std::printf("          ceiling %.2f m above a lane on edge %zu cls %u lanes %u "
+                                "at (%.1f, %.1f) model %.2f: %s\n",
+                                clear, ei, static_cast<unsigned>(e.cls),
+                                static_cast<unsigned>(lanes), at.x, at.y, model,
+                                describeBody(world, up.body,
+                                             Vec3(static_cast<f32>(at.x),
+                                                  static_cast<f32>(ground + clear),
+                                                  static_cast<f32>(at.y))).c_str());
+                    // The cross-section: the same up-ray at lateral offsets across the
+                    // lane.  A ceiling that is present at one offset and absent at its
+                    // neighbour is a strip beside the lane (a kerb, a median, a wall); a
+                    // ceiling present everywhere is a slab over the street (a deck).
+                    {
+                        char line[320];
+                        int lw = std::snprintf(line, sizeof(line), "            cross-section:");
+                        for (int li = -2; li <= 2; ++li) {
+                            const Vec2d q = at + e.normal * (li * 1.0);
+                            f64 from = ground + 0.2;
+                            f64 clearHere = -1.0;
+                            for (int peel = 0; peel < 3; ++peel) {
+                                const World::RayHit h2 = world.rayCastStatic(
+                                    Vec3(static_cast<f32>(q.x), static_cast<f32>(from),
+                                         static_cast<f32>(q.y)),
+                                    Vec3(0.0f, 1.0f, 0.0f), 12.0f);
+                                if (!h2.hit) break;
+                                const f64 c = from - ground - 0.2 + h2.fraction * 12.0;
+                                if (h2.fraction * 12.0 > 0.05) { clearHere = c; break; }
+                                from = ground + 0.2 + (0.6 + 0.6 * static_cast<f64>(peel));
+                                if (from > ground + 3.0) break;
+                            }
+                            lw += std::snprintf(line + lw, sizeof(line) - static_cast<size_t>(lw),
+                                                li == 0 ? " [%.2f]" : " %.2f", clearHere);
+                        }
+                        std::printf("%s  (m of clearance at -2..+2 m across the lane; -1 none)\n", line);
+                    }
+                    const std::vector<sim::SimEdge>& all = traffic.edges();
+                    int shown = 0;
+                    for (size_t oe = 0; oe < all.size() && shown < 3; ++oe) {
+                        if (oe == ei) continue;
+                        const sim::SimEdge& o = all[oe];
+                        const Vec2d d = o.b - o.a;
+                        const f64 len2 = d.lengthSq();
+                        if (len2 < 1e-6) continue;
+                        f64 t = ((at - o.a).dot(d)) / len2;
+                        if (t < -0.05 || t > 1.05) continue;
+                        t = std::clamp(t, 0.0, 1.0);
+                        const Vec2d q = o.a + d * t;
+                        const f64 dist = (at - q).length();
+                        if (dist > 3.0) continue;
+                        std::printf("            another street passes %.1f m away: edge %zu cls %u "
+                                    "lanes %u at height %.2f (%.2f m %s this lane)\n",
+                                    dist, oe, static_cast<unsigned>(o.cls),
+                                    static_cast<unsigned>(o.lanes),
+                                    traffic.laneHeight(o, t * static_cast<f64>(o.length)),
+                                    traffic.laneHeight(o, t * static_cast<f64>(o.length)) - model,
+                                    traffic.laneHeight(o, t * static_cast<f64>(o.length)) > model
+                                        ? "above" : "below");
+                        ++shown;
+                    }
+                }
                 if (clear < 2.0) ++out.headroomUnderAny;
             }
             const f64 probeY = ground + chassisRestHeight(sim::Archetype::Car) + kAttachClearance;

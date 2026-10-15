@@ -126,22 +126,22 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
    **91.3 % → 99.3 %**, mean signed error **+0.060 → +0.007 m**, the whole tail
    68,607 → **906 samples**.  The ribbon and the graph are now one surface by
    construction (`drapeRoadHeights`, sampled by position).
-4i. **The model's gap floor after a handback.**  Filed with an exact reproduction by
-   D-039: the audit runs once at the end of the section, after every handback has
-   adopted a physics position, and its exemption covers only pairs where *both*
-   members are still physical — so a bus and a rickshaw adopting a physical position
-   1.49 m apart in one lane (`edge 5836 lane 0 idx 52 vs 55, gap -1.4940 m`) reads as
-   a model failure.  Fix designed: exempt pairs with a member handed back in the same
-   tick, and audit the end state before the handbacks.
-4h. **Junction ribbons are stacked.**  The defect the fixed instrument uncovered
-   (D-038): **8.96 % of lane points have a road surface within a car's 2.6 m above
-   them**, because each way smooths its own drape profile and two streets crossing at
-   a point can disagree by 0.05–1.5 m — two colliders, one above the other, at an
-   at-grade junction (the footprint-step counter sees the same: 4.09 % of lane
-   footprints step by more than 0.35 m).  Fix designed: make the smoothing a function
-   of *position* — one smoothed drape field every way samples — so two roads crossing
-   at a point have one height there by construction.  This is now the next pipeline
-   item.
+4i. ~~**The model's gap floor after a handback**~~ — **fixed** (D-040): a pair whose
+   member had its position authored by physics within 2 s is excused *and counted*
+   (`laneViolationsExempted`, printed beside the violations), and the excuse expires.
+   Both halves — the model-owned overlap still failing, the handback overlap excused
+   and then strict again 2 s later — are unit tests (59 cases / 1546 checks / 0).
+4h. **The ceilings above lanes — one cause fixed, the rest instrumented.**  D-038
+   named the population; D-040 measured it layer by layer (74,605 of 85,596 ceilings
+   are a road/structure mesh), by cross-section (a slab across the whole street, not a
+   strip), and by cell (29,800 over 485 cells, worst = the junction-dense ones).  The
+   **junction patch was being laid on the raw DEM** instead of on the road
+   (`terrainHF.sample(...) + 0.045`) while the ribbons were draped on the smoothed
+   profile — fixed (the drape is now one function of position, `roadDrapeAt`, shared by
+   ribbon, graph and patch): ceiling population 29,800 → 29,025.  The remainder —
+   17,129 in the 0.5–1 m bin, 9,914 in 1–2 m, all road meshes — is open, with the
+   instruments in place and one hypothesis to test next (the headroom ray may be
+   counting *exit* hits of the very surface the vehicle stands on).
 4b. **The road surface as one description.**  Answered by D-038 above; the remaining
    D-034's own numbers: `pipeline/stages/output.cpp` grades the road into the
    collision grid (`gradeRoadsIntoGrid`, n = 128) and `pipeline/stages/network.cpp`

@@ -1488,6 +1488,26 @@ int main(int argc, char** argv) {
                                            " %+.2f:%.1f%%",
                                            -3.0 + (static_cast<f64>(b) + 0.5) * 0.25, pct);
                 }
+                if (lv.ceilingsTotal > 0) {
+                    std::vector<std::pair<u64, u64>> cells(lv.ceilingsByCell.begin(),
+                                                           lv.ceilingsByCell.end());
+                    std::sort(cells.begin(), cells.end(),
+                              [](const auto& a2, const auto& b2) { return a2.second > b2.second; });
+                    std::printf("        ceilings 0.5-2.6 m above a lane: %llu in %zu cells; worst:",
+                                static_cast<unsigned long long>(lv.ceilingsTotal), cells.size());
+                    for (size_t i2 = 0; i2 < cells.size() && i2 < 6; ++i2) {
+                        const i32 cx = static_cast<i32>(cells[i2].first >> 32);
+                        const i32 cz = static_cast<i32>(cells[i2].first & 0xFFFFFFFFu);
+                        std::printf(" (%d,%d):%llu", cx, cz,
+                                    static_cast<unsigned long long>(cells[i2].second));
+                    }
+                    std::printf("\n");
+                }
+                std::printf("        of those ceilings: %llu are a terrain heightfield, %llu a "
+                            "road/structure mesh, %llu a built compound\n",
+                            static_cast<unsigned long long>(lv.headroomLayer[0]),
+                            static_cast<unsigned long long>(lv.headroomLayer[1]),
+                            static_cast<unsigned long long>(lv.headroomLayer[2]));
                 std::printf("        clearance above a lane, by size: <0.25 m %llu, 0.25-0.5 %llu, "
                             "0.5-1 %llu, 1-2 %llu, 2-2.6 %llu, >=2.6 %llu\n",
                             static_cast<unsigned long long>(lv.headroomBins[0]),
@@ -1731,12 +1751,15 @@ int main(int argc, char** argv) {
         require(modelClean && after.edgeCompletions > before.edgeCompletions,
                 "the model keeps its invariants while half its fleet is physical",
                 sfmt("%zu vehicles (%.1f km/h mean), %llu edge completions (+%llu), %llu lane "
-                     "changes, 0 invalid states, %llu lane violations",
+                     "changes, 0 invalid states, %llu lane violations, %llu gap pairs exempt "
+                     "(physics authored a position within the last %.0f s)",
                      after.vehicles, after.meanSpeedKph,
                      static_cast<unsigned long long>(after.edgeCompletions),
                      static_cast<unsigned long long>(after.edgeCompletions - before.edgeCompletions),
                      static_cast<unsigned long long>(after.laneChanges),
-                     static_cast<unsigned long long>(after.laneViolations)));
+                     static_cast<unsigned long long>(after.laneViolations),
+                     static_cast<unsigned long long>(after.laneViolationsExempted),
+                     static_cast<f64>(sim::kReconcileTicks) / 60.0));
         if (g_trace)
             std::printf("      model: %llu anchor releases, %llu lane-list repairs, %llu junction "
                         "holds, %llu dead-end holds, %llu U-turns at dead ends\n",

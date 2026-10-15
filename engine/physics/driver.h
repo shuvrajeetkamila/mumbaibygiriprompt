@@ -339,6 +339,15 @@ public:
         // 2.6 or more (a car fits).  A count of "below 2.6 m" cannot tell a kerb
         // from a ribbon lying across the street (D-038).
         u64 headroomBins[6] = {};
+        // Which layer the ceiling belongs to: 0 a terrain heightfield, 1 a road or
+        // structure mesh, 2 a built compound.  A ceiling that is a road mesh 0.5-2 m
+        // above a lane is a *second ribbon* over the first (D-040).
+        u64 headroomLayer[3] = {};
+        u32 ceilingNamed = 0;   // how many non-kerb ceilings the trace has named
+        // Where the non-kerb ceilings are, by 1024 m cell: a defect spread over the
+        // city is structural, one concentrated in a few cells is a place (D-040).
+        std::unordered_map<u64, u64> ceilingsByCell;
+        u64 ceilingsTotal = 0;
         u64 diagnosed = 0;         // samples whose rays were dumped (surveyTrace)
         std::vector<BlockedSample> examples;
         u64 stepped = 0;           // more than `footprintStepTolerance` of step

@@ -429,6 +429,7 @@ void Traffic::demote(u32 idx) {
     Vehicle& veh = m_vehicles[idx];
     if (!veh.external) return;
     veh.external = false;
+    veh.physicsAuthoredTick = m_tick;
     veh.commandAccel = 0.0;
     veh.commandSpeed = veh.v;
     // The model resumes the lateral tracker from wherever the body left the
@@ -477,6 +478,7 @@ void Traffic::adoptPosition(u32 idx, const Vec2d& p, f64 speed, f64 heading) {
     if (!veh.external) return;
     veh.heading = static_cast<f32>(heading);
     veh.headingValid = true;
+    veh.physicsAuthoredTick = m_tick;
     const SimEdge& e = m_edges[veh.edge];
     const Vec2d rel = p - e.a;
     const f64 along = rel.x * e.dir.x + rel.y * e.dir.y;
@@ -1549,6 +1551,7 @@ void Traffic::setDenseAnchor(const Vec2d& anchor, f64 radius) {
 //  Public step
 // -----------------------------------------------------------------------------
 void Traffic::step(f64 dt) {
+    ++m_tick;
     collectActiveEdges();
     leadersAndSignals();
     longitudinal(dt);
@@ -1582,6 +1585,7 @@ void Traffic::step(f64 dt) {
             veh.heldSeconds += dt;
             if (veh.heldSeconds > kAnchorHoldSeconds) {
                 veh.external = false;
+                veh.physicsAuthoredTick = m_tick;
                 veh.heldSeconds = 0.0;
                 ++m_anchorReleases;
             }
@@ -1630,6 +1634,22 @@ void Traffic::audit(f64 minX, f64 maxX, f64 minZ, f64 maxZ) {
                 // floor stands exactly as before.
                 if (m_vehicles[list[k]].external && m_vehicles[list[k - 1]].external) continue;
                 if (ahead.s - ahead.length - behind.s < kMinGap - 1e-6) {
+                    // Whose position is this?  The floor is an invariant of the
+                    // model's own motion: where a promoted body drove the vehicle, or
+                    // where a handback adopted the body's position within the
+                    // reconciliation window, the model has not yet had a tick in
+                    // which to answer for the gap — and it cannot push a body away,
+                    // only brake for it.  Counted, never silent (D-040).
+                    const bool physicsOwns =
+                        m_vehicles[list[k]].external || m_vehicles[list[k - 1]].external ||
+                        (m_vehicles[list[k]].physicsAuthoredTick != kNoTick &&
+                         m_tick - m_vehicles[list[k]].physicsAuthoredTick < kReconcileTicks) ||
+                        (m_vehicles[list[k - 1]].physicsAuthoredTick != kNoTick &&
+                         m_tick - m_vehicles[list[k - 1]].physicsAuthoredTick < kReconcileTicks);
+                    if (physicsOwns) {
+                        ++m_laneViolationsExempted;
+                        continue;
+                    }
                     ++m_laneViolations;
                     if (m_auditTrace)
                         std::fprintf(stderr,
@@ -1701,6 +1721,7 @@ TrafficMetrics Traffic::metrics(const Vec2d& camera, f64 radius) const {
     m.badSpeed = m_badSpeed;
     m.badPosition = m_badPosition;
     m.laneViolations = m_laneViolations;
+    m.laneViolationsExempted = m_laneViolationsExempted;
     m.anchorReleases = m_anchorReleases;
     m.orphanRepairs = m_orphanRepairs;
     m.maxLateralG = m_maxLateralG;
