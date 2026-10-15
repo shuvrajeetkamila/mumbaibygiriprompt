@@ -1560,6 +1560,98 @@ per-tick run tracker, the single-tick/sustained split), `engine/app/phys_main.cp
 
 ---
 
+## D-038 — The two descriptions of the road already agreed; the survey was looking at the top of two stacked surfaces
+
+**Decision.** Roadmap item 4b was, in D-036's words, "the next pipeline item": three
+descriptions of one street — the road ribbon mesh (render and collision), the
+navigation graph the traffic model drives on, and the terrain grid graded under both
+— agreeing within 0.25 m at only 84.7–91.4 % of lane points, with a 7–8 % tail
+reaching +1.2 m.  Following it to its cause, the way D-036 followed the 29.54 m
+"wall as ground", ended in an instrument finding and one real consistency defect,
+and it replaced the tail with a new, named one.
+
+**1. The signed distribution, measured first.**  The survey had only magnitudes, and
+a magnitude cannot say which of two layers should follow the other, so it now
+reports the signed disagreement (ground − model) in 0.25 m bins:
+
+```
+signed ground-model (m), 0.25 m bins: -0.12:28.0% +0.12:63.3% +0.38:3.5%
+                                      +0.62:2.2% +0.88:1.5% +1.12:0.8%
+                                      beyond ±3 m: 0/854696  mean +0.060 m
+```
+
+Every bin beyond a quarter of a metre is **positive**.  The collision ground is
+above the model's road where the two disagree, and never lower — which is the shape
+of one specific defect (the model's road is buried under something) and not of
+noise.
+
+**2. Which layer the tail hits.**  `rawGroundAt` now reports the layer of the body
+it measured (a terrain heightfield, a road/structure mesh, or a built compound).
+Of the 68,607 samples where the ground was more than 0.25 m above the model's road:
+**64,698 hit a road or structure mesh**, 3,907 a terrain heightfield, 2 a building.
+The tail is not a buried ribbon or a building over a lane — it is **one road surface
+sitting above another**.
+
+**3. The mechanism is the ray, not the city.**  A ray stops at the first surface it
+meets.  The survey fired five probes down from `near + 1.2` … `+30` and kept the hit
+closest to the model's road — but where two ribbons overlap in plan, which is every
+junction of the 107,764-way network (82,933 junction candidates), *all five probes
+report the upper ribbon*.  The "disagreement" was the instrument looking at the top
+layer.  `rawGroundAt` now **peels**: it casts down from the top of the band, records
+the surface, restarts the ray just below it, and repeats up to five times, so the
+surfaces in the band are enumerated top-down and the candidate closest to the model's
+road wins — which is the one a wheel rests on.  The headroom ray peels upward for the
+same reason (a ray fired from just above a lane can start *inside* the upper ribbon,
+and Jolt reports that as a hit at fraction 0).
+
+Measured after: `within 0.25 m 91.3 % → 99.3 %`, within 0.5 m 99.3 %, within 2 m
+99.4 %, worst 2.97 m, and the signed histogram is **two bins and nothing else**
+(−0.12 m: 28.4 %, +0.12 m: 70.8 %), **mean +0.060 m → +0.007 m**.  The tail above
+0.25 m fell from 68,607 to **906** samples.  The three descriptions of one street
+were, in fact, already agreeing: the "7.8 % of lane points put 0.3–1.2 m below the
+thing they are standing on" of D-037's own entry was the instrument's view through the
+top layer of a junction.
+
+**4. The one real consistency defect, fixed by construction.**  The ribbon drapes the
+DEM and then smooths the profile over two 1-2-1 passes — deliberately, so a road does
+not inherit the heightfield's noise as visible steps — while the navigation graph took
+the raw sample of the same terrain.  The two could therefore never agree except by
+accident.  The drape and the smoothing now live in one function
+(`drapeRoadHeights`) and the graph samples that profile **by position**
+(`heightAlong`: the mesh chain `points` and the navigation chain `navPoints` are
+different lists — `navPoints` carries a vertex at every at-grade crossing), so the
+nodes sit on the surface the ribbon draws.  This alone moved the survey by 0.1 %
+(91.4 % → 91.3 %): it is a consistency fix, and its value is that the two surfaces
+can no longer drift, not that it changed today's numbers.
+
+**5. What replaced the tail is a real defect, and it is named.**  With the ground
+measured correctly, the *headroom* counter now sees the other half of the same
+geometry: **8.96 % of lane points (76,546 of the 85,596 with any surface above them)
+have a surface within a car's 2.6 m**, minimum 0.05 m.  Strip away the ray artefacts —
+the upward peel removed the fraction-0 hits — and what remains is genuine: at a
+junction between two synthesised streets, **both ribbons are colliders and they are
+stacked 0.05–1.5 m apart**, because each way smooths its own profile and the two
+smoothings do not agree at the point they cross.  (The survey's own footprint-step
+counter sees the same thing: 4.09 % of lane footprints step by more than 0.35 m.)
+A car that changes direction at such a junction meets a step it cannot see.
+
+The fix is designed and not yet made: the smoothing must be a function of
+**position**, not of each way — one smoothed drape field that every way samples —
+after which two roads crossing at a point have the same height there by construction.
+That is the next item in 4b.
+
+**What is unchanged, and still green.**  `make physics` **56 checks / 0 failed**;
+`make test` 58 cases / 1529 checks / 0; the 60-minute S7 run **PASS** (572 vehicles,
+mean 28.2 km/h, frame p99 1.74 ms); `verify_export` 396 / 0; the nav-node-in-building
+measurement 0.01 % (11 of 124,348) and the lane-sample measurement 0.020 % (999 of
+5,070,900, all 56 surveyed footprints) unchanged by this work.
+
+**Files.**  `pipeline/stages/network.cpp` (`drapeRoadHeights`, `heightAlong`, both
+callers), `engine/physics/driver.{h,cpp}` (the signed histogram, the layer
+attribution, the downward and upward peels), `engine/app/phys_main.cpp` (the report).
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

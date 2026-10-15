@@ -319,8 +319,30 @@ namespace {
 // a survey that accepted the model's own number wherever the collision disagreed
 // could never report a disagreement larger than the tolerance, which is exactly
 // the check-that-cannot-fail this project keeps finding (D-034).
+// Which collision layer a ground hit belongs to: 0 a terrain heightfield, 1 a road
+// or structure mesh, 2 anything else (a built compound).  A height disagreement
+// with the model's road has a different cause in each case — a buried ribbon, a
+// missing ribbon, a building over a lane — and the instrument has to say which
+// (D-037).
+u8 layerOfBody(World& world, const J::BodyID& id) {
+    const J::Body* b = id.IsInvalid() || id.GetIndex() >= world.system().GetNumBodies()
+                           ? nullptr
+                           : world.system().GetBodyLockInterfaceNoLock().TryGetBody(id);
+    if (b == nullptr) return 2;
+    const J::Shape* sh = b->GetShape();
+    if (sh == nullptr) return 2;
+    switch (sh->GetSubType()) {
+        case J::EShapeSubType::HeightField: return 0;
+        case J::EShapeSubType::Mesh: return 1;
+        case J::EShapeSubType::Triangle:
+        case J::EShapeSubType::Box:
+            return 1;   // a triangle or a box authored as ground/road
+        default: return 2;
+    }
+}
+
 f64 rawGroundAt(World& world, f64 x, f64 z, f64 near, bool* structureOnly = nullptr,
-                bool trace = false) {
+                bool trace = false, u8* hitLayer = nullptr) {
     // The search starts above the model's road and walks down, and the candidate
     // closest to the model's height wins — which, without a band, means the ray
     // fired from near + 30 m can land on the *top of a wall* and report it as the
@@ -331,30 +353,50 @@ f64 rawGroundAt(World& world, f64 x, f64 z, f64 near, bool* structureOnly = null
     // the headroom ray's question, not this one.
     constexpr f64 kGroundAboveM = 1.5;
     constexpr f64 kGroundBelowM = 4.0;
-    const f64 drops[5] = {1.2, 2.5, 5.0, 12.0, 30.0};
+    // Every surface in the band, not the first one a ray happens to meet.  A ray
+    // stops at the first hit, so where two road surfaces overlap in plan — a
+    // junction, a service road under a flyover, a ramp over a carriageway — the
+    // five drop probes all reported the *upper* one, and "the collision ground is
+    // above the model's road" was the instrument's view through the top layer, not
+    // a fact about the city.  Measured before this change: of the 68,607 lane
+    // samples whose ground was more than 0.25 m above the model's road, 64,698 hit
+    // a road/structure mesh and 3,907 a terrain heightfield (D-037).
+    //
+    // Peeling: cast down from the top of the band, take the hit, restart the ray
+    // just below it, repeat — the surfaces in the band, top down, and then the
+    // candidate closest to the model's road wins, which is what a wheel rests on.
     f64 best = 0.0;
     bool found = false, sawStructure = false;
-    for (const f64 drop : drops) {
-        const f64 from = near + drop;
-        const f64 reach = drop + 4.0;
+    const f64 bandTop = near + kGroundAboveM;
+    const f64 bandBottom = near - kGroundBelowM;
+    f64 from = bandTop;
+    for (int peel = 0; peel < 5; ++peel) {
+        const f64 reach = from - bandBottom + 0.5;
+        if (reach <= 0.1) break;
         const World::RayHit h = world.rayCastStatic(
             Vec3(static_cast<f32>(x), static_cast<f32>(from), static_cast<f32>(z)),
             Vec3(0.0f, -1.0f, 0.0f), reach);
         if (trace)
-            std::printf("            ray from %7.2f drop %5.1f reach %5.1f: %s", from, drop, reach,
+            std::printf("            peel %d from %7.2f reach %5.1f: %s", peel, from, reach,
                         h.hit ? "" : "no hit\n");
-        if (!h.hit) continue;
+        if (!h.hit) break;
         const f64 at = from - h.fraction * reach;
         if (trace)
             std::printf("hit at %7.2f (body %u, frac %.4f)%s\n", at, h.body.GetIndex(),
                         h.fraction, from - at < 0.05 ? "  <- started inside" : "");
-        if (from - at < 0.05) continue;          // the ray started inside something
-        if (at > near + kGroundAboveM) { sawStructure = true; continue; }
-        if (at < near - kGroundBelowM) { sawStructure = true; continue; }
-        if (!found || std::fabs(at - near) < std::fabs(best - near)) {
+        if (from - at < 0.05) {          // the ray started inside something
+            from = at - 0.06;
+            continue;
+        }
+        if (at > near + kGroundAboveM || at < near - kGroundBelowM) {
+            sawStructure = true;
+        } else if (!found || std::fabs(at - near) < std::fabs(best - near)) {
             best = at;
             found = true;
+            if (hitLayer != nullptr) *hitLayer = layerOfBody(world, h.body);
         }
+        from = at - 0.06;                // through this surface, to the next
+        if (from <= bandBottom) break;
     }
     if (!found && structureOnly) *structureOnly = sawStructure;
     return found ? best : std::numeric_limits<f64>::quiet_NaN();
@@ -383,7 +425,9 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
             const f64 model = traffic.laneHeight(e, s);
             ++out.samples;
             bool structureOnly = false;
-            f64 measured = rawGroundAt(world, at.x, at.y, model, &structureOnly);
+            u8 measuredLayer = 2;
+            f64 measured = rawGroundAt(world, at.x, at.y, model, &structureOnly, false,
+                                       &measuredLayer);
             // Diagnose only a real failure.  The first version of this block
             // printed the rays *before* the call, so it dumped the survey's first
             // four samples — which hit the model's road exactly — under the label
@@ -472,6 +516,18 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
                     out.worstBridgeAt = at;
                 }
             } else {
+                const f64 signedErr = ground - model;
+                out.signedSum += signedErr;
+                if (signedErr > 0.25) {
+                    if (measuredLayer == 0) ++out.tailAboveHeightfield;
+                    else if (measuredLayer == 1) ++out.tailAboveMesh;
+                    else ++out.tailAboveBuilt;
+                }
+                const int bin = signedErr <= -3.0 ? 25
+                                : signedErr < 3.0
+                                      ? static_cast<int>(std::floor((signedErr + 3.0) / 0.25))
+                                      : 25;
+                ++out.signedBins[std::clamp(bin, 0, 25)];
                 if (error < 0.25) ++out.withinQuarter;
                 if (error < 0.5) ++out.withinHalf;
                 if (error < 2.0) ++out.withinTwo;
@@ -499,10 +555,26 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
             // Headroom: what is above the lane, straight up from the lane centre.
             // Recorded for every sample — a street with a low bridge over it is a
             // street only a motorcycle uses — and used below to explain a block.
-            const World::RayHit up = world.rayCastStatic(
+            // Peeled upward for the same reason the ground is peeled downward: at a
+            // junction two road ribbons overlap in plan, and a ray fired from just
+            // above the lane starts *inside* the upper one — Jolt reports that as a
+            // hit at fraction 0, which read as "0.00 m of headroom" and turned 71,316
+            // overlapping-junction samples into a 10 % ceiling rate (D-037).  The
+            // first hit that is not the ray's own starting point is the first surface
+            // genuinely above the lane.
+            World::RayHit up = world.rayCastStatic(
                 Vec3(static_cast<f32>(at.x), static_cast<f32>(ground + 0.2),
                      static_cast<f32>(at.y)),
                 Vec3(0.0f, 1.0f, 0.0f), 12.0f);
+            for (int peelUp = 0; peelUp < 3; ++peelUp) {
+                if (!up.hit || up.fraction * 12.0 > 0.05) break;   // a real surface, or none
+                const f64 from = ground + 0.2 + (0.6 + 0.6 * static_cast<f64>(peelUp));
+                if (from > ground + 3.0) { up.hit = false; break; }
+                up = world.rayCastStatic(
+                    Vec3(static_cast<f32>(at.x), static_cast<f32>(from),
+                         static_cast<f32>(at.y)),
+                    Vec3(0.0f, 1.0f, 0.0f), 12.0f);
+            }
             if (up.hit) {
                 const f64 clear = up.fraction * 12.0;
                 ++out.headroomSamples;

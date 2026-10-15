@@ -1473,6 +1473,33 @@ int main(int argc, char** argv) {
                         static_cast<unsigned long long>(lv.collisionAbove),
                         lv.worstCollisionAboveM, lv.worstCollisionAboveAt.x,
                         lv.worstCollisionAboveAt.y);
+            // The signed distribution: which layer is above the other, and by how
+            // much.  One row per 0.25 m bin from -3 m to +3 m, plus the overflows.
+            {
+                char row[512];
+                int w = 0;
+                const f64 n2 = static_cast<f64>(lv.samples);
+                w += std::snprintf(row + w, sizeof(row) - static_cast<size_t>(w),
+                                   "        signed ground-model (m), 0.25 m bins:");
+                for (int b = 0; b < 25; ++b) {
+                    const f64 pct = n2 > 0.0 ? 100.0 * static_cast<f64>(lv.signedBins[b]) / n2 : 0.0;
+                    if (pct >= 0.5 && w < 460)
+                        w += std::snprintf(row + w, sizeof(row) - static_cast<size_t>(w),
+                                           " %+.2f:%.1f%%",
+                                           -3.0 + (static_cast<f64>(b) + 0.5) * 0.25, pct);
+                }
+                std::printf("        of the samples where the ground is more than 0.25 m "
+                            "above the model's road: %llu hit a terrain heightfield, %llu a "
+                            "road/structure mesh, %llu a built compound\n",
+                            static_cast<unsigned long long>(lv.tailAboveHeightfield),
+                            static_cast<unsigned long long>(lv.tailAboveMesh),
+                            static_cast<unsigned long long>(lv.tailAboveBuilt));
+                std::printf("%s  beyond +-3 m: %llu/%llu  mean %+.3f m\n", row,
+                            static_cast<unsigned long long>(lv.signedBins[25]),
+                            static_cast<unsigned long long>(lv.samples),
+                            lv.samples ? lv.signedSum / static_cast<f64>(lv.samples) : 0.0);
+                (void)w;
+            }
             std::printf("        bridge-flagged edges: %llu samples, within 0.25 m "
                         "%5.1f %%, within 2 m %5.1f %%, %llu with no deck in the collision "
                         "(worst deck disagreement %.2f m at (%.1f, %.1f))\n"

@@ -283,6 +283,65 @@ void planarizeCrossings(Context& ctx, std::vector<detail::WaySpec>& ways) {
     ctx.qa.add("roads.planarisedRoads", static_cast<f64>(byWay.size()));
 }
 
+// -----------------------------------------------------------------------------
+//  The road's own surface, in one place.
+// -----------------------------------------------------------------------------
+// The road is one surface described three times: the ribbon mesh the renderer and
+// the collision layer draw, the navigation graph a vehicle's wheels are put on, and
+// the terrain grid graded under both (`gradeRoadsIntoGrid` pulls the ground to the
+// *nav node* heights).  Until this decision the ribbon was the odd one out, and
+// measurably so: it drapes the DEM and then smooths the profile over two 1-2-1
+// passes — deliberately, so a road does not inherit the heightfield's noise as
+// visible steps — while the nav graph took the raw sample.  On the published world
+// that put the collision surface above the model's road in *every* signed bin
+// beyond a quarter of a metre (+0.38 m: 3.4 %, +0.62 m: 2.2 %, +0.88 m: 1.4 %,
+// +1.12 m: 0.8 %, nothing negative): a vehicle is put 0.3–1.2 m below the thing it
+// is standing on at 7.8 % of lane points.
+//
+// So the drape and the smoothing move here, and both the ribbon and the graph call
+// it.  The smoothed profile is the authority, because it is the surface the player
+// sees and collides with, and because a road is allowed to be the authority for the
+// ground under it.  The graph samples it *by position* (`heightAlong`) rather than
+// by index: `points` is the mesh chain and `navPoints` is that chain plus a vertex
+// at every at-grade crossing, so the two lists are not the same list.
+std::vector<f64> drapeRoadHeights(const Context& ctx, const detail::WaySpec& wi,
+                                  const std::vector<Vec2d>& pts) {
+    std::vector<f64> heights(pts.size());
+    for (size_t i = 0; i < pts.size(); ++i) {
+        f64 h = ctx.terrainHF.sample(pts[i].x, pts[i].y);
+        if (wi.bridge) h += 6.0 + 0.02 * static_cast<f64>(i);   // bridges clear the ground
+        heights[i] = h + wi.profile.layerOffset;
+    }
+    if (!wi.bridge) {
+        std::vector<f64> smoothed = heights;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (size_t i = 1; i + 1 < smoothed.size(); ++i)
+                smoothed[i] = (heights[i - 1] + heights[i] * 2.0 + heights[i + 1]) * 0.25;
+            heights.swap(smoothed);
+        }
+    }
+    return heights;
+}
+
+// The height of that surface at a point *on the alignment*, by position rather than
+// by index, walked with a cursor because the caller visits its own chain in order.
+f64 heightAlong(const std::vector<Vec2d>& pts, const std::vector<f64>& h, size_t& cursor,
+                const Vec2d& q) {
+    if (h.empty()) return 0.0;
+    if (h.size() == 1) return h[0];
+    if (cursor + 1 >= pts.size()) cursor = pts.size() - 2;
+    while (cursor + 2 < pts.size()) {
+        const Vec2d d = pts[cursor + 1] - pts[cursor];
+        if ((q - pts[cursor + 1]).dot(d) < 0.0) break;
+        ++cursor;
+    }
+    const Vec2d d = pts[cursor + 1] - pts[cursor];
+    const f64 len2 = d.lengthSq();
+    f64 t = len2 > 1e-9 ? (q - pts[cursor]).dot(d) / len2 : 0.0;
+    t = std::clamp(t, 0.0, 1.0);
+    return h[cursor] + (h[cursor + 1] - h[cursor]) * t;
+}
+
 void buildNavGraph(Context& ctx, const std::vector<detail::WaySpec>& ways) {
     std::unordered_map<CellData*, std::vector<const detail::WaySpec*>> byCell;
     for (const detail::WaySpec& wi : ways) {
@@ -386,10 +445,13 @@ void buildNavGraph(Context& ctx, const std::vector<detail::WaySpec>& ways) {
                                  (wi.cls == osm::HW_Footway || wi.cls == osm::HW_Path || wi.profile.pedOnly
                                       ? NavFlagWalkable : 0u);
 
+            // The nodes sit on the ribbon's own surface, not on a second drape of
+            // the same terrain (see `drapeRoadHeights`).
+            const std::vector<f64> surface = drapeRoadHeights(ctx, wi, wi.points);
+            size_t surfaceCursor = 0;
             auto heightAt = [&](size_t i) {
-                f64 h = ctx.terrainHF.sample(pts[i].x, pts[i].y);
-                if (wi.bridge) h += 6.0 + 0.02 * static_cast<f64>(i);
-                return static_cast<f32>(h + wi.profile.layerOffset);
+                return static_cast<f32>(
+                    heightAlong(wi.points, surface, surfaceCursor, pts[i]));
             };
 
             for (size_t i = 0; i + 1 < pts.size(); ++i) {
@@ -718,22 +780,9 @@ bool buildRoads(Context& ctx) {
         const f64 halfCarriage = prof.carriagewayWidth * 0.5;
         SurfaceMaterial surfaceMat = wi.surface;
 
-        // Drape onto terrain: sample the DEM, then smooth the profile so that
-        // roads do not inherit heightfield noise as visible steps.
-        std::vector<f64> heights(pts.size());
-        for (size_t i = 0; i < pts.size(); ++i) {
-            f64 h = ctx.terrainHF.sample(pts[i].x, pts[i].y);
-            if (wi.bridge) h += 6.0 + 0.02 * i;           // bridges clear the ground
-            heights[i] = h + prof.layerOffset;
-        }
-        if (!wi.bridge) {
-            std::vector<f64> smoothed = heights;
-            for (size_t pass = 0; pass < 2; ++pass) {
-                for (size_t i = 1; i + 1 < smoothed.size(); ++i)
-                    smoothed[i] = (heights[i - 1] + heights[i] * 2.0 + heights[i + 1]) * 0.25;
-                heights.swap(smoothed);
-            }
-        }
+        // Drape onto terrain and smooth, from the one function that owns the road
+        // surface — the same profile the navigation graph is put on.
+        const std::vector<f64> heights = drapeRoadHeights(ctx, wi, pts);
 
         // Junction trim distances at each end.
         auto trimAt = [&](const Vec2d& p) {

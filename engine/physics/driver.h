@@ -323,6 +323,17 @@ public:
         // a surface above it (a deck, or ground the grading put above the lane),
         // and 8 m+ is a road the collision layer simply does not have (D-036).
         u64 overBins[5] = {0, 0, 0, 0, 0};
+        // The *signed* disagreement, ground minus model, in 0.25 m bins from
+        // -3 m to +3 m with the two overflows.  A magnitude says the two layers
+        // disagree; the sign says which of them is the authority to make the
+        // other follow (D-037, item 4b).
+        u64 signedBins[26] = {};
+        f64 signedSum = 0.0;
+        // The positive tail (the collision ground more than 0.25 m *above* the
+        // model's road, which is every bin that matters), split by the layer the
+        // hit belongs to: a terrain heightfield, a road/structure mesh, or a built
+        // compound (D-037).
+        u64 tailAboveHeightfield = 0, tailAboveMesh = 0, tailAboveBuilt = 0;
         u64 diagnosed = 0;         // samples whose rays were dumped (surveyTrace)
         std::vector<BlockedSample> examples;
         u64 stepped = 0;           // more than `footprintStepTolerance` of step

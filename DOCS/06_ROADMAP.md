@@ -117,7 +117,25 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
    *carried* inside the city (strict, 0.020 m, measured 0.0000 m) and *passing
    through* it (Jolt's linear-cast allowance, 0.30 m, measured 0.0370 m) — and
    `make physics` is **56 checks / 0 failed**, the first green acceptance.
-4b. **The road surface as one description.**  The next pipeline item, named by
+4g. ~~**The three descriptions of one street**~~ — **answered** (D-038): the
+   signed distribution said every disagreement beyond a quarter of a metre put the
+   *ground above* the model's road, and the layer attribution said 64,698 of 68,607
+   of those hits were a **road mesh** — the survey's ray was stopping at the upper of
+   two overlapping ribbons at a junction.  `rawGroundAt` now peels down through the
+   surfaces in the band and keeps the one a wheel rests on: agreement within 0.25 m
+   **91.3 % → 99.3 %**, mean signed error **+0.060 → +0.007 m**, the whole tail
+   68,607 → **906 samples**.  The ribbon and the graph are now one surface by
+   construction (`drapeRoadHeights`, sampled by position).
+4h. **Junction ribbons are stacked.**  The defect the fixed instrument uncovered
+   (D-038): **8.96 % of lane points have a road surface within a car's 2.6 m above
+   them**, because each way smooths its own drape profile and two streets crossing at
+   a point can disagree by 0.05–1.5 m — two colliders, one above the other, at an
+   at-grade junction (the footprint-step counter sees the same: 4.09 % of lane
+   footprints step by more than 0.35 m).  Fix designed: make the smoothing a function
+   of *position* — one smoothed drape field every way samples — so two roads crossing
+   at a point have one height there by construction.  This is now the next pipeline
+   item.
+4b. **The road surface as one description.**  Answered by D-038 above; the remaining
    D-034's own numbers: `pipeline/stages/output.cpp` grades the road into the
    collision grid (`gradeRoadsIntoGrid`, n = 128) and `pipeline/stages/network.cpp`
    builds the nav graph from the OSM centrelines, while the chunk's road mesh is
