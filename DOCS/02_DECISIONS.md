@@ -1421,13 +1421,20 @@ histogram of what is above them says what they are: **65,449 (93 % of them, 7.7 
 of all lane points)** have a surface within half a metre *above* the model's road,
 237 between 0.5 and 1.5 m, 116 between 1.5 and 3 m, 127 between 3 and 8 m, and 48
 above 8 m; **4,319 (0.5 %)** have nothing there at all.  In other words, at 7.7 %
-of lane points the collision ground sits **1.5–2 m above** the elevation the nav
-graph gives the same lane.  That is not a wall top and not a missing road: it is a
-systematic step between two descriptions of one surface, of exactly the size a road
-layer offset and a grading blend produce.  It is now a number with a next step
-(find which of the two carries the offset — `h + wi.profile.layerOffset` in
-`network.cpp` against `gradeRoadsIntoGrid`'s target in `output.cpp` — and make one
-of them the authority), instead of a tolerance nobody could justify.
+of lane points the collision surface is **above** the elevation the nav graph gives
+the same lane, and the bins say by how much: the dominant bin is **less than half a
+metre above the ray's own start** 0.2 m over the model's road, which is the
+signature of the lane point being *inside* the collision solid — a road buried by
+some tens of centimetres — with 0.5–3 m cases (353 samples) and metre-scale ones
+(175) behind it.  It is not a wall top and not a missing road: it is a sub-metre
+systematic step between two descriptions of one surface, of the size a road layer
+offset and a grading blend produce, and only 0.5 % of lane points have nothing
+there at all.  It is now a number with a next step — find which of the two carries
+the offset (`h + wi.profile.layerOffset` in `network.cpp` against
+`gradeRoadsIntoGrid`'s target in `output.cpp`) and make one of them the authority —
+instead of a tolerance nobody could justify.  (An earlier draft of this entry said
+1.5–2 m: that was inferred from the band's edges rather than read off the
+histogram, and the histogram is the measurement.)
 
 **What is unchanged.**  The physics acceptance is exactly as it was (55 checks, 1
 failed, the 0.0370 m motorcycle contact with 97.3 % wheels down): the band, the
