@@ -296,6 +296,15 @@ public:
         u64 blockedHeightAgrees = 0;   // ...where the two layers *do* agree on height
         u64 blockedHeightDiffers = 0;  // ...where they do not
         u64 noSurface = 0;         // the collision has no surface anywhere near
+        u64 structureOnly = 0;     // ...of which only structures outside the band
+        u64 underStructure = 0;    // ...of which the road is under something above it
+        u64 noCollisionAtAll = 0;  // ...of which nothing is there at all
+        f64 minUnderStructureM = 1e30;   // the lowest such structure's clearance
+        // What is above a lane point with nothing in the band, in five bins: a
+        // clearance of ~0 means the model's road is *inside* geometry, 1.5-8 m is
+        // a surface above it (a deck, or ground the grading put above the lane),
+        // and 8 m+ is a road the collision layer simply does not have (D-036).
+        u64 overBins[5] = {0, 0, 0, 0, 0};
         std::vector<BlockedSample> examples;
         u64 stepped = 0;           // more than `footprintStepTolerance` of step
         f64 worstErrorM = 0.0;
@@ -307,6 +316,49 @@ public:
         f64 blockedDepthM = 0.0;
         std::string blockedWhat;
         u64 worstEdge = 0;
+        // --- elevation, measured apart from the surface (D-036) ---------------
+        // An elevated road's model height is its *deck*, and the ground under it
+        // is tens of metres lower.  Comparing the two and calling the difference
+        // a disagreement is a category error in the instrument: it says nothing
+        // about whether the deck the vehicle drives on is where the model thinks
+        // it is.  The survey therefore reports bridge edges apart from surface
+        // streets, and counts a bridge sample with nothing near the model's
+        // height as `noDeckSurface` rather than as a 30 m error.
+        u64 bridgeSamples = 0;
+        u64 bridgeWithinQuarter = 0, bridgeWithinHalf = 0, bridgeWithinTwo = 0;
+        u64 bridgeNoDeck = 0;
+        f64 worstBridgeErrorM = 0.0;
+        Vec2d worstBridgeAt{};
+        // --- elevated roads, classified by measurement (D-036) ----------------
+        // The OSM bridge flag covers 133 of 854,696 samples — the authored
+        // corridors and the Sea Link are elevated roads that carry no such tag, so
+        // a flag cannot be the classifier.  The measurement can: a lane point whose
+        // nearest collision surface is more than 3 m *below* the model's road is an
+        // elevated road, and the question for it is not "does the ground agree"
+        // but "is there a deck at the model's height".  Street-level samples keep
+        // the plain comparison and the headline.
+        u64 elevatedSamples = 0, elevatedWithDeck = 0;
+        // The other direction: a collision surface well *above* the model's road.
+        // That is a deck or a structure the collision layer has and the nav graph
+        // does not — the Sea Link's own corridor, where the model's edge runs at
+        // ground level under the deck it is supposed to be on (D-036).
+        u64 collisionAbove = 0;
+        f64 worstCollisionAboveM = 0.0;
+        Vec2d worstCollisionAboveAt{};
+        f64 worstElevatedDropM = 0.0;
+        Vec2d worstElevatedAt{};
+        // --- headroom ---------------------------------------------------------
+        // Straight up from the lane centre: the first surface above the road.  A
+        // box that is "1.88 m inside a mesh" in a street with 2.05 m of clearance
+        // is a vehicle that does not fit under the structure, and saying so is
+        // the difference between a finding and a mystery.  `headroomUnder 2.6 m`
+        // is the count of lane points a car (rest + roof + a margin) cannot pass.
+        u64 headroomSamples = 0, headroomUnderCar = 0, headroomUnderAny = 0;
+        f64 minHeadroomM = 1e30;
+        Vec2d minHeadroomAt{};
+        u64 minHeadroomBody = 0;
+        f64 minHeadroomAtM = 0.0;
+        u64 headroomHeightAgrees = 0;   // the blocked sample's ground matched the model
     };
     // Every `spacing` metres along every edge, at the centre of a lane, ask the
     // collision layer where the road is.  Costs a ray cast and a box overlap per

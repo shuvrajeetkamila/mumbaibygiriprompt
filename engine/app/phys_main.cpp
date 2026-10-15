@@ -1456,8 +1456,59 @@ int main(int argc, char** argv) {
             if (lv.worstErrorM > 0.5)
                 std::printf("        worst height disagreement at (%.1f, %.1f) on edge %llu\n",
                             lv.worstAt.x, lv.worstAt.y, static_cast<unsigned long long>(lv.worstEdge));
-            std::printf("        of the blocked points, %llu have the two layers agreeing on "
+            std::printf("        elevated roads (the model's road more than 3 m above the surface "
+                        "below it): %llu samples, of which %llu (%.1f %%) have a collision deck at "
+                        "the model's own height; deepest drop below a model road %.2f m at "
+                        "(%.1f, %.1f)\n",
+                        static_cast<unsigned long long>(lv.elevatedSamples),
+                        static_cast<unsigned long long>(lv.elevatedWithDeck),
+                        lv.elevatedSamples ? 100.0 * static_cast<f64>(lv.elevatedWithDeck) /
+                                                 static_cast<f64>(lv.elevatedSamples) : 0.0,
+                        lv.worstElevatedDropM, lv.worstElevatedAt.x, lv.worstElevatedAt.y);
+            std::printf("        collision above the model's road (a surface the nav graph does not "
+                        "know it is under): %llu samples, worst %.2f m at (%.1f, %.1f)\n",
+                        static_cast<unsigned long long>(lv.collisionAbove),
+                        lv.worstCollisionAboveM, lv.worstCollisionAboveAt.x,
+                        lv.worstCollisionAboveAt.y);
+            std::printf("        bridge-flagged edges: %llu samples, within 0.25 m "
+                        "%5.1f %%, within 2 m %5.1f %%, %llu with no deck in the collision "
+                        "(worst deck disagreement %.2f m at (%.1f, %.1f))\n"
+                        "        headroom above the lane: %llu samples, minimum %.2f m at "
+                        "(%.1f, %.1f) — %llu (%.2f %%) below a car's 2.6 m, %llu below 2.0 m\n",
+                        static_cast<unsigned long long>(lv.bridgeSamples),
+                        lv.bridgeSamples ? 100.0 * static_cast<f64>(lv.bridgeWithinQuarter) /
+                                               static_cast<f64>(lv.bridgeSamples) : 0.0,
+                        lv.bridgeSamples ? 100.0 * static_cast<f64>(lv.bridgeWithinTwo) /
+                                               static_cast<f64>(lv.bridgeSamples) : 0.0,
+                        static_cast<unsigned long long>(lv.bridgeNoDeck), lv.worstBridgeErrorM,
+                        lv.worstBridgeAt.x, lv.worstBridgeAt.y,
+                        static_cast<unsigned long long>(lv.headroomSamples),
+                        lv.headroomSamples ? lv.minHeadroomM : 0.0, lv.minHeadroomAt.x,
+                        lv.minHeadroomAt.y, static_cast<unsigned long long>(lv.headroomUnderCar),
+                        n > 0 ? 100.0 * static_cast<f64>(lv.headroomUnderCar) / n : 0.0,
+                        static_cast<unsigned long long>(lv.headroomUnderAny));
+            std::printf("        no surface in the band under the model's road: %llu samples — "
+                        "%llu (%.1f %%) have a structure above them (lowest clearance %.2f m), "
+                        "%llu (%.1f %%) have nothing there at all\n",
+                        static_cast<unsigned long long>(lv.noSurface),
+                        static_cast<unsigned long long>(lv.underStructure),
+                        lv.noSurface ? 100.0 * static_cast<f64>(lv.underStructure) /
+                                           static_cast<f64>(lv.noSurface) : 0.0,
+                        lv.underStructure ? lv.minUnderStructureM : 0.0,
+                        static_cast<unsigned long long>(lv.noCollisionAtAll),
+                        lv.noSurface ? 100.0 * static_cast<f64>(lv.noCollisionAtAll) /
+                                           static_cast<f64>(lv.noSurface) : 0.0);
+            std::printf("        what is above those lanes: <0.5 m %llu, 0.5-1.5 m %llu, "
+                        "1.5-3 m %llu, 3-8 m %llu, >8 m %llu\n",
+                        static_cast<unsigned long long>(lv.overBins[0]),
+                        static_cast<unsigned long long>(lv.overBins[1]),
+                        static_cast<unsigned long long>(lv.overBins[2]),
+                        static_cast<unsigned long long>(lv.overBins[3]),
+                        static_cast<unsigned long long>(lv.overBins[4]));
+            std::printf("        of the blocked points, %llu have a car's height of clearance or "
+                        "less; %llu have the two layers agreeing on "
                         "height to %.1f m and %llu do not; %llu have no collision surface at all\n",
+                        static_cast<unsigned long long>(lv.headroomHeightAgrees),
                         static_cast<unsigned long long>(lv.blockedHeightAgrees),
                         surveySettings.heightTolerance,
                         static_cast<unsigned long long>(lv.blockedHeightDiffers),
@@ -1478,8 +1529,26 @@ int main(int argc, char** argv) {
             sv.set("withinHalf", Json(static_cast<f64>(lv.withinHalf)));
             sv.set("withinTwo", Json(static_cast<f64>(lv.withinTwo)));
             sv.set("blocked", Json(static_cast<f64>(lv.blocked)));
+            sv.set("noSurface", Json(static_cast<f64>(lv.noSurface)));
+            sv.set("structureOnly", Json(static_cast<f64>(lv.structureOnly)));
+            sv.set("underStructure", Json(static_cast<f64>(lv.underStructure)));
+            sv.set("noCollisionAtAll", Json(static_cast<f64>(lv.noCollisionAtAll)));
             sv.set("stepped", Json(static_cast<f64>(lv.stepped)));
             sv.set("worstErrorM", Json(lv.worstErrorM));
+            sv.set("bridgeSamples", Json(static_cast<f64>(lv.bridgeSamples)));
+            sv.set("bridgeWithinQuarter", Json(static_cast<f64>(lv.bridgeWithinQuarter)));
+            sv.set("bridgeWithinTwo", Json(static_cast<f64>(lv.bridgeWithinTwo)));
+            sv.set("bridgeNoDeck", Json(static_cast<f64>(lv.bridgeNoDeck)));
+            sv.set("worstBridgeErrorM", Json(lv.worstBridgeErrorM));
+            sv.set("collisionAboveModel", Json(static_cast<f64>(lv.collisionAbove)));
+            sv.set("worstCollisionAboveM", Json(lv.worstCollisionAboveM));
+            sv.set("elevatedSamples", Json(static_cast<f64>(lv.elevatedSamples)));
+            sv.set("elevatedWithDeck", Json(static_cast<f64>(lv.elevatedWithDeck)));
+            sv.set("worstElevatedDropM", Json(lv.worstElevatedDropM));
+            sv.set("headroomSamples", Json(static_cast<f64>(lv.headroomSamples)));
+            sv.set("minHeadroomM", Json(lv.headroomSamples ? lv.minHeadroomM : 0.0));
+            sv.set("headroomUnderCar", Json(static_cast<f64>(lv.headroomUnderCar)));
+            sv.set("headroomUnderTwo", Json(static_cast<f64>(lv.headroomUnderAny)));
             sv.set("seconds", Json(secs));
             reportSet("survey", sv);
         }

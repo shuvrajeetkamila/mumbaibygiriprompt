@@ -1376,6 +1376,74 @@ artifacts rebuilt from both.
 
 ---
 
+## D-036 — The survey's "height disagreement" was measuring walls, and the two descriptions of a street now have a magnitude
+
+**Decision.** The city-wide lane survey is the instrument this project uses to
+claim that the collision ground and the traffic model's road are the same road.
+D-034 and D-035 both quoted it: 84.7–84.8 % of lane points agree within 0.25 m,
+and its worst disagreement was 29.54 m, attributed to "the survey comparing a deck
+against the ground under it".  Following that number to its cause rather than
+living with it found three defects in the instrument and one real magnitude in the
+city.
+
+**1. `rawGroundAt` reported the tops of walls as ground.**  It fires down from
+`near + 1.2`, `+2.5`, `+5`, `+12`, `+30` metres and keeps the hit closest to
+`near` — so the ray fired from 30 m above the lane could land on the top of a
+neighbouring wall and return it as "the ground", 29.5 m above the road.  Measured
+with a counter: **63,358 samples (7.4 %)** had a "collision surface above the
+model's road", the deepest exactly the 29.54 m the decision log had been quoting.
+A lane's ground is within a metre of the model's road by definition, so the search
+now has a band — `[near − 4 m, near + 1.5 m]` — and everything outside it is a
+structure, which is the headroom question and not this one.  Measured after:
+**0** samples above the band, worst height disagreement **29.54 m → 2.99 m**.
+
+**2. Elevated roads are found by measurement, not by the OSM bridge flag.**  The
+`NavFlagBridge` flag reaches **119** of 854,696 samples (the authored corridors and
+the Sea Link carry no such tag), so a bridge-flagged split cannot classify
+elevation.  The survey now classifies by what it measures: a lane point whose
+nearest surface is more than 3 m *below* the model's road is an elevated road, and
+the question for it is whether a deck exists at the model's own height.  Result:
+**78 samples elevated** (deepest drop 4.00 m), **0 of them with a collision deck**
+— and the bridge-flagged 119 agree within 0.25 m on **100 %** of samples.
+
+**3. Headroom, measured for the first time.**  A ray straight up from the lane
+centre: **22,342** lane points have something above them within 12 m, of which
+**13,677 (1.60 %)** have less than a car's 2.6 m of clearance and **11,792** less
+than 2.0 m.  That is Mumbai's real condition (lanes under buildings, bridges and
+hoardings), and it explains part of the blocked count: of the **13,005 (1.52 %)**
+lane points where a car cannot be placed, **458** are blocked where the clearance
+itself is the reason.  The rest — 12,836 — sit where the two layers agree on
+height to a metre, so the block is a shape in the lane, not a height error.
+
+**4. The magnitude the "one authority for the road surface" work has to close.**
+**70,296 samples (8.2 %)** have no collision surface in the band at all, and the
+histogram of what is above them says what they are: **65,449 (93 % of them, 7.7 %
+of all lane points)** have a surface within half a metre *above* the model's road,
+237 between 0.5 and 1.5 m, 116 between 1.5 and 3 m, 127 between 3 and 8 m, and 48
+above 8 m; **4,319 (0.5 %)** have nothing there at all.  In other words, at 7.7 %
+of lane points the collision ground sits **1.5–2 m above** the elevation the nav
+graph gives the same lane.  That is not a wall top and not a missing road: it is a
+systematic step between two descriptions of one surface, of exactly the size a road
+layer offset and a grading blend produce.  It is now a number with a next step
+(find which of the two carries the offset — `h + wi.profile.layerOffset` in
+`network.cpp` against `gradeRoadsIntoGrid`'s target in `output.cpp` — and make one
+of them the authority), instead of a tolerance nobody could justify.
+
+**What is unchanged.**  The physics acceptance is exactly as it was (55 checks, 1
+failed, the 0.0370 m motorcycle contact with 97.3 % wheels down): the band, the
+elevation split and the headroom ray are all in `surveyLanes`, and the driver's own
+`surfaceAt` — which resolves the ground *relative to the model's own height* — is
+untouched, which is also why the fleet drives at 0.97 wheels-down across a city
+where 7.7 % of lane points have the ground 2 m above the model's road.  `make test`
+is 58 cases / 1529 checks / 0 failing.
+
+**Files.**  `engine/physics/driver.{h,cpp}` (the band, the elevation classifier,
+the headroom and no-surface histograms), `engine/sim/traffic.{h,cpp}`
+(`SimEdge::bridge`, carried from the nav graph's own flag), and
+`engine/app/phys_main.cpp` (the report).
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

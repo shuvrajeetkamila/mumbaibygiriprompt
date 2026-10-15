@@ -149,6 +149,7 @@ Traffic::Traffic(const std::vector<std::string>& chunkFiles,
                 se.limit = e2.speedLimitKph > 1.0f ? e2.speedLimitKph : 25.0f;
                 se.lanes = std::max<u16>(1, e2.laneCount);
                 se.cls = static_cast<u8>(e2.roadClass);
+                se.bridge = (e2.flags & NavFlagBridge) != 0u;
                 se.a = m_nodes[se.from].p;
                 se.b = m_nodes[se.to].p;
                 const Vec2d d = se.b - se.a;

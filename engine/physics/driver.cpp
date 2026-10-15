@@ -309,10 +309,20 @@ namespace {
 // a survey that accepted the model's own number wherever the collision disagreed
 // could never report a disagreement larger than the tolerance, which is exactly
 // the check-that-cannot-fail this project keeps finding (D-034).
-f64 rawGroundAt(World& world, f64 x, f64 z, f64 near) {
+f64 rawGroundAt(World& world, f64 x, f64 z, f64 near, bool* structureOnly = nullptr) {
+    // The search starts above the model's road and walks down, and the candidate
+    // closest to the model's height wins — which, without a band, means the ray
+    // fired from near + 30 m can land on the *top of a wall* and report it as the
+    // ground 29.5 m above the lane.  Measured: that is exactly the survey's worst
+    // "height disagreement", 63,358 samples of it, and it is the instrument's
+    // failure, not the city's (D-036).  A lane's ground is within a metre or so of
+    // the model's road; a surface further above that is a structure, and it is
+    // the headroom ray's question, not this one.
+    constexpr f64 kGroundAboveM = 1.5;
+    constexpr f64 kGroundBelowM = 4.0;
     const f64 drops[5] = {1.2, 2.5, 5.0, 12.0, 30.0};
     f64 best = 0.0;
-    bool found = false;
+    bool found = false, sawStructure = false;
     for (const f64 drop : drops) {
         const f64 from = near + drop;
         const f64 reach = drop + 4.0;
@@ -322,11 +332,14 @@ f64 rawGroundAt(World& world, f64 x, f64 z, f64 near) {
         if (!h.hit) continue;
         const f64 at = from - h.fraction * reach;
         if (from - at < 0.05) continue;          // the ray started inside something
+        if (at > near + kGroundAboveM) { sawStructure = true; continue; }
+        if (at < near - kGroundBelowM) { sawStructure = true; continue; }
         if (!found || std::fabs(at - near) < std::fabs(best - near)) {
             best = at;
             found = true;
         }
     }
+    if (!found && structureOnly) *structureOnly = sawStructure;
     return found ? best : std::numeric_limits<f64>::quiet_NaN();
 }
 
@@ -346,20 +359,91 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
             const Vec2d at = traffic.laneCentre(e, lane, s);
             const f64 model = traffic.laneHeight(e, s);
             ++out.samples;
-            const f64 measured = rawGroundAt(world, at.x, at.y, model);
+            bool structureOnly = false;
+            const f64 measured = rawGroundAt(world, at.x, at.y, model, &structureOnly);
             if (std::isnan(measured)) {
-                ++out.noSurface;      // the collision has nothing here at all
+                // Nothing in the band.  "Only structures" is a different fact from
+                // "nothing at all": a lane point whose only collision surface is a
+                // wall 20 m up is a lane the collision layer has no road under.
+                if (structureOnly) ++out.structureOnly;
+                ++out.noSurface;
+                // Nothing in the band under the model's road: either a structure
+                // hangs over it (the road is under something) or the collision
+                // layer has no road here at all.  Two different facts, two
+                // counters, one ray (D-036).
+                const World::RayHit over = world.rayCastStatic(
+                    Vec3(static_cast<f32>(at.x), static_cast<f32>(model + 0.2),
+                         static_cast<f32>(at.y)),
+                    Vec3(0.0f, 1.0f, 0.0f), 14.0f);
+                if (over.hit) {
+                    ++out.underStructure;
+                    const f64 clear = over.fraction * 14.0;
+                    if (clear < out.minUnderStructureM) out.minUnderStructureM = clear;
+                    const u32 bin = clear < 0.5 ? 0u : clear < 1.5 ? 1u : clear < 3.0 ? 2u
+                                                 : clear < 8.0 ? 3u : 4u;
+                    ++out.overBins[bin];
+                } else {
+                    ++out.noCollisionAtAll;
+                }
                 continue;
             }
             const f64 ground = measured;
             const f64 error = std::fabs(ground - model);
-            if (error < 0.25) ++out.withinQuarter;
-            if (error < 0.5) ++out.withinHalf;
-            if (error < 2.0) ++out.withinTwo;
-            if (error > out.worstErrorM) {
-                out.worstErrorM = error;
-                out.worstAt = at;
-                out.worstEdge = ei;
+            // An elevated road's model height is its *deck*, and the ground under
+            // it is tens of metres lower: comparing the two and calling the
+            // difference a disagreement is a category error in the instrument.
+            // Bridge edges are therefore measured apart, and a bridge sample whose
+            // nearest surface is metres below the deck is a deck the collision
+            // layer does not have — named, not averaged into a headline (D-036).
+            const bool bridge = e.bridge;
+            // Where the model's road is metres above every surface under it, the
+            // sample is an elevated road: the deck is the assertion, not the bed.
+            const f64 drop = model - ground;
+            if (drop > 3.0) {
+                ++out.elevatedSamples;
+                if (drop > out.worstElevatedDropM) {
+                    out.worstElevatedDropM = drop;
+                    out.worstElevatedAt = at;
+                }
+                // A deck at the model's height is a surface within a quarter metre
+                // of it, found by asking from just above the model's own road.
+                const World::RayHit deck = world.rayCastStatic(
+                    Vec3(static_cast<f32>(at.x), static_cast<f32>(model + 0.5),
+                         static_cast<f32>(at.y)),
+                    Vec3(0.0f, -1.0f, 0.0f), 1.0f);
+                if (deck.hit) ++out.elevatedWithDeck;
+                continue;      // counted; the ground comparison is not about this road
+            }
+            if (ground - model > 3.0) {
+                // The collision is above the model's road here: the surface found
+                // is a structure the model does not know it is under.
+                ++out.collisionAbove;
+                if (ground - model > out.worstCollisionAboveM) {
+                    out.worstCollisionAboveM = ground - model;
+                    out.worstCollisionAboveAt = at;
+                }
+                continue;      // likewise not a ground comparison
+            }
+            if (bridge) {
+                ++out.bridgeSamples;
+                if (error < 0.25) ++out.bridgeWithinQuarter;
+                if (error < 0.5) ++out.bridgeWithinHalf;
+                if (error < 2.0) ++out.bridgeWithinTwo;
+                if (error > 3.0) {
+                    ++out.bridgeNoDeck;
+                } else if (error > out.worstBridgeErrorM) {
+                    out.worstBridgeErrorM = error;
+                    out.worstBridgeAt = at;
+                }
+            } else {
+                if (error < 0.25) ++out.withinQuarter;
+                if (error < 0.5) ++out.withinHalf;
+                if (error < 2.0) ++out.withinTwo;
+                if (error > out.worstErrorM) {
+                    out.worstErrorM = error;
+                    out.worstAt = at;
+                    out.worstEdge = ei;
+                }
             }
             // A step under the footprint is a road the model has and the collision
             // does not (or the other way round).
@@ -376,6 +460,24 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
             if (high - low > m_settings.footprintStepTolerance) ++out.stepped;
             // And can a vehicle of the smallest class that uses this road be put
             // there at all?
+            // Headroom: what is above the lane, straight up from the lane centre.
+            // Recorded for every sample — a street with a low bridge over it is a
+            // street only a motorcycle uses — and used below to explain a block.
+            const World::RayHit up = world.rayCastStatic(
+                Vec3(static_cast<f32>(at.x), static_cast<f32>(ground + 0.2),
+                     static_cast<f32>(at.y)),
+                Vec3(0.0f, 1.0f, 0.0f), 12.0f);
+            if (up.hit) {
+                const f64 clear = up.fraction * 12.0;
+                ++out.headroomSamples;
+                if (clear < out.minHeadroomM) {
+                    out.minHeadroomM = clear;
+                    out.minHeadroomAt = at;
+                    out.minHeadroomBody = up.body.GetIndex();
+                }
+                if (clear < 2.6) ++out.headroomUnderCar;
+                if (clear < 2.0) ++out.headroomUnderAny;
+            }
             const f64 probeY = ground + chassisRestHeight(sim::Archetype::Car) + kAttachClearance;
             ProbeReport probe;
             if (!boxFits(world, at, probeY, std::atan2(e.dir.x, e.dir.y), sim::Archetype::Car,
@@ -383,6 +485,11 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
                 ++out.blocked;
                 if (error < m_settings.heightTolerance) ++out.blockedHeightAgrees;
                 else ++out.blockedHeightDiffers;
+                // A block with less than a car's height of clearance is a vehicle
+                // that does not fit under the structure, which is a fact about the
+                // city; one without is a shape in the way, which is a fact about
+                // the collision (D-036).
+                if (up.hit && up.fraction * 12.0 < 2.6) ++out.headroomHeightAgrees;
                 if (probe.depth > out.blockedDepthM) {
                     out.blockedDepthM = probe.depth;
                     out.blockedAt = at;

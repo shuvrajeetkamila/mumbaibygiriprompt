@@ -89,6 +89,14 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
    **396 checks, 0 failing**.  The same decision clamps road grading to a 3 m
    embankment (it was moving samples by up to +69.81 m / −64.60 m, lifting 1,015
    seabed samples onto land).
+4d. ~~**The survey measured walls as ground**~~ — **fixed** (D-036): the ground
+   search could return a wall top 29.5 m above the lane, which is where the
+   "worst height disagreement 29.54 m" of D-034/D-035 came from; with a band of
+   `[model − 4 m, model + 1.5 m]` the worst is **2.99 m** and no sample sits above
+   it.  The same decision measured, for the first time, the clearance above lanes
+   (**13,677 lane points, 1.60 %, below a car's 2.6 m**) and the systematic step
+   between the two road descriptions (**7.7 % of lane points have the collision
+   ground 1.5–2 m above the model's road**).
 4b. **The road surface as one description.**  The next pipeline item, named by
    D-034's own numbers: `pipeline/stages/output.cpp` grades the road into the
    collision grid (`gradeRoadsIntoGrid`, n = 128) and `pipeline/stages/network.cpp`

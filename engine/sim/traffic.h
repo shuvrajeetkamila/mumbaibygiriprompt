@@ -185,6 +185,11 @@ struct SimEdge {
     // can put a body on it, and this is the model's own knowledge of its road —
     // a probe cast from an assumed height would be a guess about the city.
     f32 ay = 0.0f, by = 0.0f;
+    // The way this edge belongs to is a bridge: its height is a *deck*, and the
+    // ground under it is not the road.  Carried from the nav graph's own flag so
+    // anything that needs to tell a deck from a street can — the physics survey
+    // is the first caller (D-036).
+    bool bridge = false;
     std::vector<std::vector<u32>> laneVehicles;   // sorted by s
 };
 
