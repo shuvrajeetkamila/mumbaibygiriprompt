@@ -21,6 +21,9 @@
 #include "tests/test_harness.h"
 
 #include <cmath>
+#include <cstring>
+#include <fstream>
+#include <iterator>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -185,6 +188,8 @@ TEST(materialTexturesKeepTheMaterialsAlbedo) {
         std::printf("    %-20s std %.2f encoded\n", c.name, var);
         if (c.flat) CHECK(var < 0.5);      // a smooth surface carries no grain
         else        CHECK(var > 1.0);      // and everything else carries some
+        if (c.flat && var >= 0.5)
+            std::printf("      (flat family %s carries grain: std %.2f)\n", c.name, var);
 
         // Normals: unit length everywhere (a normal map that is not unit is a
         // lighting bug in every surface that samples it).
@@ -287,8 +292,76 @@ TEST(theBuiltMaterialArraysAreSelfConsistent) {
     }
     CHECK_EQ(badNormals, 0u);
     CHECK_EQ(degenerate, 0u);
-    CHECK(flatNormals <= 8);        // glass, lamps, steel, water — a short list
-    CHECK(flatAlbedo <= 8);
+    // A flat normal is only legitimate for a family that is optically smooth by
+    // design (D-031: a mirror-flat curtain wall has no grain to resolve, and
+    // inventing one would put a fake bump on every glass facade).  The check names
+    // the offenders instead of counting them against a magic bound — a bound that
+    // D-041's denser fabric pushed past with a *new* material, which is exactly the
+    // case it exists to catch.
+    // The layer's family comes from the published manifest (the array format carries
+    // no strings; the manifest is the sidecar that does).  Read in file order, which
+    // is layer order, and paired with the material names it also carries.
+    std::vector<std::string> layerFamily, layerName;
+    {
+        std::ifstream in("data/processed/textures/texture_manifest.json");
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        for (const char* key : {"\"family\": \"", "\"name\": \""}) {
+            size_t at = 0;
+            while ((at = text.find(key, at)) != std::string::npos) {
+                const size_t s0 = at + std::strlen(key);
+                const size_t s1 = text.find('"', s0);
+                if (s1 == std::string::npos) break;
+                (std::strcmp(key, "\"family\": \"") == 0 ? layerFamily : layerName)
+                    .push_back(text.substr(s0, s1 - s0));
+                at = s1 + 1;
+            }
+        }
+    }
+    const auto isSmoothFamilyName = [](const char* f) {
+        return std::strcmp(f, "curtain_wall_glass") == 0 ||
+               std::strcmp(f, "streetlamp_glow") == 0 ||
+               std::strcmp(f, "water_surface") == 0 ||
+               std::strcmp(f, "inland_water") == 0 ||
+               std::strcmp(f, "rail_steel") == 0;
+    };
+    // Both the normal and the albedo are checked the same way: a layer is "flat" if
+    // it carries no variation at all — for a normal map that means no channel tilts
+    // (a corrugated sheet varies in R alone, and measuring green only would call it
+    // flat, which is how this check first reported the wrong family), and for the
+    // albedo it means the colour is constant.  Either is legitimate only for a family
+    // that is optically smooth by design (D-031); anything else is a material that
+    // will render as untextured.
+    std::vector<std::string> flatNormalOffenders, flatAlbedoOffenders;
+    for (u32 i = 0; i < bc.layerCount(); ++i) {
+        const u8* pn = nm.pixels(i);
+        bool anyTilt = false;
+        for (u32 k = 0; k < 256u * 256u && !anyTilt; k += 7) {
+            const f32 x = (pn[k * 3 + 0] / 127.5f) - 1.0f;
+            const f32 y = (pn[k * 3 + 1] / 127.5f) - 1.0f;
+            if (std::fabs(x) > 0.01f || std::fabs(y) > 0.01f) anyTilt = true;
+        }
+        const std::string fam = i < layerFamily.size() ? layerFamily[i] : std::string("?");
+        const std::string nm2 = i < layerName.size() ? layerName[i] : std::to_string(i);
+        if (!anyTilt && !isSmoothFamilyName(fam.c_str()))
+            flatNormalOffenders.push_back(nm2 + " (" + fam + ")");
+
+        f32 lo3 = 1.0f, hi3 = 0.0f;
+        const u8* pa = bc.pixels(i);
+        for (u32 k = 0; k < 256u * 256u; k += 7) {
+            const f32 l3 = pa[k * 4 + 1] / 255.0f;
+            lo3 = std::min(lo3, l3);
+            hi3 = std::max(hi3, l3);
+        }
+        if (hi3 - lo3 < 1.0f / 255.0f && !isSmoothFamilyName(fam.c_str()))
+            flatAlbedoOffenders.push_back(nm2 + " (" + fam + ")");
+    }
+    for (const std::string& o : flatNormalOffenders)
+        std::printf("      flat normal on a textured family: %s\n", o.c_str());
+    for (const std::string& o : flatAlbedoOffenders)
+        std::printf("      flat albedo on a textured family: %s\n", o.c_str());
+    CHECK(flatNormalOffenders.empty());
+    CHECK(flatAlbedoOffenders.empty());
+
     CHECK(minTile > 0.3f && maxTile < 20.0f);
     std::printf("    %u shipped layers, tiles %.1f-%.1f m, %u flat normals\n",
                 bc.layerCount(), static_cast<double>(minTile), static_cast<double>(maxTile),

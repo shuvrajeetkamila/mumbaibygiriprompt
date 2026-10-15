@@ -594,6 +594,21 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
                 // three metres of the lane centre — which is the whole question.
                 if (clear > 0.5 && clear < 2.6) {
                     ++out.ceilingsTotal;
+                    // The cross-check: a down-ray from above the lane, peeled like the
+                    // ground ray.  If the ceiling is real, the first surface below
+                    // 3 m is at the ceiling's own height.
+                    {
+                        const f64 probeFrom = ground + 3.0;
+                        const World::RayHit dn = world.rayCastStatic(
+                            Vec3(static_cast<f32>(at.x), static_cast<f32>(probeFrom),
+                                 static_cast<f32>(at.y)),
+                            Vec3(0.0f, -1.0f, 0.0f), 6.0f);
+                        const f64 hitY = dn.hit ? probeFrom - dn.fraction * 6.0 : -1e9;
+                        if (dn.hit && std::fabs((hitY - ground) - clear) < 0.35)
+                            ++out.ceilingsConfirmedFromAbove;
+                        else
+                            ++out.ceilingsOnlyFromBelow;
+                    }
                     const i64 cx = static_cast<i64>(std::floor(at.x / 1024.0));
                     const i64 cz = static_cast<i64>(std::floor(at.y / 1024.0));
                     ++out.ceilingsByCell[(static_cast<u64>(static_cast<u32>(cx)) << 32) |

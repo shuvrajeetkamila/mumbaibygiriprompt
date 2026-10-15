@@ -20,7 +20,7 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
 | A5 | **Ocean (S3)** | 4–8 Gerstner waves (80–150 m swell, 0.5–2 m; monsoon 3–5 m), PBR + subsurface scattering, sun glitter, depth-buffer foam and runup | the sea/creek mesh exists (31,180 quads) | no — same reason |
 | A6 | **Sky / scattering (S3)** | Rayleigh + Mie with time-of-day, humidity and pollution | the preview has a skydome approximation | no |
 | A7 | **Android app** | native app, Vulkan surface, JNI, input, audio, installable package ≤160 GB | nothing | **no** — no JDK, Gradle, Android SDK or NDK; `dl.google.com`, `repo1.maven.org`, `services.gradle.org` are blocked |
-| A8 | **Texture / material content** | per-surface PBR materials, baked AO, material masks at production density | **built and shipped** (D-031): 115 materials textured into `.mumbaitex` arrays (albedo / normal / ORM, 256 px, 100.5 MB), physical tile sizes driving UVs, an 11×11 atlas wired into the browser preview through a box-projected `onBeforeCompile` patch, a runtime mmap reader, and both a C++ and an independent JS verification of mean preservation | **done for the material library** — decals, signage text and kerb/rail detail maps remain, and nothing on a GPU samples the normal/ORM arrays yet (A1) |
+| A8 | **Texture / material content** | per-surface PBR materials, baked AO, material masks at production density | **built and shipped** (D-031): 117 materials textured into `.mumbaitex` arrays (albedo / normal / ORM, 256 px, 100.5 MB), physical tile sizes driving UVs, an 11×11 atlas wired into the browser preview through a box-projected `onBeforeCompile` patch, a runtime mmap reader, and both a C++ and an independent JS verification of mean preservation, and (D-041) a counted repair that guarantees no shipped albedo is a constant, with the test naming any flat layer instead of counting against a bound | **done for the material library** — decals, signage text and kerb/rail detail maps remain, and nothing on a GPU samples the normal/ORM arrays yet (A1) |
 | A9 | **Audio** | not specified in detail, but a client engine needs it | nothing | yes (CPU) |
 
 ## B. Built, but below the specification's bar
@@ -28,9 +28,9 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
 | # | item | specification | now | notes |
 |---|---|---|---|---|
 | B1 | Hero assets | Gateway ~500k tris, Taj ~800k, CSMT ~1.2M, Sea Link ~300k/pylon, Marine Drive ~50k/building | 19,314 / 84,494 / 30,304 / 34,476 (2 pylons) / 41,288 — 193,132 total against an 8,100,000 budget (**2.38 %**, D-032) | published dimensions; ornament to the survey tier (coursed ashlar, voussoirs, jali, balustrades, deck furniture, Deco frontage). The budgets are hand-modelled asset budgets; closing the gap needs hand-modelled or photogrammetric assets, not more procedural ornament |
-| B2 | Building count | 200k+ | 143,203, of which 148 surveyed and 143,055 generated inside real parcels and slum clusters (**down from 164,057** by D-037: 20,864 parcels were standing in a carriageway) | the extract carries 16,408 building ways; the rest needs parcel data.  The count and the standard pull in opposite directions and D-037 chose the standard: a building in a street is not a building |
+| B2 | Building count | 200k+ | **351,051** — 350,903 generated inside real parcels and slum clusters plus 148 surveyed; 6,951,130 LOD0 triangles, 351,069 collision boxes (**target met**, D-041) | met by six per-parcel density profiles (colonial / BKC / suburban / industrial / hillside / informal) with 72,401 parcels inset clear of the carriageway and 28,709 rejected as too small; every one counted in `world_manifest.json`, so the count and D-037's standard both hold |
 | B3 | Landmark recognisability at 100 m unlabelled | judged by a Mumbai resident | massings, cornices, window rows with glazing bars, jali screens, voussoir arches, dome ribs, gallery balustrades, deck rails and the Art Deco row are modelled; signage text and carved relief are not | a resident check is not runnable here — the reviewer's eye is the instrument (D-032) |
-| B4 | 34,000 km of roadway | 34,000 km with 14 rail lines, 6 highway corridors | 8,189 km OSM centreline + authored corridors; 29 rail ways | the extract is a truncated 2015 sample (D-020) |
+| B4 | 34,000 km of roadway | 34,000 km with 14 rail lines, 6 highway corridors | **14,147.2 km** centreline (264,882 ways, 175,631 junctions, 1,922,354 triangles) — 8,393.8 km before D-041; 29 rail ways | 42 % of the target.  The ceiling is the data, not the code: the extract is a truncated 2015 sample (D-020) carrying 8,189 km of OSM centreline, and the authored corridors add the six highway links.  Closing the rest needs an untruncated extract |
 
 ## C. Data-limited — code is ready, the inputs are not reachable
 
@@ -131,24 +131,28 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
    (`laneViolationsExempted`, printed beside the violations), and the excuse expires.
    Both halves — the model-owned overlap still failing, the handback overlap excused
    and then strict again 2 s later — are unit tests (59 cases / 1546 checks / 0).
-4h. **The ceilings above lanes — one cause fixed, the rest instrumented.**  D-038
-   named the population; D-040 measured it layer by layer (74,605 of 85,596 ceilings
-   are a road/structure mesh), by cross-section (a slab across the whole street, not a
-   strip), and by cell (29,800 over 485 cells, worst = the junction-dense ones).  The
-   **junction patch was being laid on the raw DEM** instead of on the road
-   (`terrainHF.sample(...) + 0.045`) while the ribbons were draped on the smoothed
-   profile — fixed (the drape is now one function of position, `roadDrapeAt`, shared by
-   ribbon, graph and patch): ceiling population 29,800 → 29,025.  The remainder —
-   17,129 in the 0.5–1 m bin, 9,914 in 1–2 m, all road meshes — is open, with the
-   instruments in place and one hypothesis to test next (the headroom ray may be
-   counting *exit* hits of the very surface the vehicle stands on).
-4b. **The road surface as one description.**  Answered by D-038 above; the remaining
-   D-034's own numbers: `pipeline/stages/output.cpp` grades the road into the
-   collision grid (`gradeRoadsIntoGrid`, n = 128) and `pipeline/stages/network.cpp`
-   builds the nav graph from the OSM centrelines, while the chunk's road mesh is
-   the render/collision ribbon — three surfaces for one street.  The fix is to
-   make the ribbon the authority and grade *from* it, so a lane point's collision
-   surface and the model's road agree to the centimetre the budget needs.
+4h. ~~**The ceilings above lanes**~~ — **closed** (D-040 partially, D-041 fully).  D-038
+   named the population and D-040 fixed two causes: the patch was laid on the raw DEM
+   instead of on the shared drape, and the drape became one function of position
+   (`roadDrapeAt`).  D-041 found the last and largest one: **the patch's apex was built
+   in the wrong coordinate space** (`Vec3{0, y, 0}` = the cell's south-west corner, while
+   every rim vertex subtracts the cell origin), so each junction patch was a fan up to a
+   kilometre long lying across the cell at the junction's height.  Measured on the same
+   instrument at the standard 20 m spacing: ceilings 0.5-2.6 m above a lane
+   **29,025 in 485 cells → 5,411 in 305 cells**, road/structure-mesh attribution
+   **74,605 → 2,919**, lane-vs-collision agreement within 0.25 m **99.3 % → 99.6 %**.  A
+   10x finer probe (2 m, 176,392 lane points) reads **99.7 %** within 0.25 m, and of the
+   57,860 in the band, 134,928 are a terrain heightfield and 41,065 a road mesh: what
+   remains is terrain standing above a road that runs through a cut, which is what a road
+   in a cut is, not a slab over the street.
+4b. ~~**The road surface as one description**~~ — **closed** (D-038, instrumented by D-040
+   and D-041).  There were three descriptions of one street: `gradeRoadsIntoGrid`
+   (`pipeline/stages/output.cpp`) grades the road into the collision grid, the nav graph
+   is built from the OSM centrelines (`pipeline/stages/network.cpp`), and the chunk's road
+   mesh is the render/collision ribbon.  D-038 made the ribbon the authority and graded
+   *from* it through one shared drape field, so all three sample one function of position:
+   lane sample vs collision surface agreement **91.3 % → 99.3 %** within 0.25 m, mean
+   signed error **+0.060 → +0.007 m**, and **99.6 %** after D-041's junction fix.
 5. **A1 — the renderer**, written against the chunk format, with the shaders of
    A4–A6.  It cannot be run here; it can be written, and its data contract is
    already proven by the runtime reader.

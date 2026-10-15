@@ -119,4 +119,9 @@ bool writeContactSheet(const std::string& path, const std::vector<std::string>& 
                        const std::vector<const std::vector<u8>*>& tiles,
                        u32 tile, u32 columns, const char* title);
 
+// How many shipped layers needed the flat-albedo repair (a layer whose albedo field
+// was constant and got a fine grain at the authored mean).  Exposed so the pipeline
+// can publish it: a repair nobody counts is a silent change to a material (D-041).
+u32 flatAlbedoRepairs();
+
 }  // namespace mumbai::tex

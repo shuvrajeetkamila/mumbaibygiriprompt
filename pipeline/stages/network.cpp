@@ -930,9 +930,20 @@ bool buildRoads(Context& ctx) {
             const f64 a1 = ((k + 1) / static_cast<f64>(sides)) * TAU;
             const Vec2d p0{j.position.x + std::cos(a0) * j.radius, j.position.y + std::sin(a0) * j.radius};
             const Vec2d p1{j.position.x + std::cos(a1) * j.radius, j.position.y + std::sin(a1) * j.radius};
+            // The fan's apex is the *junction*, not the cell's south-west corner.  It
+            // was written as the literal (0, y, 0), which is local space — the corner
+            // of the 1024 m cell — while the rim vertices are localised by `off`.  So
+            // every junction patch was a fan of triangles up to a kilometre long,
+            // sweeping across the cell at the junction's own height, and every street
+            // in that cell whose surface was lower had a sheet of asphalt above it
+            // (measured: 29,025 lane points with a road surface 0.5-2.6 m overhead in
+            // 486 cells, 25,696 of them confirmed by a down-ray from above, worst cells
+            // the junction-dense ones; D-040/041).
             cd.roads.addTriangle(
-                cd.roads.addVertex(Vec3{0, static_cast<f32>(y), 0}, Vec3{0, 1, 0}, {0, 0},
-                                   matJunction, zone, 1),
+                cd.roads.addVertex(Vec3{static_cast<f32>(j.position.x),
+                                        static_cast<f32>(y),
+                                        static_cast<f32>(j.position.y)} - off,
+                                   Vec3{0, 1, 0}, {0, 0}, matJunction, zone, 1),
                 cd.roads.addVertex(Vec3{static_cast<f32>(p0.x), static_cast<f32>(y), static_cast<f32>(p0.y)} - off,
                                    Vec3{0, 1, 0}, {0, 0}, matJunction, zone, 1),
                 cd.roads.addVertex(Vec3{static_cast<f32>(p1.x), static_cast<f32>(y), static_cast<f32>(p1.y)} - off,

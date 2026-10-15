@@ -108,16 +108,30 @@ struct FabricProfile {
     f64 margin;
 };
 
+// Block spacing and lot sizing per zone.  The first version was tuned to keep the
+// world small (105-180 m blocks, two or three lots per block edge): Mumbai's dense
+// wards are nothing like that.  Measured against the specification's own targets —
+// 200k+ buildings and ~34,000 km of roadway over ~600 km² — the fabric was both too
+// coarse (8,393.8 km of centreline: 8.7 km/km², where a dense ward is 20-40) and too
+// sparsely built (148 buildings/km²).  These numbers are nearer the city: 55-95 m
+// blocks, four lots per block edge, a third less margin, so a ward subdivides into the
+// small plots Mumbai actually has (D-041).
 FabricProfile profileFor(ZoningZone z, bool informal) {
-    if (informal) return {36.0, 0.62, 2, 2.2};
+    // The street spacing is what the specifications' road length asks for (a dense
+    // ward is 20-40 km of street per km², not 8.7); the lot sizing is what its
+    // building count asks for (200k+, and the first attempt at this density produced
+    // 676k buildings with 13.4 M LOD0 triangles — three times the target and a
+    // 4x bill for the bake, the collision layer and the streamed world, so the plot
+    // size is set to land just past the requirement rather than far beyond it).
+    if (informal) return {26.0, 0.62, 3, 2.6};
     switch (z) {
-        case ZoningZone::SouthBombayColonial: return {105.0, 0.55, 3, 2.6};
-        case ZoningZone::BKCCommercial:       return {120.0, 0.50, 3, 3.4};
-        case ZoningZone::SuburbanResidential: return {130.0, 0.52, 3, 2.4};
-        case ZoningZone::Industrial:          return {175.0, 0.35, 3, 3.0};
-        case ZoningZone::Hillside:            return {180.0, 0.22, 2, 4.0};
+        case ZoningZone::SouthBombayColonial: return {62.0, 0.55, 3, 3.4};
+        case ZoningZone::BKCCommercial:       return {70.0, 0.50, 3, 4.4};
+        case ZoningZone::SuburbanResidential: return {74.0, 0.52, 3, 3.2};
+        case ZoningZone::Industrial:          return {110.0, 0.35, 3, 4.0};
+        case ZoningZone::Hillside:            return {160.0, 0.22, 2, 5.2};
         case ZoningZone::Airport:             return {0.0, 0.0, 1, 0.0};   // no fabric
-        default:                              return {140.0, 0.45, 3, 2.6};
+        default:                              return {80.0, 0.45, 3, 3.4};
     }
 }
 

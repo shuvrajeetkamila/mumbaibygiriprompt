@@ -1503,6 +1503,10 @@ int main(int argc, char** argv) {
                     }
                     std::printf("\n");
                 }
+                std::printf("        ceilings confirmed by a down-ray from 3 m: %llu; seen only "
+                            "from below: %llu\n",
+                            static_cast<unsigned long long>(lv.ceilingsConfirmedFromAbove),
+                            static_cast<unsigned long long>(lv.ceilingsOnlyFromBelow));
                 std::printf("        of those ceilings: %llu are a terrain heightfield, %llu a "
                             "road/structure mesh, %llu a built compound\n",
                             static_cast<unsigned long long>(lv.headroomLayer[0]),

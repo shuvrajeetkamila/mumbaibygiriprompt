@@ -220,6 +220,10 @@ bool isSmoothFamily(const char* f) {
 
 }  // namespace
 
+// Counted, not silent: how many shipped layers needed the flat-albedo repair.
+static u32 g_flatAlbedoRepairs = 0;
+u32 flatAlbedoRepairs() { return g_flatAlbedoRepairs; }
+
 // -----------------------------------------------------------------------------
 //  Family / tile lookup
 // -----------------------------------------------------------------------------
@@ -688,6 +692,43 @@ TextureSet Generator::make(const std::string& name, f32 roughness, f32 metallic,
     set.baseColor.resize(n * 4);
     set.normal.resize(n * 3);
     set.orm.resize(n * 3);
+
+    // No shipped albedo tile is a constant.  The test suite has always asserted
+    // this ("at most a handful of the library may be flat"), and D-041's denser
+    // fabric minted enough new material variants to push the count past its bound:
+    // a painted surface with a *constant* albedo reads as untextured plastic
+    // however good its normals are.  Rather than widen the bound, the shipper now
+    // repairs: a layer whose albedo field is constant gets a fine grain at the
+    // authored mean (a few percent, tile-scale, seamless across the wrap), and the
+    // repair is counted, so the harness sees it instead of a silently altered
+    // material (D-041).
+    {
+        f64 lo = 1e30, hi = -1e30;
+        for (size_t p = 0; p < t.albedo.size(); ++p) {
+            lo = std::min(lo, static_cast<f64>(t.albedo[p]));
+            hi = std::max(hi, static_cast<f64>(t.albedo[p]));
+        }
+        // ...but only for a family that is *meant* to carry grain.  The optically
+        // smooth families (glass, lamp glow, water, rail steel) are flat by design:
+        // their albedo is the material's colour and the test suite asserts it, so the
+        // repair must not touch them (measured: repairing them broke two of the
+        // suite's own flat-family expectations, D-041).
+        if (hi - lo < 1e-3 && !isSmoothFamily(fam)) {
+            for (u32 y = 0; y < N; ++y) {
+                for (u32 x = 0; x < N; ++x) {
+                    const f32 u = static_cast<f32>(x) / static_cast<f32>(N);
+                    const f32 v = static_cast<f32>(y) / static_cast<f32>(N);
+                    const f32 grain = 0.94f + 0.12f * fbm(u, v, 96, 2, 0.5f, s ^ 0x5EEDull);
+                    const size_t p = t.index(x, y);
+                    t.albedo[p * 3 + 0] *= grain;
+                    t.albedo[p * 3 + 1] *= grain;
+                    t.albedo[p * 3 + 2] *= grain;
+                }
+            }
+            ++g_flatAlbedoRepairs;
+            MLOG_WARN("texture: '%s' shipped a constant albedo — fine grain added", name.c_str());
+        }
+    }
 
     const bool smooth = isSmoothFamily(fam);
     // Roughness variation is bounded by the authored value on both sides: a

@@ -254,6 +254,11 @@ bool buildTextures(Context& ctx) {
     ctx.qa.add("textures.tileMetresMax", tileMax);
     ctx.qa.add("textures.meanAlbedoError", meanError * 100.0, meanError > 0.02 ? 2u : 0u);
     ctx.qa.add("textures.arrayBytes", static_cast<f64>(bytes));
+    // A repair the shipper made, published rather than silent: how many layers were
+    // shipped with a constant albedo and had to be given a fine grain (D-041).
+    ctx.qa.add("textures.flatAlbedoRepairs", static_cast<f64>(tex::flatAlbedoRepairs()));
+    MLOG_INFO("textures: %u of %zu layers needed the flat-albedo repair",
+              tex::flatAlbedoRepairs(), baseColorLayers.size());
     ctx.qa.add("textures.buildSeconds", ScopedTimer::now() - t0);
     if (meanError > 0.02)
         ctx.qa.fail("texture mean albedo deviates from the material by more than 2 %");

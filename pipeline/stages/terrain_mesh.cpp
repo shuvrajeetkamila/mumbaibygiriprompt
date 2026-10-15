@@ -35,7 +35,7 @@ bool emitTerrainMeshes(Context& ctx) {
     const i64 cx1 = static_cast<i64>(std::floor((ctx.extent.max.x - 1) / MACRO_CELL_SIZE));
     const i64 cz1 = static_cast<i64>(std::floor((ctx.extent.max.y - 1) / MACRO_CELL_SIZE));
 
-    u64 cellCount = 0, terraTriangles = 0;
+    u64 cellCount = 0, terraTriangles = 0, seabedCoarseCells = 0;
 
     for (i64 cz = cz0; cz <= cz1; ++cz) {
         for (i64 cx = cx0; cx <= cx1; ++cx) {
@@ -45,8 +45,27 @@ bool emitTerrainMeshes(Context& ctx) {
 
             f32 minH = 1e30f, maxH = -1e30f;
 
+            // An open-water cell is four kilometres of seabed nobody sees from the
+            // road: its LOD0 is allowed to be the resolution of its own LOD1.  The
+            // test is the terrain's own numbers — a 5x5 sample of the cell edge, all
+            // of it below the waterline — rather than a mask, so a cell that is
+            // mostly land keeps full resolution even where it is bordered by sea.
+            // (Measured effect on the published world is in the decision log.)
+            bool openWater = true;
+            {
+                constexpr int kProbe = 5;
+                for (int pi = 0; pi < kProbe && openWater; ++pi) {
+                    for (int pj = 0; pj < kProbe; ++pj) {
+                        const f64 wx = origin.x + (pi + 0.5) * MACRO_CELL_SIZE / kProbe;
+                        const f64 wz = origin.y + (pj + 0.5) * MACRO_CELL_SIZE / kProbe;
+                        if (ctx.terrainHF.sample(wx, wz) >= 0.0) { openWater = false; break; }
+                    }
+                }
+            }
+            if (openWater) ++seabedCoarseCells;
+
             for (int lod = 0; lod < 3; ++lod) {
-                const u32 n = lodSamples[lod];
+                const u32 n = (lod == 0 && openWater) ? lodSamples[1] : lodSamples[lod];
                 const f64 step = MACRO_CELL_SIZE / n;
                 mesh::MeshBuilder& mb = cd.terrain[lod];
 
@@ -159,6 +178,7 @@ bool emitTerrainMeshes(Context& ctx) {
               (unsigned long long)(cellCount * 33ull * 33ull));
     ctx.qa.add("terrain.meshCells", static_cast<f64>(cellCount));
     ctx.qa.add("terrain.lod0Triangles", static_cast<f64>(terraTriangles));
+    ctx.qa.add("terrain.seabedCoarseCells", static_cast<f64>(seabedCoarseCells));
     return true;
 }
 

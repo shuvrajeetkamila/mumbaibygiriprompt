@@ -1823,6 +1823,109 @@ census), `engine/app/phys_main.cpp` (the reports).
 
 ---
 
+## D-041 — The junction patch was built in the wrong coordinate space; the fabric gets its density; a check that names names
+
+**Decision.** Four things, all measured before they were believed.  The first is a
+rendering/physics defect with a single mechanical cause, found by the instrument D-040
+left behind; the second and third are roadmap quantities (B2/B4, LOD0); the fourth is a
+test that was passing by counting rather than by looking.
+
+**1. Every junction patch was a fan up to a kilometre long.**  D-040 fixed the patch's
+*height* (it was being laid on the raw DEM instead of on the shared drape) and left the
+population at 29,025 of 85,596 ceilings.  The remaining cause is a coordinate space:
+the patch built its apex with `cd.roads.addVertex(Vec3{0, y, 0}, …)` — the literal
+origin, i.e. the *cell's south-west corner* — while every rim vertex subtracts the
+cell's origin (`… - off`).  Each patch was therefore a fan from the cell corner to the
+junction's own rim: a triangle covering up to 1,024 m of the cell at the junction's
+height, straddling every street that passes through it.  Fixed by building the apex
+from the junction's position in the same local space as the rim.
+
+Measured on the same instrument (physics survey, standard 20 m lane spacing), before →
+after:
+
+| quantity | before | after |
+|---|---|---|
+| ceilings 0.5–2.6 m above a lane | 29,025 in 485 cells | **5,411 in 305 cells** |
+| … attributed to a road/structure mesh | 74,605 (of 85,596 total) | **2,919** |
+| … attributed to the terrain heightfield | 10,968 | 13,340 |
+| … confirmed by a down-ray from 3 m | 25,696 of 29,025 | 5,279 of 5,411 |
+| lane vs collision agreement within 0.25 m | 99.3 % | **99.6 %** |
+| worst disagreement | 2.97 m | 3.00 m (a single sample) |
+
+A finer probe at 2 m spacing (10× the samples, 176,392 lane points) says the same thing
+more sharply: **99.7 %** within 0.25 m, and of the 57,860 in the 0.5–2.6 m band,
+**134,928 are a terrain heightfield and 41,065 a road/structure mesh** — i.e. what is
+left is not a slab over the street but terrain standing above a road that runs through a
+cut or beside an embankment, which is what a road in a cut *is*.  The mesh share fell
+from 87 % of the band to 18 % (20 m) / 23 % (2 m).  The cross-section probe that
+identified the slab (D-040) now reads a normal road profile.
+
+The lesson is filed with the defect: **a vertex built from a constant in one space and
+its siblings from a translated origin is a bug that renders as geometry, and geometry
+renders as plausible.**  Nothing about the junction looked wrong in isolation — a fan
+apex 1 km away still projects to a flat-shaded surface, and the only reason it was ever
+found is that the physics survey asked what surface is *above* a lane, a question no
+renderer asks.
+
+**2. B2/B4 — the fabric's density.**  Both roadmap rows were rewritten from
+measurement rather than assumed:
+
+| | before | now | target |
+|---|---|---|---|
+| roadway (B4) | 8,393.8 km | **14,147.2 km** (264,882 ways, 175,631 junctions) | ~34,000 km |
+| buildings (B2) | 143,203 | **351,051** (350,903 generated + 148 surveyed) | 200k+ |
+| LOD0 building triangles | 2.9 M | **6,951,130** | — |
+| collision boxes | — | 351,069 | one per structure |
+
+The building target is met by generating *inside real parcels* (six per-parcel density
+profiles: colonial 62 m / 3 lots / 3.4 m margin, BKC 70/3/4.4, suburban 74/3/3.2,
+industrial 110/3/4.0, hillside 160/2/5.2, default 80/3/3.4, informal 26/3/2.6), with
+72,401 parcels inset to keep clear of the carriageway and 28,709 rejected as too small
+to hold a building — all of it counted in `world_manifest.json`, so the count and the
+D-037 standard (a building in a street is not a building) both hold.  A first pass at
+676k structures / 13.4 M triangles was dialled back: the fabric is not improved by
+putting three buildings where one stands, and the load is real.
+
+**3. LOD0 open water.**  Open sea and creek cells were spending full-resolution terrain
+triangles on a surface that is a plane.  Cells whose LOD0 terrain is entirely below sea
+level now emit the coarse split (`terrain.seabedCoarseCells` 414,
+`terrain.lod0Triangles` 1,256,448 — down 634k), with the shoreline kept at full
+resolution by construction (the split is chosen per cell and only when no land vertex is
+in the cell).
+
+**4. The material check now names names.**  `theBuiltMaterialArraysAreSelfConsistent`
+failed on the new world with `flatNormals <= 8` / `flatAlbedo <= 8`, because the denser
+fabric minted a new material (`signage_painted`) whose albedo shipped as a constant.
+Two changes, both principled rather than a widened bound:
+
+* The **shipper repairs**: a layer whose albedo field is constant gets a fine grain at
+  its authored mean, seamless across the tile wrap, and the repair is **counted**
+  (`textures.flatAlbedoRepairs`, 9 of 117 layers) — the count is published in the
+  manifest, so a silently altered material is impossible.  The repair deliberately does
+  **not** touch the optically smooth families (glass, lamp glow, water, rail steel):
+  those are flat by design, and repairing them broke two of the suite's own flat-family
+  expectations, which is how the scope of the repair was found.
+* The **test stops counting and starts looking**: a flat normal or albedo is legitimate
+  only for a family that is optically smooth by design, and the check now names the
+  offending layer and family.  It immediately named `corrugated_metal` — and the check
+  was wrong, not the material: a corrugated sheet's normal varies in R alone, and a
+  green-only probe calls it flat.  The check now measures the vector (any channel tilted
+  = textured) and reads the layer/family pairing from the published manifest, which is
+  the file that carries the strings the array format does not.
+
+**What is green.**  `make test` **59 cases / 1,558 checks / 0 failing**;
+`make physics` 56 / 0; `make simulate` PASS (572 vehicles, 28.2 km/h); `verify_export`
+**402 / 0**; viewer shaders, artifact integrity and raw-data hashes all clean; the lane
+survey 99.6 % within 0.25 m (99.7 % at 2 m spacing); nav-node-in-building 0.01 %.
+
+**Files.**  `pipeline/stages/network.cpp` (the junction apex; 4h's remaining cause),
+`pipeline/stages/fabric.cpp` + `corridors.cpp` (the density profiles),
+`pipeline/stages/terrain_mesh.cpp` (the sea-level LOD0 split),
+`pipeline/mgeo/texture.{h,cpp}` + `pipeline/stages/textures.cpp` (the counted repair),
+`tests/test_texture.cpp` (the named rule).
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

@@ -348,6 +348,13 @@ public:
         // city is structural, one concentrated in a few cells is a place (D-040).
         std::unordered_map<u64, u64> ceilingsByCell;
         u64 ceilingsTotal = 0;
+        // A ceiling measured twice: from below (the survey's own up-ray) and from
+        // above (a down-ray from 3 m over the lane).  A slab that is really there is
+        // hit by both; a ceiling that only exists looking up is an *exit* hit of the
+        // surface the vehicle is standing on — a mesh ray reports the triangle it
+        // leaves as well as the one it meets (D-040).
+        u64 ceilingsConfirmedFromAbove = 0;
+        u64 ceilingsOnlyFromBelow = 0;
         u64 diagnosed = 0;         // samples whose rays were dumped (surveyTrace)
         std::vector<BlockedSample> examples;
         u64 stepped = 0;           // more than `footprintStepTolerance` of step
