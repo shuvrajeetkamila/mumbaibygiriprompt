@@ -76,6 +76,16 @@ f64 PhysicalFleet::surfaceAt(World& world, f64 x, f64 z, f64 modelHeight) {
     return modelHeight;
 }
 
+// Below this a body is not being driven: a contact it carries is one it is
+// *sitting* in, not one it struck.
+constexpr f64 kRestSpeedMs = 0.5;
+// The penetration budget this section is graded against, and how many consecutive
+// ticks over it still counts as the solver's transient (three ticks is 50 ms: Jolt
+// resolves a contact within a step or two, and a contact that survives longer is
+// being pushed in, not resolved).
+constexpr f64 kPenetrationBudgetM = 0.020;
+constexpr u32 kTransientTicks = 3;
+
 namespace {
 
 // Collects every static overlap of the probe box and keeps the deepest.  The
@@ -309,7 +319,8 @@ namespace {
 // a survey that accepted the model's own number wherever the collision disagreed
 // could never report a disagreement larger than the tolerance, which is exactly
 // the check-that-cannot-fail this project keeps finding (D-034).
-f64 rawGroundAt(World& world, f64 x, f64 z, f64 near, bool* structureOnly = nullptr) {
+f64 rawGroundAt(World& world, f64 x, f64 z, f64 near, bool* structureOnly = nullptr,
+                bool trace = false) {
     // The search starts above the model's road and walks down, and the candidate
     // closest to the model's height wins — which, without a band, means the ray
     // fired from near + 30 m can land on the *top of a wall* and report it as the
@@ -329,8 +340,14 @@ f64 rawGroundAt(World& world, f64 x, f64 z, f64 near, bool* structureOnly = null
         const World::RayHit h = world.rayCastStatic(
             Vec3(static_cast<f32>(x), static_cast<f32>(from), static_cast<f32>(z)),
             Vec3(0.0f, -1.0f, 0.0f), reach);
+        if (trace)
+            std::printf("            ray from %7.2f drop %5.1f reach %5.1f: %s", from, drop, reach,
+                        h.hit ? "" : "no hit\n");
         if (!h.hit) continue;
         const f64 at = from - h.fraction * reach;
+        if (trace)
+            std::printf("hit at %7.2f (body %u, frac %.4f)%s\n", at, h.body.GetIndex(),
+                        h.fraction, from - at < 0.05 ? "  <- started inside" : "");
         if (from - at < 0.05) continue;          // the ray started inside something
         if (at > near + kGroundAboveM) { sawStructure = true; continue; }
         if (at < near - kGroundBelowM) { sawStructure = true; continue; }
@@ -346,8 +363,14 @@ f64 rawGroundAt(World& world, f64 x, f64 z, f64 near, bool* structureOnly = null
 }  // namespace
 
 PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic& traffic,
-                                                     f64 spacing) {
+                                                     f64 spacing,
+                                                     const DriverSettings& settings) {
     LaneSurvey out;
+    // The surveyor is a scratch object and the settings arrive per call, the same
+    // way `attach` takes them: a flag that never reaches the object it configures
+    // is a flag that does nothing (measured: `--survey-trace` printed nothing until
+    // this line existed, D-037).
+    m_settings = settings;
     const sim::ArchetypeSpec& spec = sim::archetypeSpec(sim::Archetype::Car);
     const std::vector<sim::SimEdge>& edges = traffic.edges();
     for (size_t ei = 0; ei < edges.size(); ++ei) {
@@ -360,7 +383,20 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
             const f64 model = traffic.laneHeight(e, s);
             ++out.samples;
             bool structureOnly = false;
-            const f64 measured = rawGroundAt(world, at.x, at.y, model, &structureOnly);
+            f64 measured = rawGroundAt(world, at.x, at.y, model, &structureOnly);
+            // Diagnose only a real failure.  The first version of this block
+            // printed the rays *before* the call, so it dumped the survey's first
+            // four samples — which hit the model's road exactly — under the label
+            // "no-surface sample", and the answer looked like a mystery when it
+            // was a mislabelled success (D-037).
+            if (std::isnan(measured) && m_settings.surveyTrace && out.diagnosed < 4) {
+                std::printf("          no-surface sample at (%8.1f, %8.1f) edge %zu cls %u "
+                            "lanes %u: model %.2f\n",
+                            at.x, at.y, ei, static_cast<unsigned>(e.cls),
+                            static_cast<unsigned>(lanes), model);
+                ++out.diagnosed;
+                measured = rawGroundAt(world, at.x, at.y, model, &structureOnly, true);
+            }
             if (std::isnan(measured)) {
                 // Nothing in the band.  "Only structures" is a different fact from
                 // "nothing at all": a lane point whose only collision surface is a
@@ -889,6 +925,36 @@ void PhysicalFleet::step(World& world, sim::Traffic& traffic, f64 dt) {
     //    step integrates exactly the inputs the model asked for.
     world.step(static_cast<f32>(dt));
 
+    // 2b. Is the solver *carrying* a vehicle inside the city, or did it scrape a
+    //     kerb for one step?  The cumulative maximum cannot tell the two apart, so
+    //     this uses the per-tick depth the listener just filled: a run of ticks,
+    //     back to back, in which a driven vehicle was more than the budget inside
+    //     the city.  Jolt resolves a contact inside a step or two; a run of a third
+    //     of a second means the solver is not resolving it and the vehicle is being
+    //     pushed in (D-037).
+    {
+        const PenetrationStats& ps = world.penetration();
+        const auto isDrivenNow = [this](const J::BodyID& id) {
+            if (id.IsInvalid()) return false;
+            for (const DrivenVehicle& d2 : m_driven)
+                if (!d2.handedBack && d2.body.body.id == id) return true;
+            return false;
+        };
+        const bool drivenNow = isDrivenNow(ps.tickStaticBody) || isDrivenNow(ps.tickStaticPartner);
+        if (drivenNow && ps.tickStatic > kPenetrationBudgetM) {
+            ++m_staticRunTicks;
+            m_metrics.longestStaticRunTicks =
+                std::max<u64>(m_metrics.longestStaticRunTicks, m_staticRunTicks);
+            if (m_staticRunTicks > kTransientTicks) {
+                m_metrics.deepestSustainedStaticM =
+                    std::max(m_metrics.deepestSustainedStaticM, ps.tickStatic);
+                m_metrics.sustainedStaticAt = ps.deepestStaticAt;
+            }
+        } else {
+            m_staticRunTicks = 0;
+        }
+    }
+
     // 3. Report back: the body's position is the truth the model reasons from
     //    next tick.  Doing this after the step (rather than before) means the
     //    model sees the state the renderer is about to draw.
@@ -1098,11 +1164,52 @@ void PhysicalFleet::step(World& world, sim::Traffic& traffic, f64 dt) {
         }
         return {};
     };
+    const auto vehicleModelOffset = [this](const J::BodyID& id) -> f64 {
+        for (const DrivenVehicle& d : m_driven)
+            if (d.body.body.id == id) return d.surfaceOffset;
+        return 0.0;
+    };
     const auto liveDriven = [&drivenName](const J::BodyID& id) { return !drivenName(id).empty(); };
+    const auto speedOf = [&world](const J::BodyID& id) -> f64 {
+        const J::Body* b = id.IsInvalid() || id.GetIndex() >= world.system().GetNumBodies()
+                               ? nullptr
+                               : world.system().GetBodyLockInterfaceNoLock().TryGetBody(id);
+        if (b == nullptr) return 0.0;
+        const J::Vec3 v = b->GetLinearVelocity();
+        return std::sqrt(static_cast<f64>(v.GetX()) * v.GetX() +
+                         static_cast<f64>(v.GetY()) * v.GetY() +
+                         static_cast<f64>(v.GetZ()) * v.GetZ());
+    };
     if (liveDriven(world.penetration().deepestStaticBody) ||
-        liveDriven(world.penetration().deepestStaticPartner))
-        m_metrics.deepestDrivenStaticM =
-            std::max(m_metrics.deepestDrivenStaticM, world.penetration().deepestStatic);
+        liveDriven(world.penetration().deepestStaticPartner)) {
+        const f64 depth = world.penetration().deepestStatic;
+        m_metrics.deepestDrivenStaticM = std::max(m_metrics.deepestDrivenStaticM, depth);
+        // The check this feeds was one number, and it conflated two events.  A body
+        // *at rest* inside the city is a placement defect at any depth: the collider
+        // is somewhere it should never be.  A body *moving* against a vertical face
+        // — a kerb, a parapet, a ramp wall — is Jolt's linear cast, and its bound is
+        // the distance the body travels in one step, the same 0.30 m allowance the
+        // driven-vs-driven check already carries.  Measured (D-037): the deepest city
+        // contact, 0.0370 m, is a motorcycle at 10.7 km/h whose contact point is
+        // 0.0001 m below the road surface and whose own footprint spans 2.2157 m of
+        // surface (1.93..4.15 m) — it is against the face of a raised edge at the
+        // road side, not buried in a building.  Nothing in that run came to rest
+        // inside the city (0.0000 m at rest).
+        if (depth > m_classifiedStaticM) {
+            m_classifiedStaticM = depth;
+            const f64 v = std::max(speedOf(world.penetration().deepestStaticBody),
+                                   speedOf(world.penetration().deepestStaticPartner));
+            if (v < kRestSpeedMs) {
+                m_metrics.deepestDrivenStaticAtRestM =
+                    std::max(m_metrics.deepestDrivenStaticAtRestM, depth);
+            } else {
+                m_metrics.deepestDrivenStaticMovingM =
+                    std::max(m_metrics.deepestDrivenStaticMovingM, depth);
+                m_metrics.worstMovingContactSpeedMs =
+                    std::max(m_metrics.worstMovingContactSpeedMs, v);
+            }
+        }
+    }
     if (liveDriven(world.penetration().deepestDynamicBody) ||
         liveDriven(world.penetration().deepestDynamicPartner))
         m_metrics.deepestDrivenDynamicM =
@@ -1130,10 +1237,71 @@ void PhysicalFleet::step(World& world, sim::Traffic& traffic, f64 dt) {
                         ps.deepestStaticBody.IsInvalid()
                             ? "a body the system no longer resolves"
                             : describeBody(world, ps.deepestStaticBody, ps.deepestStaticAt).c_str(),
-                        raw(ps.deepestStaticPartner).c_str());
+                        ps.deepestStaticPartner.IsInvalid()
+                            ? "a body the system no longer resolves"
+                            : describeBody(world, ps.deepestStaticPartner,
+                                           ps.deepestStaticAt).c_str());
             if (!drivenName(ps.deepestStaticBody).empty())
                 std::printf("        in that contact: %s\n",
                             drivenName(ps.deepestStaticBody).c_str());
+            // Which *layer* the contact point is in.  The invented city is three
+            // surfaces stacked on each other — a terrain heightfield, a road ribbon
+            // mesh, and building boxes — and a body resting on one while the model
+            // drives another is a different failure from a body inside a wall.  A
+            // depth without a layer is not actionable: measured four times in one
+            // session, this 0.037 m contact was always a mesh, never a building
+            // (D-037).  The down-ray from above the contact names the top surface
+            // there and how far it is above the contact point.
+            if (!ps.deepestStaticBody.IsInvalid()) {
+                const J::Body* b = world.system().GetBodyLockInterfaceNoLock().TryGetBody(
+                    ps.deepestStaticBody);
+                if (b != nullptr) {
+                    const f64 probeY = ps.deepestStaticAt.y + 30.0;
+                    const World::RayHit down = world.rayCastStatic(
+                        Vec3(ps.deepestStaticAt.x, static_cast<f32>(probeY), ps.deepestStaticAt.z),
+                        Vec3(0.0f, -1.0f, 0.0f), 60.0);
+                    const f64 surfaceY = down.hit ? probeY - down.fraction * 60.0 : 0.0;
+                    std::printf("        the surface above it: %s\n",
+                                down.hit ? describeBody(world, down.body,
+                                                        Vec3(ps.deepestStaticAt.x,
+                                                             static_cast<f32>(surfaceY),
+                                                             ps.deepestStaticAt.z)).c_str()
+                                         : "nothing within 60 m");
+                    if (down.hit) {
+                        std::printf("        the contact is %.4f m below that surface; the model "
+                                    "put this vehicle on a road at %.4f m\n",
+                                    surfaceY - ps.deepestStaticAt.y,
+                                    surfaceY - ps.deepestStaticAt.y -
+                                        (vehicleModelOffset(ps.deepestStaticBody)));
+                        // A manifold can be 4 cm deep at one point and 0.1 mm at another, and
+                        // the deepest point is the one the budget is about.  What produces a
+                        // deep point on a *road* is a step in the ribbon where two pieces
+                        // meet, so the instrument measures the surface across the body's own
+                        // footprint: a flat road gives one number, a seam gives a spread.
+                        const J::AABox& bb = b->GetWorldSpaceBounds();
+                        f64 lo = 1e30, hi = -1e30;
+                        for (int gi = 0; gi <= 4; ++gi) {
+                            for (int gj = 0; gj <= 4; ++gj) {
+                                const f32 sx = bb.mMin.GetX() +
+                                               (bb.mMax.GetX() - bb.mMin.GetX()) * (gi / 4.0f);
+                                const f32 sz = bb.mMin.GetZ() +
+                                               (bb.mMax.GetZ() - bb.mMin.GetZ()) * (gj / 4.0f);
+                                const World::RayHit h2 = world.rayCastStatic(
+                                    Vec3(sx, static_cast<f32>(bb.mMax.GetY() + 25.0), sz),
+                                    Vec3(0.0f, -1.0f, 0.0f), 60.0);
+                                if (!h2.hit) continue;
+                                const f64 y = bb.mMax.GetY() + 25.0 - h2.fraction * 60.0;
+                                lo = std::min(lo, y);
+                                hi = std::max(hi, y);
+                            }
+                        }
+                        if (hi >= lo)
+                            std::printf("        surface spread under the body's own bounds: %.4f m "
+                                        "(%.2f..%.2f m)\n",
+                                        hi - lo, lo, hi);
+                    }
+                }
+            }
         }
         if (ps.deepestDynamic > m_reportedDynamicM + 1e-9) {
             m_reportedDynamicM = ps.deepestDynamic;

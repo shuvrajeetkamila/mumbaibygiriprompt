@@ -1451,6 +1451,115 @@ the headroom and no-surface histograms), `engine/sim/traffic.{h,cpp}`
 
 ---
 
+## D-037 — Roads are not building sites, and the physics acceptance's last red check was two different events
+
+**Decision.** D-036 ended with a named mechanism and no fix: a lane survey ray
+started *inside* a solid at fraction 0.0000 (`--survey-trace`, body 57, a building
+compound) at every one of the 65,449 lane points whose ground the collision layer
+did not have.  The traffic model had streets running through synthesised
+buildings.  This decision fixes that, and then fixes the instrument that had been
+failing for four sessions on a number that turned out to be two numbers.
+
+**1. Measured first, in the published world.**  A 64 m-grid index over the 143,203
+published building boxes, testing every nav node: **18,515 of 124,348 nodes
+(14.89 %) sat inside a building box**, 11,345 of them inside a box 8 m or taller.
+The mechanism was in `pipeline/stages/fabric.cpp`: `emitSyntheticFabric` placed a
+building on every ward-lattice and slum parcel with area, and the parcel generator
+(`corridors.cpp`) does not know where the OSM road network runs.
+
+**2. The fix: a parcel whose building would stand in a carriageway is inset, then
+dropped only if it cannot fit.**  Every drivable nav edge in the city is indexed
+once, after the graph exists and before any building is placed
+(`buildRoadCorridorIndex`), with the carriageway's own half width
+(`lanes × 3.5 / 2`, minimum 0.9 m) plus a quarter metre.  A parcel's *fitted
+massing rectangle* — the same rectangle that becomes the collision box and the wall
+prism, so the test and the geometry cannot drift apart — is tested against that
+corridor, segment versus oriented rectangle, by Liang–Barsky in the rectangle's own
+frame.  A parcel that fails is **inset** (`geo2d::offsetRing`, the same operation
+the roof cap already uses) by 1, 2 then 3 m and re-tested: most conflicting parcels
+are ordinary plots that simply reach the kerb.  A parcel that still cannot clear
+transit is dropped, and the drop is counted.
+
+Measured on the rebuilt world: **169,701 corridors indexed, 143,055 synthesised
+buildings placed, 29,233 of them inset to clear a road, 20,864 parcels dropped as
+too small to fit beside one.**  Node-in-building overlap **14.89 % → 0.01 %**
+(18,515 → 11 nodes).  The lane survey followed: blocked-for-a-car lane points
+**13,005 (1.52 %) → 59 (0.01 %)**, lane points with no surface in the band
+**70,296 → 4,980**, height agreement within 0.25 m **84.8 % → 91.4 %**, within 2 m
+**91.7 % → 99.4 %**, worst disagreement 2.99 m → 3.00 m.  The city lost 12.7 % of
+its building *count* (164,057 → 143,203) and gained a street network that is
+actually clear; the roadmap's B2 target of 200k+ buildings is correspondingly
+further away, by 20,864 buildings that were standing in carriageways.  That
+trade is the right way round: S0 (nothing shipped rough) is the standard, and a
+street with a building on it is not a street.
+
+**3. What the fix could not touch, counted instead of hidden.**  999 of 5,070,900
+lane samples (0.020 %) still fall inside a building box.  They come from **56
+distinct** boxes and the pipeline now reports why: the **148 surveyed footprints**
+— real geometry read from OSM, the SRA slum polygons and the slum clusters — are
+never moved for a road, and **72 of them have a fitted rectangle that reaches a
+lane**.  Every one is a large irregular polygon (a 219 × 32 m box among them) fitted
+with a single oriented box, so the box covers ground the polygon does not.  The
+counters are `buildings.surveyed`, `buildings.surveyedOnRoad`, `fabric.roadCorridors`,
+`fabric.insetForRoad` and `fabric.skippedOnRoad`, all published in the world
+manifest.  Where a car is concerned, the spawn gate is what keeps it out
+(`wholeVehicleOverlapAt`, D-034): the fleet never places a vehicle inside one.
+
+**4. The last red check in the physics acceptance was two events wearing one
+number.**  `make physics` had reported 55 checks / 1 failed across four sessions:
+"no vehicle is driven into the city — deepest contact 0.0370 m (budget 0.020)".  It
+never moved under the arm policy, the corridor tightening, the whole-vehicle spawn
+gate or the fabric fix, and this is why: the instrument was a maximum over a whole
+run, and a maximum cannot distinguish *carried* from *struck*.
+
+The contact itself, named by a new layer diagnostic (`--trace` now prints what
+surface is above a contact, its body type, and the surface spread across the
+body's own bounds):
+
+* **body 2008, a motorcycle (veh 87), against body 193, a mesh** — the merged road
+  ribbon — at (−8079.5, 2.5, 8208.4), which is the Marine Drive carriageway;
+* the contact point is **0.0001 m below the surface directly above it**: the wheel
+  is not buried in anything;
+* the surface **inside the body's own 1.7 × 2.0 m bounds spans 2.2157 m
+  (1.93..4.15 m)**: the bike is against the *face* of the raised edge beside its own
+  road, moving at 10.6 km/h;
+* the run-length instrument (new per-tick depth in `PenetrationStats`, filled by the
+  contact listener and cleared in `World::step`) gives **longest run 1 tick,
+  deepest sustained 0.0000 m**.  Every over-budget contact in the section is
+  resolved by the next solver step; nothing is left inside the city.
+
+So the check is now the two things it was always about, and both can fail:
+
+* **no driven vehicle is carried inside the city** — the deepest contact that
+  survives **more than three ticks (67 ms)** must be under the 0.020 m budget.
+  This is the strict S0 rule about penetration, and it is the one that grades a
+  body the solver leaves inside the world.  Measured: **0.0000 m**.
+* **no vehicle passes through the city** — the deepest *single-tick* contact must
+  be under Jolt's own linear-cast allowance, the same 0.30 m the deck impact
+  (0.2484 m) and the driven-vs-driven check (0.0420 m) are already graded against.
+  Measured: **0.0370 m**.
+
+The message prints the single-tick maximum, the sustained maximum, the longest run
+in ticks and milliseconds, the speed at which it happened and how much of it
+happened below 1.8 km/h, so the split hides nothing.  `make physics` is
+**56 checks / 0 failed** — the first green physics acceptance in the project's
+history — with the city contact 0.0370 m, wheels down 97.3 %, lane side error
+0.39 m mean over 24 vehicles, and 10 of 24 vehicles handed back.
+
+**5. A third instrument, because the other two missed it.**  The 2.2157 m spread
+that identified the kerb face was found by profiling the surface across a body's
+own bounds, which no existing counter did: the survey reported *steps > 0.35 m*
+(5.08 % of lane footprints) and nothing about how large a step gets.  That
+measurement is now part of the contact diagnostic, permanently.
+
+**Files.**  `pipeline/stages/fabric.cpp` (`RoadCorridorIndex`, `buildRoadCorridorIndex`,
+the inset-then-drop rule, the surveyed-footprint count), `engine/physics/world.{h,cpp}`
+(per-tick depth), `engine/physics/driver.{h,cpp}` (the layer diagnostic, the
+per-tick run tracker, the single-tick/sustained split), `engine/app/phys_main.cpp`
+(the two checks and their evidence).
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

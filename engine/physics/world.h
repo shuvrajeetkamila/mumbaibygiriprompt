@@ -58,6 +58,14 @@ struct PenetrationStats {
     // number nobody can act on.
     Vec3 deepestStaticAt{};
     Vec3 deepestDynamicAt{};
+    // This *tick's* deepest contacts, cleared before every step.  The cumulative
+    // fields above cannot answer "is the solver leaving it there": a single-tick
+    // scrape against a kerb and a body carried inside a wall for a third of a
+    // second are the same number in a maximum (D-037).
+    f64 tickStatic = 0.0;
+    f64 tickDynamic = 0.0;
+    JPH::BodyID tickStaticBody;
+    JPH::BodyID tickStaticPartner;
     void reset() {
         deepestStatic = deepestDynamic = 0.0;
         contacts = manifolds = 0;

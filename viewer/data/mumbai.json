@@ -8,13 +8,13 @@
   "url": "data/atlas_basecolor.png"
  },
  "buildings": {
-  "count": 164057,
+  "count": 143203,
   "offset": 1896450,
   "stride": 14
  },
  "edges": {
   "count": 167145,
-  "offset": 4939336,
+  "offset": 4647380,
   "stride": 12
  },
  "extent": {
@@ -25,23 +25,23 @@
   "seaLevel": 0
  },
  "flood": {
-  "cellsOver50cm": 128907,
+  "cellsOver50cm": 127732,
   "height": 1345,
-  "offset": 21627276,
+  "offset": 21335320,
   "peakCm": 255,
   "storm": "severe",
   "units": "cm",
-  "wetCells": 398854,
+  "wetCells": 398139,
   "width": 705
  },
  "floodModerate": {
-  "cellsOver50cm": 14628,
+  "cellsOver50cm": 14607,
   "height": 1345,
-  "offset": 22575501,
+  "offset": 22283545,
   "peakCm": 255,
   "storm": "moderate",
   "units": "cm",
-  "wetCells": 255531,
+  "wetCells": 254601,
   "width": 705
  },
  "format": "mumbai-viewer-scene",
@@ -49,9 +49,9 @@
  "generated": "mumbai_pipeline",
  "hero": {
   "indexCount": 579990,
-  "indexOffset": 19307316,
+  "indexOffset": 19015360,
   "vertexCount": 386320,
-  "vertexOffset": 6945076,
+  "vertexOffset": 6653120,
   "vertexStride": 32
  },
  "landmarks": [
@@ -1832,17 +1832,17 @@
  ],
  "nodes": {
   "count": 124348,
-  "offset": 4193248,
+  "offset": 3901292,
   "stride": 6
  },
  "qa": {
-  "counters": 207,
+  "counters": 212,
   "failures": 0,
   "passed": true,
   "warnings": 0
  },
  "stats": {
-  "buildings": 164057,
+  "buildings": 143203,
   "chunks": 924,
   "navEdges": 167145,
   "navNodes": 124348

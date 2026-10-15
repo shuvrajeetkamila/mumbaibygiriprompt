@@ -64,6 +64,14 @@ void PenetrationListener::record(const J::Body& b1, const J::Body& b2,
     const f64 penetration = static_cast<f64>(m.mPenetrationDepth);
     if (penetration <= 0.0) return;
     const bool dynamicPair = b1.IsDynamic() && b2.IsDynamic();
+    f64& tick = dynamicPair ? m_stats->tickDynamic : m_stats->tickStatic;
+    if (penetration > tick) {
+        tick = penetration;
+        if (!dynamicPair) {
+            m_stats->tickStaticBody = b1.IsDynamic() ? b1.GetID() : b2.GetID();
+            m_stats->tickStaticPartner = b1.IsDynamic() ? b2.GetID() : b1.GetID();
+        }
+    }
     f64& slot = dynamicPair ? m_stats->deepestDynamic : m_stats->deepestStatic;
     if (penetration > slot) {
         slot = penetration;
@@ -262,6 +270,10 @@ BodyHandle World::addDynamicBox(const Vec3& center, const Vec3& halfExtents, f64
 
 void World::step(f32 dt, u32 collisionSteps) {
     if (!m_ready) return;
+    m_penetration.tickStatic = 0.0;
+    m_penetration.tickDynamic = 0.0;
+    m_penetration.tickStaticBody = J::BodyID();
+    m_penetration.tickStaticPartner = J::BodyID();
     m_system->Update(dt, static_cast<int>(collisionSteps), m_temp, m_jobs);
 }
 

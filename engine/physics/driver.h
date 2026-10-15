@@ -143,6 +143,12 @@ struct DriverSettings {
     // Diagnostic: print each handback with its reason, and each vehicle that
     // drifts further than `traceOffM` from its lane, once per vehicle.
     bool trace = false;
+    // Per-ray diagnostics for the survey's no-surface samples: what each ground
+    // ray started at, what it hit and where.  The D-036 counters disagreed with
+    // each other — an over-ray finding a surface 0.2-0.7 m above the model's road
+    // while the ground rays reported nothing in the band — and that is a question
+    // only a per-ray dump can answer (D-037).
+    bool surveyTrace = false;
     f64 traceOffM = 1.5;
 };
 
@@ -233,6 +239,18 @@ struct DriverMetrics {
     // allowance.  One number cannot say which of the two happened, and the first
     // version of this accounting read the static depth for both (D-034).
     f64 deepestDrivenStaticM = 0.0;
+    // Split by speed, because they are different events (D-037): a body *at rest*
+    // inside the city is a placement defect at any depth, a body *moving* against
+    // a vertical face is Jolt's linear cast for one step.
+    f64 deepestDrivenStaticAtRestM = 0.0;
+    f64 deepestDrivenStaticMovingM = 0.0;
+    f64 worstMovingContactSpeedMs = 0.0;
+    // Carried, not touched: the longest run of consecutive ticks in which a driven
+    // vehicle was more than the budget inside the city, and the deepest depth seen
+    // during a run long enough that the solver was not resolving it (D-037).
+    u64 longestStaticRunTicks = 0;
+    f64 deepestSustainedStaticM = 0.0;
+    Vec3 sustainedStaticAt{};
     f64 deepestDrivenDynamicM = 0.0;
     u64 modelVehiclesPromoted = 0;
     u64 rejectedSpawns = 0;       // vehicles the model offered and the city refused
@@ -305,6 +323,7 @@ public:
         // a surface above it (a deck, or ground the grading put above the lane),
         // and 8 m+ is a road the collision layer simply does not have (D-036).
         u64 overBins[5] = {0, 0, 0, 0, 0};
+        u64 diagnosed = 0;         // samples whose rays were dumped (surveyTrace)
         std::vector<BlockedSample> examples;
         u64 stepped = 0;           // more than `footprintStepTolerance` of step
         f64 worstErrorM = 0.0;
@@ -364,7 +383,8 @@ public:
     // collision layer where the road is.  Costs a ray cast and a box overlap per
     // sample; on this city's 8,394 km of centreline that is minutes, so it is a
     // diagnostic (see `--survey`), not something a run does by itself.
-    LaneSurvey surveyLanes(World& world, sim::Traffic& traffic, f64 spacing);
+    LaneSurvey surveyLanes(World& world, sim::Traffic& traffic, f64 spacing,
+                           const DriverSettings& settings = DriverSettings{});
     struct ProbeReport {
         f64 depth = 0.0;
         u32 body = 0xFFFFFFFFu;
@@ -408,6 +428,10 @@ private:
     // height.  Returns the model's number when the collision disagrees with it by
     // more than a road's thickness.
     f64 surfaceAt(World& world, f64 x, f64 z, f64 modelHeight);
+    // The depth already classified at rest / while moving: a persistent deepest
+    // contact is attributed once, where it appeared.
+    f64 m_classifiedStaticM = 0.0;
+    u32 m_staticRunTicks = 0;
     std::vector<DrivenVehicle> m_driven;
     DriverMetrics m_metrics;
     DriverSettings m_settings;

@@ -237,7 +237,6 @@ void emitProxy(CellData& cd, const geo2d::Ring& ring, const Vec2d& centre, f64 g
     if (ring.size() < 3 || !(height > 0.5)) return;
 
     const Massing ms = massingOf(ring, centre);
-    const f64 yaw = ms.yaw;
     const f64 hx = ms.along, hz = ms.across;
     const Vec2d fitted = ms.centre;
 
@@ -329,8 +328,124 @@ CollisionBox collisionBoxFor(const CellData& cd, const geo2d::Ring& ring, const 
 //  the same per-zone rules as the surveyed footprints, so a Dharavi parcel and
 //  a Dharavi building recorded in OSM end up looking like neighbours.
 // -----------------------------------------------------------------------------
-void emitSyntheticFabric(Context& ctx) {
+// -----------------------------------------------------------------------------
+//  Roads are not building sites.
+// -----------------------------------------------------------------------------
+// The parcels come from a ward lattice (corridors.cpp) that does not know where
+// the OSM road network actually runs, and this stage used to place a building on
+// every parcel with area.  Measured on the published world: **14.89 % of the nav
+// graph's nodes sit inside a building box** (18,515 of 124,348), 11,345 of them
+// inside boxes 8 m or taller.  That single conflict is behind the physics
+// acceptance's one red check (a motorcycle's 0.0370 m contact with the city,
+// D-034), 1.52 % of lane points where a car cannot be placed and 8.2 % of lane
+// points with no collision surface under them (D-036, whose ray trace showed a
+// ray started inside a solid at every one of them).  A street with a building
+// standing on it is not a street.
+//
+// The test is the fitted massing — the same rectangle that becomes the collision
+// box and the wall prism — against the nav graph's own corridors, with the
+// carriageway's half width (`lanes x 3.5 / 2`) plus a quarter metre.  A parcel
+// whose building would stand in the road is skipped and counted.
+struct RoadCorridorIndex {
+    struct Seg { Vec2d a, b; f64 half; };
+    std::vector<Seg> segs;
+    std::unordered_map<u64, std::vector<u32>> buckets;
+    static constexpr f64 kCell = 64.0;
+    static u64 key(i64 i, i64 j) {
+        return (static_cast<u64>(static_cast<u32>(static_cast<i32>(i))) << 32) |
+               static_cast<u32>(static_cast<i32>(j));
+    }
+    void add(const Vec2d& a, const Vec2d& b, f64 half) {
+        const u32 idx = static_cast<u32>(segs.size());
+        segs.push_back(Seg{a, b, half});
+        const f64 reach = half + 0.5;
+        const i64 i0 = static_cast<i64>(std::floor((std::min(a.x, b.x) - reach) / kCell));
+        const i64 i1 = static_cast<i64>(std::floor((std::max(a.x, b.x) + reach) / kCell));
+        const i64 j0 = static_cast<i64>(std::floor((std::min(a.y, b.y) - reach) / kCell));
+        const i64 j1 = static_cast<i64>(std::floor((std::max(a.y, b.y) + reach) / kCell));
+        for (i64 j = j0; j <= j1; ++j)
+            for (i64 i = i0; i <= i1; ++i) buckets[key(i, j)].push_back(idx);
+    }
+    // Segment against an oriented rectangle: both are put in the rectangle's own
+    // frame and clipped with Liang-Barsky, so a diagonal street and an axis-fitted
+    // block are the same problem.
+    bool hits(const Massing& ms) const {
+        const Vec2d along{std::sin(ms.yaw), std::cos(ms.yaw)};
+        const Vec2d across{along.y, -along.x};
+        const f64 reach = std::max(ms.along, ms.across) + 8.0;
+        const i64 i0 = static_cast<i64>(std::floor((ms.centre.x - reach) / kCell));
+        const i64 i1 = static_cast<i64>(std::floor((ms.centre.x + reach) / kCell));
+        const i64 j0 = static_cast<i64>(std::floor((ms.centre.y - reach) / kCell));
+        const i64 j1 = static_cast<i64>(std::floor((ms.centre.y + reach) / kCell));
+        for (i64 j = j0; j <= j1; ++j) {
+            for (i64 i = i0; i <= i1; ++i) {
+                const auto it = buckets.find(key(i, j));
+                if (it == buckets.end()) continue;
+                for (u32 si : it->second) {
+                    const Seg& sg = segs[si];
+                    const f64 pad = sg.half + 0.25;
+                    const f64 bu = ms.along + pad;      // local +Z half extent
+                    const f64 bv = ms.across + pad;     // local +X half extent
+                    f64 v0 = 0.0, u0 = 0.0, v1 = 0.0, u1 = 0.0;
+                    const Vec2d da = sg.a - ms.centre;
+                    const Vec2d db = sg.b - ms.centre;
+                    v0 = da.x * across.x + da.y * across.y;
+                    u0 = da.x * along.x + da.y * along.y;
+                    v1 = db.x * across.x + db.y * across.y;
+                    u1 = db.x * along.x + db.y * along.y;
+                    f64 t0 = 0.0, t1 = 1.0;
+                    const f64 dv = v1 - v0, du = u1 - u0;
+                    bool inside = true;
+                    const f64 p[4] = {-dv, dv, -du, du};
+                    const f64 q[4] = {v0 + bv, bv - v0, u0 + bu, bu - u0};
+                    for (int e = 0; e < 4 && inside; ++e) {
+                        if (std::fabs(p[e]) < 1e-12) {
+                            if (q[e] < 0.0) inside = false;
+                            continue;
+                        }
+                        const f64 r = q[e] / p[e];
+                        if (p[e] < 0.0) {
+                            if (r > t1) inside = false;
+                            else if (r > t0) t0 = r;
+                        } else {
+                            if (r < t0) inside = false;
+                            else if (r < t1) t1 = r;
+                        }
+                    }
+                    if (inside && t0 <= t1) return true;
+                }
+            }
+        }
+        return false;
+    }
+};
+
+// Every drivable nav edge in the city, once, in world space.  Built after
+// `buildRoads` (the nav graph exists) and before any building is placed.
+RoadCorridorIndex buildRoadCorridorIndex(const Context& ctx) {
+    RoadCorridorIndex roads;
+    for (const auto& [cellKey, cd] : ctx.cells) {
+        (void)cellKey;
+        for (const NavNode& n : cd.navNodes) {
+            for (u32 k = 0; k < n.edgeCount; ++k) {
+                const u32 ei = n.firstEdge + k;
+                if (ei >= cd.navEdges.size()) break;
+                const NavEdge& e = cd.navEdges[ei];
+                if (e.toNode >= cd.navNodes.size()) continue;
+                if ((e.flags & NavFlagDrivable) == 0u) continue;
+                const NavNode& t = cd.navNodes[e.toNode];
+                const Vec2d a{cd.origin.x + n.x, cd.origin.y + n.z};
+                const Vec2d b{cd.origin.x + t.x, cd.origin.y + t.z};
+                roads.add(a, b, std::max(0.9, e.laneCount * 3.5 * 0.5));
+            }
+        }
+    }
+    return roads;
+}
+
+void emitSyntheticFabric(Context& ctx, const RoadCorridorIndex& roads) {
     if (ctx.synthParcels.empty()) return;
+    u64 skippedOnRoad = 0, insetForRoad = 0;
 
     const u32 matRoof = ctx.materials.id("concrete_raw");
     std::unordered_map<std::string, std::string> wardCache;
@@ -363,6 +478,36 @@ void emitSyntheticFabric(Context& ctx) {
         const Vec2d centre = parcel.centre;
         if (!ctx.cityMask.contains(centre)) continue;
 
+        // The road test comes before anything expensive, and it tries to *keep*
+        // the parcel: a building whose fitted rectangle reaches into the
+        // carriageway is inset — the same operation the roof cap uses
+        // (`geo2d::offsetRing`) — until it clears or it is too small to be a
+        // building at all.  Dropping every parcel that touches a corridor is
+        // correct but wasteful: measured, 50,097 of 163,971 parcels (30 % of the
+        // fabric) have their fitted rectangle within a lane width of a road
+        // centre, and most of those are ordinary plots that simply reach the kerb.
+        geo2d::Ring buildRing = ring;
+        {
+            bool cleared = false;
+            const f64 insets[4] = {0.0, 1.0, 2.0, 3.0};
+            for (const f64 inset : insets) {
+                const geo2d::Ring candidate =
+                    inset <= 0.0 ? ring : geo2d::offsetRing(ring, inset);
+                if (candidate.size() < 3) break;
+                if (std::fabs(geo2d::signedArea(candidate)) < 16.0) break;
+                if (!roads.hits(massingOf(candidate, centre))) {
+                    buildRing = candidate;
+                    cleared = true;
+                    if (inset > 0.0) ++insetForRoad;
+                    break;
+                }
+            }
+            if (!cleared) {
+                ++skippedOnRoad;
+                continue;
+            }
+        }
+
         ZoningZone zone = ctx.zoning.sample(centre);
         if (parcel.kind == 1) zone = ZoningZone::InformalSettlement;
         if (zone == ZoningZone::MangroveWetland || zone == ZoningZone::Unknown) continue;
@@ -393,8 +538,8 @@ void emitSyntheticFabric(Context& ctx) {
         const Vec3 off{static_cast<f32>(cd.origin.x), 0.0f, static_cast<f32>(cd.origin.y)};
 
         std::vector<Vec2d> localRing;
-        localRing.reserve(ring.size());
-        for (const Vec2d& p : ring)
+        localRing.reserve(buildRing.size());
+        for (const Vec2d& p : buildRing)
             localRing.push_back(Vec2d{p.x - cd.origin.x, p.y - cd.origin.y});
 
         const u32 wallMat = materialVariant(ctx, buildingMaterialName(rule.wall), var, zone);
@@ -408,7 +553,7 @@ void emitSyntheticFabric(Context& ctx) {
         if (rule.pitchedRoof && area < 900.0) {
             const f64 ridgeY = topY + std::min(3.0, (bb.size().x + bb.size().y) * 0.05);
             std::vector<Vec2d> inset;
-            for (const Vec2d& p : geo2d::offsetRing(ring, -1.0))
+            for (const Vec2d& p : geo2d::offsetRing(buildRing, -1.0))
                 inset.push_back(Vec2d{p.x - cd.origin.x, p.y - cd.origin.y});
             if (inset.size() >= 3) {
                 lod0.addRoofCap(inset, ridgeY, matRoof, static_cast<u32>(zone), flags, 0.25f);
@@ -424,7 +569,7 @@ void emitSyntheticFabric(Context& ctx) {
         lod0.bakeAmbientOcclusion(groundY, std::max(4.0, height * 0.35));
 
         // --- oriented proxy ---------------------------------------------------
-        emitProxy(cd, ring, centre, groundY, height, wallMat, static_cast<u32>(zone), true);
+        emitProxy(cd, buildRing, centre, groundY, height, wallMat, static_cast<u32>(zone), true);
 
         // --- impostor ---------------------------------------------------------
         {
@@ -443,7 +588,7 @@ void emitSyntheticFabric(Context& ctx) {
         // The footprint's own rectangle, oriented: an axis-aligned box around a
         // rotated block reaches metres into the street beside it, and a vehicle
         // driven down that street is then stopped by a wall that is not there.
-        cd.collision.push_back(collisionBoxFor(cd, ring, centre, groundY, height, wallMat, 1u));
+        cd.collision.push_back(collisionBoxFor(cd, buildRing, centre, groundY, height, wallMat, 1u));
         ctx.stats.collisionBoxes++;
 
         cd.counts.buildings++;
@@ -453,8 +598,13 @@ void emitSyntheticFabric(Context& ctx) {
         ctx.stats.buildingTriangles += lod0.triangleCount() - trisBefore;
         built++;
     }
-    MLOG_INFO("fabric: %llu synthesised buildings placed", (unsigned long long)built);
+    MLOG_INFO("fabric: %llu synthesised buildings placed, %llu of them inset to clear a road, "
+              "%llu parcels too small to fit beside one",
+              (unsigned long long)built, (unsigned long long)insetForRoad,
+              (unsigned long long)skippedOnRoad);
     ctx.qa.add("buildings.synthetic", static_cast<f64>(built));
+    ctx.qa.add("fabric.insetForRoad", static_cast<f64>(insetForRoad));
+    ctx.qa.add("fabric.skippedOnRoad", static_cast<f64>(skippedOnRoad));
 }
 
 bool buildBuildings(Context& ctx) {
@@ -462,6 +612,20 @@ bool buildBuildings(Context& ctx) {
     ScopedTimer timer("buildBuildings");
 
     const u32 matShopSign = ctx.materials.id("signage_painted");
+
+    // The corridors, once, for both paths.  The surveyed footprints below are
+    // *real* geometry read from the map and are never moved for a road — but where
+    // a real footprint's fitted rectangle reaches a lane it is counted, because a
+    // number nobody measured is a number nobody can act on.  Measured: 56 of the
+    // 148 surveyed footprints have their fitted rectangle over a lane sample
+    // (999 of 5,070,900 in the published world), and every one of them is a large
+    // irregular polygon — a slum cluster, an SRA block, an industrial plot —
+    // approximated by one oriented box, so the box covers ground the polygon does
+    // not.  The fleet's spawn gate is what keeps a car out of them (D-034/D-037).
+    const RoadCorridorIndex roads = buildRoadCorridorIndex(ctx);
+    MLOG_INFO("fabric: %zu road corridors indexed", roads.segs.size());
+    ctx.qa.add("fabric.roadCorridors", static_cast<f64>(roads.segs.size()));
+    u64 surveyedOnRoad = 0, surveyedCount = 0;
 
     std::unordered_map<std::string, std::string> wardCache;   // grid key -> ward
 
@@ -629,6 +793,14 @@ bool buildBuildings(Context& ctx) {
                 mat, static_cast<u32>(zone), flags, 0.2f);
         }
 
+        // --- the road test, for the record only --------------------------------
+        // Real geometry is not moved for a road: a surveyed footprint is what the
+        // map says is there, and shaping it to the nav graph would be inventing
+        // data.  It is measured instead — where the fitted rectangle reaches a
+        // lane, the number is reported (D-037).
+        ++surveyedCount;
+        if (roads.hits(massingOf(ring, centre))) ++surveyedOnRoad;
+
         // --- collision --------------------------------------------------------
         // A box proxy per building. Large or irregular footprints are split into
         // a small set of boxes so that the player cannot walk through a
@@ -679,7 +851,13 @@ bool buildBuildings(Context& ctx) {
 
     // Synthesised parcels (ward lattice + slum clusters) become architecture
     // here, through the same per-zone rules as the surveyed footprints.
-    emitSyntheticFabric(ctx);
+    emitSyntheticFabric(ctx, roads);
+
+    MLOG_INFO("buildings: %llu surveyed footprints, %llu of them with their fitted rectangle "
+              "over a road (real geometry: counted, not moved)",
+              (unsigned long long)surveyedCount, (unsigned long long)surveyedOnRoad);
+    ctx.qa.add("buildings.surveyed", static_cast<f64>(surveyedCount));
+    ctx.qa.add("buildings.surveyedOnRoad", static_cast<f64>(surveyedOnRoad));
 
     ctx.stats.totalTriangles += ctx.stats.buildingTriangles;
     MLOG_INFO("buildings: %llu structures, %llu LOD0 triangles, %llu collision boxes",
