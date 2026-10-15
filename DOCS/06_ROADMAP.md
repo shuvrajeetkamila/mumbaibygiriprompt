@@ -126,6 +126,13 @@ Nothing that needs a GPU, a device, or the Android toolchain exists yet.
    **91.3 % → 99.3 %**, mean signed error **+0.060 → +0.007 m**, the whole tail
    68,607 → **906 samples**.  The ribbon and the graph are now one surface by
    construction (`drapeRoadHeights`, sampled by position).
+4i. **The model's gap floor after a handback.**  Filed with an exact reproduction by
+   D-039: the audit runs once at the end of the section, after every handback has
+   adopted a physics position, and its exemption covers only pairs where *both*
+   members are still physical — so a bus and a rickshaw adopting a physical position
+   1.49 m apart in one lane (`edge 5836 lane 0 idx 52 vs 55, gap -1.4940 m`) reads as
+   a model failure.  Fix designed: exempt pairs with a member handed back in the same
+   tick, and audit the end state before the handbacks.
 4h. **Junction ribbons are stacked.**  The defect the fixed instrument uncovered
    (D-038): **8.96 % of lane points have a road surface within a car's 2.6 m above
    them**, because each way smooths its own drape profile and two streets crossing at

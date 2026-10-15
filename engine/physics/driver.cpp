@@ -584,6 +584,9 @@ PhysicalFleet::LaneSurvey PhysicalFleet::surveyLanes(World& world, sim::Traffic&
                     out.minHeadroomBody = up.body.GetIndex();
                 }
                 if (clear < 2.6) ++out.headroomUnderCar;
+                const u32 hb = clear < 0.25 ? 0u : clear < 0.5 ? 1u : clear < 1.0 ? 2u
+                               : clear < 2.0 ? 3u : clear < 2.6 ? 4u : 5u;
+                ++out.headroomBins[hb];
                 if (clear < 2.0) ++out.headroomUnderAny;
             }
             const f64 probeY = ground + chassisRestHeight(sim::Archetype::Car) + kAttachClearance;

@@ -1652,6 +1652,92 @@ attribution, the downward and upward peels), `engine/app/phys_main.cpp` (the rep
 
 ---
 
+## D-039 — What a clearance above a lane is made of, and an experiment that was reverted for buying nothing
+
+**Decision.** D-038 ended by naming the defect the corrected instrument had
+uncovered: at a junction between two synthesised streets both ribbons are colliders
+and they are stacked, because each way smoothed its own drape profile.  This entry
+records the attempt to fix it, the measurement that says the fix was in the wrong
+place, the instrument that replaced the guess, and a model defect the experiment
+exposed — which is now filed with an exact reproduction rather than left buried.
+
+**1. The fix was designed, implemented and measured — and it did nothing.**  The
+hypothesis was sound: make the smoothing a function of *position* instead of a
+function of the chain, so two ways crossing at a point get one height there by
+construction.  `roadDrapeAt` sampled the terrain through the separable equivalent of
+the two-pass 1-2-1 kernel ([1 4 6 4 1]/16, a six-metre Gaussian) and
+`drapeRoadHeights` used it for both the ribbon and the graph; the per-way smoothing
+went away.  Measured on the rebuilt world:
+
+```
+                       before (D-038)   with the field smoothing
+within 0.25 m               99.3 %            99.3 %
+signed mean               +0.007 m          +0.007 m
+clearance < 2.6 m            8.96 %            9.00 %
+footprint step > 0.35 m      4.09 %            4.13 %
+```
+
+Neutral.  So the stacked surfaces are not the per-way smoothing, and the change was
+**reverted** — an unmeasured improvement that moves every road surface in the city by
+centimetres is a change for change's sake, and it perturbs every trajectory the
+acceptance measures.  The hypothesis is recorded here as *disproved* so that nobody
+re-runs it.
+
+**2. What the clearance is actually made of.**  A count of "below a car's 2.6 m"
+cannot distinguish a kerb from a ribbon lying across a street, so the survey now bins
+the clearance itself.  Measured over 854,696 lane points (86,138 with any surface
+above them):
+
+```
+< 0.25 m   28,035    0.5-1 m   17,746    2-2.6 m    1,980
+0.25-0.5   18,711    1-2 m     10,074    >= 2.6 m   9,050
+```
+
+A third of the population is under a quarter of a metre — kerb and sidewalk strips
+of a crossing street, which is what a junction of two strips *is* — and 27,820 samples
+(3.3 % of lane points) have a surface between 0.5 m and 2 m above the lane, which is
+not a kerb and is now the specific population to explain.  That distribution is the
+next instrument's input; the previous "8.96 % below 2.6 m" headline was one number
+over four different things.
+
+**3. The experiment exposed a model defect, and it is filed, not hidden.**  On the
+field-smoothing world the physics acceptance failed a check it had passed for
+sessions:
+
+```
+[FAIL] the model keeps its invariants while half its fleet is physical —
+       141 vehicles, 916 edge completions, 0 invalid states, 1 lane violations
+  gap:   edge 5836 lane 0  idx 52 BEST double-decker s 77.910 len 11.90 lat -1.773
+         (front 66.010, model)  ahead of idx 55 auto-rickshaw s 67.504 lat -1.746
+         (physical-ish)  gap -1.4940  t 40.000
+```
+
+Reproducible on every run of that world (3/3) and absent on the reverted world (0
+violations, 3 runs), so the world change selects the trajectory; the defect itself is
+in the model.  Reading the code and the measurement together: the audit runs **once,
+at the end of the section**, after the tick loop — by which time every promoted
+vehicle that left its corridor has been handed back and its model `s` is the position
+physics produced (`adoptPosition`).  The model's gap floor is an invariant of *model
+motion*, and it cannot hold for a pair whose positions physics authored; the audit's
+existing exemption covers only pairs where *both* members are still physical, which
+is why a 12 m bus and a rickshaw adopting a physical position 1.49 m apart inside one
+lane reads as a model failure.  Two fixes are now designed: exempt any pair with a
+member that was handed back in the same tick (and keep the floor strict for
+model-authored pairs, which is what it is for), and make the audit measure the end
+state *before* the handbacks rather than after.  Neither is in this entry, because
+both change a check's meaning and that deserves its own measurement — the audit line
+that made the diagnosis possible (it now names which member physics owns) is kept.
+
+**What is green on the reverted world.**  `make world` RC 0; `make test` 58 cases /
+1529 checks / 0; `make physics` **56 checks / 0 failed, 0 lane violations**;
+`verify_export` 396 / 0; the 60-minute S7 run PASS.
+
+**Files.**  `engine/physics/driver.{h,cpp}` (the clearance histogram),
+`engine/app/phys_main.cpp` (its report), `engine/sim/traffic.cpp` (the audit line
+names the owner of each member of a violating pair).
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

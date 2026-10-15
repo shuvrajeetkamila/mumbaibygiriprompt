@@ -334,6 +334,11 @@ public:
         // hit belongs to: a terrain heightfield, a road/structure mesh, or a built
         // compound (D-037).
         u64 tailAboveHeightfield = 0, tailAboveMesh = 0, tailAboveBuilt = 0;
+        // What the clearance above a lane actually is, in metres: under 0.25 (a kerb
+        // or a sidewalk strip crossing a junction), 0.25-0.5, 0.5-1, 1-2, 2-2.6, and
+        // 2.6 or more (a car fits).  A count of "below 2.6 m" cannot tell a kerb
+        // from a ribbon lying across the street (D-038).
+        u64 headroomBins[6] = {};
         u64 diagnosed = 0;         // samples whose rays were dumped (surveyTrace)
         std::vector<BlockedSample> examples;
         u64 stepped = 0;           // more than `footprintStepTolerance` of step

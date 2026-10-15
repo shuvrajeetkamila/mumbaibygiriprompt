@@ -1488,6 +1488,14 @@ int main(int argc, char** argv) {
                                            " %+.2f:%.1f%%",
                                            -3.0 + (static_cast<f64>(b) + 0.5) * 0.25, pct);
                 }
+                std::printf("        clearance above a lane, by size: <0.25 m %llu, 0.25-0.5 %llu, "
+                            "0.5-1 %llu, 1-2 %llu, 2-2.6 %llu, >=2.6 %llu\n",
+                            static_cast<unsigned long long>(lv.headroomBins[0]),
+                            static_cast<unsigned long long>(lv.headroomBins[1]),
+                            static_cast<unsigned long long>(lv.headroomBins[2]),
+                            static_cast<unsigned long long>(lv.headroomBins[3]),
+                            static_cast<unsigned long long>(lv.headroomBins[4]),
+                            static_cast<unsigned long long>(lv.headroomBins[5]));
                 std::printf("        of the samples where the ground is more than 0.25 m "
                             "above the model's road: %llu hit a terrain heightfield, %llu a "
                             "road/structure mesh, %llu a built compound\n",

@@ -1634,11 +1634,15 @@ void Traffic::audit(f64 minX, f64 maxX, f64 minZ, f64 maxZ) {
                     if (m_auditTrace)
                         std::fprintf(stderr,
                                  "  gap:   edge %zu lane %u  idx %u %s s %.3f len %.2f lat %.3f "
-                                 "(front %.3f)  ahead of idx %u %s s %.3f lat %.3f  gap %.4f  t %.3f\n",
+                                 "(front %.3f, %s)  ahead of idx %u %s s %.3f lat %.3f (%s)  "
+                                 "gap %.4f  t %.3f\n",
                                  static_cast<size_t>(&e - m_edges.data()), l, list[k],
                                  archetypeSpec(ahead.kind).name, ahead.s, ahead.length, ahead.lateral,
-                                 ahead.s - ahead.length, list[k - 1], archetypeSpec(behind.kind).name,
-                                 behind.s, behind.lateral, ahead.s - ahead.length - behind.s, m_time);
+                                 ahead.s - ahead.length, ahead.external ? "physical" : "model",
+                                 list[k - 1], archetypeSpec(behind.kind).name,
+                                 behind.s, behind.lateral,
+                                 behind.external ? "physical" : "model",
+                                 ahead.s - ahead.length - behind.s, m_time);
                 }
             }
         }
