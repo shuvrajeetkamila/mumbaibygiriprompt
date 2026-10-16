@@ -355,6 +355,32 @@ jobs:
           echo "starter world in the APK: $CHUNKS chunk file(s)"
           [ "$CHUNKS" -ge 8 ] || { echo "::error::the APK carries only $CHUNKS chunks"; exit 1; }
           echo "::notice::starter world in the APK: $CHUNKS cells"
+
+          # AND THE APK HAS TO SAY WHICH BUILD IT IS.  Six different builds have
+          # shared one download link, so "which one is on your phone?" has to be
+          # answerable from the phone - one black-screen report cost a day because it
+          # was not (D-054).  The versionName carries the commit's short sha, and that
+          # string exists inside the APK the moment it is built; this is where it is
+          # read back out, because "Gradle was told the stamp" and "the shipped APK
+          # says it" are different claims, and only the second one helps anybody.
+          BUILD_TOOLS=$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/* 2>/dev/null | sort -V | tail -1)
+          BADGING=""
+          if [ -n "$BUILD_TOOLS" ] && [ -x "$BUILD_TOOLS/aapt2" ]; then
+            BADGING=$("$BUILD_TOOLS/aapt2" dump badging "$APK" 2>/dev/null | head -1)
+          fi
+          case "$BADGING" in
+            *"versionName='"*)
+              NAME=$(printf '%s' "$BADGING" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p")
+              echo "::notice::the APK names its build: $NAME"
+              case "$NAME" in
+                *"${{ github.sha }}"*) ;;
+                *) echo "::error::the APK's versionName is '$NAME', which does not carry this commit's sha"; exit 1 ;;
+              esac
+              ;;
+            *)
+              echo "::warning::could not read the APK's versionName (no aapt2?); not fatal"
+              ;;
+          esac
           echo "::notice::APK $(basename "$APK") $(stat -c%s "$APK") bytes, libmumbai.so $SIZE bytes"
 
       - name: Publish the APK as a release
