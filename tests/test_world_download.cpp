@@ -539,3 +539,150 @@ TEST(worldReleaseUrlPointsAtThePublishedAsset) {
     CHECK_EQ(url, std::string("https://github.com/owner/repo/releases/download/world-data/"
                               "mumbai-world-0123456789abcdef.tar"));
 }
+
+// =============================================================================
+//  THE ARCHIVE THE WORKFLOW ACTUALLY PUBLISHES.
+//
+//  Everything above writes tar blocks by hand, which proves the parser against the
+//  specification.  This case proves it against the *program*: it packs three of the
+//  pipeline's own chunk files and the world manifest with GNU tar, exactly as
+//  `.github/workflows/android.yml` does when it publishes the city, and streams the
+//  result through the same state machine — in bounded steps, so it pauses and
+//  continues the way a frame loop makes it.
+//
+//  It runs only where the pipeline's output exists: a bare checkout has no
+//  data/processed, and a missing world is a state, not a failure.
+// =============================================================================
+namespace {
+
+// A transport that serves files from disk, honouring offsets: the shape a real HTTP
+// range request has, without the network.
+class FileFetcher : public Fetcher {
+  public:
+    std::string checksumsUrl = "file:///checksums.sha256";
+    std::string archiveUrl = "file:///world.tar";
+    std::string checksumsPath;
+    std::string archivePath;
+    u64 chunk = 64 * 1024;
+    u64 bytesServed = 0;
+
+    bool get(const std::string& url, u64 offset,
+             const std::function<bool(const u8*, size_t)>& onData, u64* totalBytes,
+             std::string* error) override {
+        const std::string path = url == checksumsUrl ? checksumsPath : archivePath;
+        std::FILE* file = std::fopen(path.c_str(), "rb");
+        if (!file) {
+            if (error) *error = "cannot open " + path;
+            return false;
+        }
+        std::fseek(file, 0, SEEK_END);
+        const long long size = std::ftell(file);
+        if (totalBytes) *totalBytes = static_cast<u64>(size);
+        std::fseek(file, static_cast<long>(offset), SEEK_SET);
+        long long left = size - static_cast<long long>(offset);
+        std::vector<u8> buffer(static_cast<size_t>(chunk));
+        while (left > 0) {
+            const size_t want =
+                static_cast<size_t>(std::min<long long>(static_cast<long long>(chunk), left));
+            const size_t got = std::fread(buffer.data(), 1, want, file);
+            if (got == 0) break;
+            bytesServed += got;
+            if (!onData(buffer.data(), got)) {
+                std::fclose(file);
+                return false;   // the caller paused
+            }
+            left -= static_cast<long long>(got);
+        }
+        std::fclose(file);
+        return true;
+    }
+};
+
+void writeWholeFile(const std::string& path, const std::string& text) {
+    std::FILE* file = std::fopen(path.c_str(), "wb");
+    CHECK(file != nullptr);
+    if (!file) return;
+    const size_t written = std::fwrite(text.data(), 1, text.size(), file);
+    std::fclose(file);
+    CHECK_EQ(written, text.size());
+}
+
+}  // namespace
+
+TEST(worldDownloadStreamsAnArchiveMadeByGnuTar) {
+    const std::string processed = "data/processed";
+    if (!std::filesystem::exists(processed + "/world_manifest.json")) {
+        std::printf("  (skipped: this checkout has no data/processed)\n");
+        return;
+    }
+
+    // The three smallest cells: real chunk files, real headers, and a test that
+    // still runs in a couple of seconds.
+    std::vector<std::pair<u64, std::string>> cells;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(processed + "/cells")) {
+        if (entry.path().extension() != ".mumbai_chunk") continue;
+        cells.push_back({static_cast<u64>(std::filesystem::file_size(entry.path())),
+                         entry.path().filename().string()});
+    }
+    std::sort(cells.begin(), cells.end());
+    CHECK(cells.size() >= 3u);
+    if (cells.size() > 3) cells.resize(3);
+
+    const std::string tarPath = "/tmp/mumbai_gnu_tar_test.tar";
+    std::string command = "tar -cf " + tarPath + " -C " + processed;
+    for (const auto& cell : cells) command += " cells/" + cell.second;
+    command += " world_manifest.json";
+    CHECK_EQ(std::system(command.c_str()), 0);   // the workflow's own command
+    CHECK(std::filesystem::exists(tarPath));
+
+    // The published list, in sha256sum's own format.
+    const std::vector<std::string> names = {"cells/" + cells[0].second, "cells/" + cells[1].second,
+                                           "cells/" + cells[2].second, "world_manifest.json"};
+    std::vector<std::pair<std::string, std::string>> expected;   // path, hex
+    std::string list;
+    for (const std::string& name : names) {
+        std::string hex;
+        CHECK(sha256HexFile(processed + "/" + name, &hex));
+        expected.push_back({name, hex});
+        list += hex + "  " + name + "\n";
+    }
+    const std::string sumsPath = "/tmp/mumbai_gnu_tar_test.sha256";
+    writeWholeFile(sumsPath, list);
+
+    const std::string dir = freshWorldDir("gnutar");
+    FileFetcher fetcher;
+    fetcher.checksumsPath = sumsPath;
+    fetcher.archivePath = tarPath;
+    DownloadConfig config;
+    config.checksumsUrl = fetcher.checksumsUrl;
+    config.archiveUrl = fetcher.archiveUrl;
+    config.manifestSha16 = expected.back().second.substr(0, 16);
+    config.worldDir = dir;
+    config.baseUrl = "file:///";
+
+    WorldDownload download(&fetcher, config);
+    u64 steps = 0;
+    for (int i = 0; i < 4000 && download.state() != WorldDownload::State::Done &&
+                    download.state() != WorldDownload::State::Failed;
+         ++i) {
+        // 128 KiB a step, well under the archive: the real download pauses several
+        // times, in the middle of entries, and has to continue where it stopped.
+        download.step(128u << 10);
+        ++steps;
+    }
+    CHECK_EQ(static_cast<int>(download.state()), static_cast<int>(WorldDownload::State::Done));
+    CHECK(download.error().empty());
+    CHECK(steps >= 3u);
+    CHECK_EQ(download.filesWritten(), 4u);
+    CHECK(download.receivedBytes() >= std::filesystem::file_size(tarPath));
+    CHECK(download.sawManifest());
+
+    // Every extracted byte is the pipeline's own byte.
+    for (const auto& item : expected) {
+        std::string hex;
+        CHECK(sha256HexFile(dir + "/" + item.first, &hex));
+        CHECK_EQ(hex, item.second);
+    }
+    CHECK(!std::filesystem::exists(dir + "/.download"));   // finished: nothing to resume
+}
