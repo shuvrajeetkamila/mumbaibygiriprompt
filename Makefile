@@ -325,7 +325,7 @@ HOST_CHECK_DIR := build/cmake-host-check
 host-check:
 	@command -v cmake >/dev/null 2>&1 || { \
 	    echo "cmake is needed for the host check (pip install cmake ninja)"; exit 1; }
-	@python3 tools/compile_shaders.py engine/render/shaders $(OBJ)/spv || true
+	@python3 tools/compile_shaders.py engine/render/shaders $(OBJ)/spv
 	@cmake -S android -B $(HOST_CHECK_DIR) -DMUMBAI_HOST_CHECK=ON -DMUMBAI_PHYSICS=ON \
 	       -DCMAKE_BUILD_TYPE=Release >/dev/null
 	@cmake --build $(HOST_CHECK_DIR) -j2 --target mumbai_hostcheck

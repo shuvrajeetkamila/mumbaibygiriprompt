@@ -4,7 +4,18 @@
 #include "engine/core/core.h"
 
 #include <cstdarg>
+#include <cstdio>
 #include <ctime>
+
+#if defined(__ANDROID__)
+// An Android app with no Java has no console: stdout and stderr go to /dev/null
+// and the only reader is logcat.  Routing the project's logger there is what makes
+// a device log useful at all — without it the first APK reports nothing and every
+// failure looks the same.  (This include was missing on the first CI run, which is
+// the only place the #if branch is compiled: 5 errors, all "undeclared identifier"
+// for macros that are declared in exactly this header.)
+#include <android/log.h>
+#endif
 
 namespace mumbai {
 

@@ -63,10 +63,17 @@ def check_module(path):
 
 
 def main() -> int:
-    if len(sys.argv) < 3:
-        print('usage: compile_shaders.py <shader-dir> <out-dir>', file=sys.stderr)
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    # A build that embeds empty shader modules is a build that produces an APK
+    # which cannot draw anything, and the reason (no compiler) scrolls off the
+    # top of a four-thousand-line log.  Required by default: pass
+    # --allow-missing-compiler for a build that genuinely does not need shaders.
+    require = '--allow-missing-compiler' not in sys.argv
+    if len(args) < 2:
+        print('usage: compile_shaders.py [--allow-missing-compiler] <shader-dir> <out-dir>',
+              file=sys.stderr)
         return 2
-    shader_dir, out_dir = sys.argv[1], sys.argv[2]
+    shader_dir, out_dir = args[0], args[1]
     os.makedirs(out_dir, exist_ok=True)
 
     sources = sorted(f for f in os.listdir(shader_dir) if os.path.splitext(f)[1] in STAGES)
@@ -78,7 +85,12 @@ def main() -> int:
     if not compiler:
         print('  NOTE no glslc or glslangValidator on this machine: shaders are NOT compiled.')
         print('       The embedder will emit empty modules and every pipeline will refuse')
-        print('       to build, by name, at runtime.  (Install glslang-tools to fix.)')
+        print('       to build, by name, at runtime.')
+        if require:
+            print('  Get one with `make glslang` (builds glslangValidator from source into')
+            print('  build/tools/glslang), or `apt-get install glslang-tools`, or pass')
+            print('  --allow-missing-compiler if this build really does not need shaders.')
+            return 1
         return 0
 
     print(f'  compiler: {compiler} ({kind})')

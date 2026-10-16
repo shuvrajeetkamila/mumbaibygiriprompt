@@ -39,6 +39,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(MUMBAI_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/..")
 option(MUMBAI_PHYSICS "Build Jolt and engine/physics into the client" ON)
 option(MUMBAI_HOST_CHECK "Configure for a host compile check (no Android, no Vulkan)" OFF)
+option(MUMBAI_ALLOW_NO_SHADER_COMPILER
+       "Embed empty shader modules when no GLSL compiler is installed" OFF)
 
 # Defined before use: CMake executes commands as it reads them, and a function
 # called above its definition is "Unknown CMake command", not a forward
@@ -62,13 +64,19 @@ set(SPV_DIR "${CMAKE_BINARY_DIR}/spv")
 set(GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 file(GLOB MUMBAI_SHADER_SRC "${SHADER_DIR}/*.vert" "${SHADER_DIR}/*.frag" "${SHADER_DIR}/*.glsl")
 
+set(MUMBAI_SHADER_FLAGS "")
+if(MUMBAI_ALLOW_NO_SHADER_COMPILER)
+  set(MUMBAI_SHADER_FLAGS "--allow-missing-compiler")
+endif()
+
 # One command does the whole thing: compile every stage to SPIR-V, then embed the
 # modules as C++ arrays.  Both halves report what they did, and compile_shaders.py
 # fails the build on a shader error rather than leaving last week's module behind.
 add_custom_command(
   OUTPUT "${GENERATED_DIR}/shaders_generated.h"
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${GENERATED_DIR}"
-  COMMAND python3 "${MUMBAI_ROOT}/tools/compile_shaders.py" "${SHADER_DIR}" "${SPV_DIR}"
+  COMMAND python3 "${MUMBAI_ROOT}/tools/compile_shaders.py"
+          ${MUMBAI_SHADER_FLAGS} "${SHADER_DIR}" "${SPV_DIR}"
   COMMAND python3 "${MUMBAI_ROOT}/tools/embed_spirv.py"
           "${GENERATED_DIR}/shaders_generated.h" "${SPV_DIR}"
   DEPENDS ${MUMBAI_SHADER_SRC}
