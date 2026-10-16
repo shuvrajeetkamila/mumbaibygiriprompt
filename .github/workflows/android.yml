@@ -193,6 +193,38 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify the APK contains the engine and its shaders
+        # "The build succeeded" and "the APK is the client" are different claims.
+        # Two things could be missing without any error: the shader modules (a
+        # build with no GLSL compiler embeds empty arrays, which is why
+        # compile_shaders.py now fails without one) and the engine library itself.
+        run: |
+          set -e
+          APK=$(find android/app/build/outputs -name 'app-debug.apk' | head -1)
+          test -n "$APK" || { echo "::error::no debug APK was produced"; exit 1; }
+          unzip -l "$APK" | grep -q 'lib/arm64-v8a/libmumbai.so' || \
+            { echo "::error::the APK has no libmumbai.so"; exit 1; }
+          SIZE=$(unzip -l "$APK" | awk '$4 == "lib/arm64-v8a/libmumbai.so" { print $1 }')
+          echo "libmumbai.so in the APK: $SIZE bytes"
+          [ "$SIZE" -gt 500000 ] || { echo "::error::libmumbai.so is too small to be the engine"; exit 1; }
+
+          HDR=$(find android/app/.cxx -name 'shaders_generated.h' | head -1)
+          test -n "$HDR" || { echo "::error::the native build produced no shaders_generated.h"; exit 1; }
+          python3 - "$HDR" <<'PYTHON'
+          import re, sys
+          text = open(sys.argv[1]).read()
+          words = [int(w) for w in re.findall(r'SpvWords = (\d+)', text)]
+          print(f'{len(words)} shader modules, {sum(words)} words total')
+          if len(words) != 9:
+              sys.exit(f'expected 9 shader modules, found {len(words)}')
+          if any(w < 100 for w in words):
+              sys.exit('a shader module is empty: the build embedded placeholders, not SPIR-V')
+          print('::notice::shaders embedded in the client: %d modules, %d words of SPIR-V'
+                % (len(words), sum(words)))
+          PYTHON
+
+          echo "::notice::APK $(basename "$APK") $(stat -c%s "$APK") bytes, libmumbai.so $SIZE bytes"
+
       - name: Upload the debug APK
         uses: actions/upload-artifact@v4
         with:

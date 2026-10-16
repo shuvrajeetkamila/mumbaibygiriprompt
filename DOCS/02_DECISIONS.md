@@ -2208,6 +2208,24 @@ continuation backslashes and reported "2 sources" for a 122-file library.  The
 full host build — 122 Jolt objects, the engine, the shaders — links, and
 `make host-check` runs it.
 
+**Four defects, and every one of them was invisible from the sandbox.**  The APK
+exists now, and it took four CI runs to get there — each failure only a runner
+could produce, which is the argument for the runner:
+
+1. `project(mumbai CXX)` — CMake cannot determine a linker language for the NDK's
+   C `native_app_glue`; the project enables C as well.
+2. `android_main.cpp` used `u32`, `u64` and `render::` unqualified — engine types
+   live in `namespace mumbai`.  Nothing here compiled the file: the CLI harnesses
+   that *do* build on a host have their own `main()`.  It is now built as an
+   OBJECT library in the host CMake mode, so its shared half compiles here.
+3. `core.cpp`'s logcat branch referenced `ANDROID_LOG_*` without
+   `<android/log.h>` — five "undeclared identifier" errors in the only
+   configuration that compiles the branch.
+4. `engine/physics/jolt.h` demanded `JPH_USE_SSE4_1`/`JPH_USE_SSE4_2` in every
+   translation unit, which is true on x86 and false on an arm64 phone.  The guard's
+   *purpose* was right — Jolt's objects and the engine must agree on the
+   instruction set — so it is now per-architecture (ARM: `JPH_USE_NEON`).
+
 **What the first APK is, and what it is not.**  It is the engine: a Vulkan device,
 a swapchain on the device's own surface, the pipelines, the sky and the tonemap,
 drawn every frame, logging its stats once a second.  It is *not* Mumbai yet: the
@@ -2216,6 +2234,26 @@ says on the log — with the path the world belongs in — that the world is abs
 Clustered lights, WBOIT and TAA remain unwritten, so the render scale is the
 anti-aliasing this build has (D-043).  Those are the next honest steps, not
 omissions to paper over.
+
+**The measured result.**  Run
+`gh run view 38872333894` — `app-debug.apk` **2,332,379 B (2.22 MiB)** and
+`app-release-unsigned.apk` **2,328,356 B (2.22 MiB)**, both containing
+`lib/arm64-v8a/libmumbai.so` at **2,310,312 B (2.20 MiB)** stripped.  Two
+hundredths of a megabyte separate the two: the library is stripped in both, so the
+debug APK buys symbols in the build tree (29.2 MB unstripped) and not in the
+package.  The estimate in the session record was 5–8 MB; the real figure is
+smaller for three reasons worth writing down — one ABI instead of a universal
+package, arm64 code that is more compact than the x86-64 the estimate was measured
+on, and an APK that is itself a compressed archive.  It is *not* small because
+anything is missing: the 2.2 MB library carries the core, the world reader, the
+simulation, the audio engine, Jolt, the Vulkan renderer and the nine compiled
+shader modules.
+
+The workflow now proves both claims rather than inferring them: it fails if the
+APK has no `libmumbai.so`, if that library is under 500 KB (a renderer that
+silently dropped out of the build), or if any of the nine embedded shader modules
+is empty — the failure mode `compile_shaders.py` exists to make impossible in the
+first place.
 
 ---
 
