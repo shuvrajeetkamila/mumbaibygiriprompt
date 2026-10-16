@@ -51,6 +51,134 @@ constexpr const char* kErrorMethodName = "lastError";
 constexpr const char* kErrorMethodSignature = "()Ljava/lang/String;";
 constexpr const char* kTotalMethodName = "lastTotal";
 constexpr const char* kTotalMethodSignature = "()J";
+constexpr const char* kInfoMethodName = "systemInfo";
+constexpr const char* kInfoMethodSignature = "(Landroid/content/Context;)Ljava/lang/String;";
+constexpr const char* kLogMethodName = "writeLog";
+constexpr const char* kLogMethodSignature =
+    "(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;";
+
+// -----------------------------------------------------------------------------
+//  FINDING AN APP'S OWN CLASS FROM A NATIVE THREAD
+//
+//  `FindClass` resolves a name through the class loader of the *current* native
+//  frame, and the frame that creates any of this has none: android_native_app_glue
+//  runs the app on a thread it created itself, so the lookup goes to the system
+//  loader, which has never heard of `com.mumbai.exact.WorldFetch`.  On a phone that
+//  is a *silent* failure — the transport comes back null and the client reports
+//  "no transport in this build", which reads exactly like a machine that has none
+//  (D-054).  The fix is to ask the activity's own loader, which is the one that
+//  loaded the app's classes; `activity->clazz` is the NativeActivity instance and
+//  every object knows its class, which knows its loader.
+// -----------------------------------------------------------------------------
+jclass findAppClass(JNIEnv* env, jobject activityObject, const char* dottedName) {
+    if (!activityObject) return nullptr;
+    jclass activityClass = env->GetObjectClass(activityObject);
+    if (!activityClass) return nullptr;
+    jclass result = nullptr;
+    jmethodID getClassLoader =
+        env->GetMethodID(activityClass, "getClassLoader", "()Ljava/lang/ClassLoader;");
+    if (getClassLoader) {
+        jobject loader = env->CallObjectMethod(activityObject, getClassLoader);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            loader = nullptr;
+        }
+        if (loader) {
+            jclass loaderClass = env->FindClass("java/lang/ClassLoader");
+            jmethodID loadClass =
+                loaderClass ? env->GetMethodID(loaderClass, "loadClass",
+                                               "(Ljava/lang/String;)Ljava/lang/Class;")
+                            : nullptr;
+            if (loadClass) {
+                // `ClassLoader.loadClass` takes the *dotted* name; the slashed form
+                // belongs to JNI signatures, and passing it here is the classic way
+                // to get a ClassNotFoundException that reads like a typo.
+                jstring name = env->NewStringUTF(dottedName);
+                result = static_cast<jclass>(env->CallObjectMethod(loader, loadClass, name));
+                if (env->ExceptionCheck()) {
+                    env->ExceptionClear();
+                    result = nullptr;
+                }
+                if (name) env->DeleteLocalRef(name);
+            }
+            if (loaderClass) env->DeleteLocalRef(loaderClass);
+            env->DeleteLocalRef(loader);
+        }
+    }
+    env->DeleteLocalRef(activityClass);
+    return result;
+}
+
+// The app's own Java class, held once per process, for the calls that are not the
+// download: the device summary and the log file.  Thread-local attachment, like the
+// fetcher's, because these are called from whichever thread asks.
+struct AppJava {
+    JavaVM* vm = nullptr;
+    jclass appClass = nullptr;
+    jmethodID info = nullptr;
+    jmethodID log = nullptr;
+    bool tried = false;
+};
+
+AppJava& appJava() {
+    static AppJava bridge;
+    return bridge;
+}
+
+bool environmentFor(JavaVM* vm, JNIEnv** env, bool* detached) {
+    *detached = false;
+    if (!vm) return false;
+    const jint status = vm->GetEnv(reinterpret_cast<void**>(env), JNI_VERSION_1_6);
+    if (status == JNI_OK && *env) return true;
+    if (status != JNI_EDETACHED) return false;
+    if (vm->AttachCurrentThread(env, nullptr) != JNI_OK || !*env) return false;
+    *detached = true;
+    return true;
+}
+
+std::string takeJavaString(JNIEnv* env, jstring text) {
+    if (!text) return {};
+    const char* chars = env->GetStringUTFChars(text, nullptr);
+    std::string out = chars ? chars : "";
+    if (chars) env->ReleaseStringUTFChars(text, chars);
+    env->DeleteLocalRef(text);
+    return out;
+}
+
+// Looks the app's class up once.  Returns nullptr with a reason logged when there is
+// no VM, no activity, or no such class.
+AppJava* appBridge(struct ANativeActivity* activity, JNIEnv** env, bool* detached) {
+    if (!activity || !activity->vm) return nullptr;
+    AppJava& bridge = appJava();
+    if (!bridge.tried) {
+        bridge.tried = true;
+        bridge.vm = static_cast<JavaVM*>(activity->vm);
+        JNIEnv* local = nullptr;
+        bool localDetached = false;
+        if (environmentFor(bridge.vm, &local, &localDetached)) {
+            jclass found = findAppClass(local, activity->clazz, kFetchClassName);
+            if (found) {
+                bridge.appClass = static_cast<jclass>(local->NewGlobalRef(found));
+                local->DeleteLocalRef(found);
+            }
+            if (bridge.appClass) {
+                bridge.info =
+                    local->GetStaticMethodID(bridge.appClass, kInfoMethodName, kInfoMethodSignature);
+                bridge.log =
+                    local->GetStaticMethodID(bridge.appClass, kLogMethodName, kLogMethodSignature);
+                if (local->ExceptionCheck()) local->ExceptionClear();
+            }
+            if (!bridge.appClass) {
+                MLOG_WARN("http: %s is not reachable through the activity's class loader",
+                          kFetchClassName);
+            }
+            if (localDetached) bridge.vm->DetachCurrentThread();
+        }
+    }
+    if (!bridge.appClass) return nullptr;
+    if (!environmentFor(bridge.vm, env, detached)) return nullptr;
+    return &bridge;
+}
 
 // The codes WorldFetch.get returns.  They are the Java file's contract too: the two
 // are changed together or not at all.
@@ -233,10 +361,14 @@ world::Fetcher* createAndroidFetcher(struct ANativeActivity* activity) {
         MLOG_WARN("http: no JNI environment on the app's thread");
         return nullptr;
     }
-    jclass local = env->FindClass(kFetchClassName);
-    if (!local || env->ExceptionCheck()) {
-        env->ExceptionClear();
-        MLOG_ERR("http: %s is not in this package", kFetchClassName);
+    // Through the activity's loader, not FindClass: see findAppClass above.  The
+    // first version of this used FindClass and worked only in the imagination — on
+    // the app's own thread it finds nothing, and the failure is a null transport and
+    // a panel that blames the build.
+    jclass local = findAppClass(env, activity->clazz, kFetchClassName);
+    if (!local) {
+        MLOG_ERR("http: %s is not reachable through the activity's class loader",
+                 kFetchClassName);
         return nullptr;
     }
     auto* fetchClass = static_cast<jclass>(env->NewGlobalRef(local));
@@ -263,6 +395,34 @@ world::Fetcher* createAndroidFetcher(struct ANativeActivity* activity) {
 
 void destroyAndroidFetcher(world::Fetcher* fetcher) { delete fetcher; }
 
+std::string androidSystemInfo(struct ANativeActivity* activity) {
+    JNIEnv* env = nullptr;
+    bool detach = false;
+    AppJava* bridge = appBridge(activity, &env, &detach);
+    if (!bridge || !bridge->info) return std::string();
+    jstring text = static_cast<jstring>(
+        env->CallStaticObjectMethod(bridge->appClass, bridge->info, activity->clazz));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    const std::string result = takeJavaString(env, text);
+    if (detach) bridge->vm->DetachCurrentThread();
+    return result;
+}
+
+std::string androidWriteLog(struct ANativeActivity* activity, const std::string& text) {
+    JNIEnv* env = nullptr;
+    bool detach = false;
+    AppJava* bridge = appBridge(activity, &env, &detach);
+    if (!bridge || !bridge->log) return std::string();
+    jstring payload = env->NewStringUTF(text.c_str());
+    jstring where = static_cast<jstring>(env->CallStaticObjectMethod(
+        bridge->appClass, bridge->log, activity->clazz, payload));
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    const std::string result = takeJavaString(env, where);
+    if (payload) env->DeleteLocalRef(payload);
+    if (detach) bridge->vm->DetachCurrentThread();
+    return result;
+}
+
 }  // namespace mumbai::app
 
 #else
@@ -271,6 +431,10 @@ namespace mumbai::app {
 
 world::Fetcher* createAndroidFetcher(struct ANativeActivity*) { return nullptr; }
 void destroyAndroidFetcher(world::Fetcher* fetcher) { delete fetcher; }
+// On a host there is no Java and no phone: both answer "nothing to report", and the
+// client's panel says the same thing it always said on a desktop build.
+std::string androidSystemInfo(struct ANativeActivity*) { return std::string(); }
+std::string androidWriteLog(struct ANativeActivity*, const std::string&) { return std::string(); }
 
 }  // namespace mumbai::app
 

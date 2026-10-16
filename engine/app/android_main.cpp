@@ -85,6 +85,26 @@ namespace {
 // app with no Java.  core.cpp routes MLOG_* to logcat under __ANDROID__; this is
 // the app-level equivalent for lines that must be visible even before the engine's
 // logger is configured, and on a host it is a printf.
+// =============================================================================
+//  THE LOG HAS TO EXIST IN TWO PLACES, AND THE ONE THAT MATTERS IS THE FILE.
+//
+//  logcat is the right place for a developer with a cable; it is useless to the
+//  person holding the phone when the screen is black, which is the failure this
+//  whole area of the code exists for.  So every line this app logs is also kept in
+//  memory, and the client periodically writes the whole thing to a file the platform
+//  can hand to any file manager or share sheet (WorldFetch.writeLog, D-054).
+//
+//  A ring of fixed size, because the alternative is an app that grows a log for ever
+//  while it is streaming a city.
+// =============================================================================
+constexpr size_t kLogRingLines = 160;
+constexpr size_t kLogLineBytes = 240;
+
+std::vector<std::string>& logRing() {
+    static std::vector<std::string> ring;
+    return ring;
+}
+
 void appLog(const char* fmt, ...) {
     char buffer[512];
     va_list args;
@@ -96,6 +116,18 @@ void appLog(const char* fmt, ...) {
 #else
     std::printf("[mumbai] %s\n", buffer);
 #endif
+    std::vector<std::string>& ring = logRing();
+    ring.emplace_back(buffer);
+    if (ring.size() > kLogRingLines) ring.erase(ring.begin(), ring.begin() + (ring.size() - kLogRingLines));
+}
+
+std::string logText() {
+    std::string text;
+    for (const std::string& line : logRing()) {
+        text += line;
+        text += '\n';
+    }
+    return text;
 }
 
 // -----------------------------------------------------------------------------
@@ -225,6 +257,15 @@ struct Client {
     world::DiskSpace space;
     u64 lastSpaceCheckMs = 0;
     std::string spaceNote;
+
+    // What the platform says this device is, in one line: model, Android version,
+    // ABI, and whether it reports Vulkan 1.1 at all.  A black screen on a device
+    // that does not support Vulkan 1.1 is a different report from a black screen on
+    // one that does, and this is the only way the person holding it can tell us
+    // which they have (D-054).
+    std::string deviceLine;
+    std::string logPath;      // where the log file went, once it has been written
+    u64 lastLogWriteMs = 0;
 };
 
 // How much room is left where the world is installed.  `known` is false when the
@@ -682,6 +723,9 @@ std::vector<std::string> statusLines(Client* client) {
         lines.push_back("renderer not started");
         if (!client->lastError.empty()) lines.push_back(client->lastError.substr(0, 46));
     }
+    // The device, whenever it is known: on a black-screen report this one line is
+    // most of the diagnosis (D-054).
+    if (!client->deviceLine.empty()) lines.push_back(client->deviceLine.substr(0, 76));
     lines.push_back(format("E %.0f m   N %.0f m   alt %.0f m", client->worldX, client->worldZ,
                            client->altitude));
     if (client->installer.active) {
@@ -784,6 +828,44 @@ void updateHud(Client* client) {
 }
 
 // -----------------------------------------------------------------------------
+//  The log file, written where a person can find it
+// -----------------------------------------------------------------------------
+// The first version of this app's diagnostics was logcat only, and a phone that
+// showed a black screen produced no report a person could send.  This writes the
+// same lines to `Downloads/mumbai-log.txt` (WorldFetch.writeLog) — a file every file
+// manager and share sheet can reach — with the device, the renderer's state and its
+// last error at the top, because on a black screen those three are the whole story.
+//
+// WHEN: on a two-second cadence while there is no renderer (the state that needs
+// reporting), and every twenty seconds once there is one (the state that merely is
+// useful).  Rewritten each time rather than appended, so the file on the phone is
+// always the current one and never a stale copy wearing the same name.
+void updateLogFile(android_app* app, Client* client, u64 now) {
+    if (!app->activity) return;
+    const u64 interval = client->ready ? 20000 : 2000;
+    if (client->lastLogWriteMs != 0 && now < client->lastLogWriteMs + interval) return;
+    client->lastLogWriteMs = now;
+
+    std::string text = "MUMBAI 1:1 EXACT — client log\n";
+    text += "device:   " + (client->deviceLine.empty() ? std::string("unknown") : client->deviceLine) +
+            "\n";
+    text += std::string("renderer: ") + (client->ready ? "running" : "not running") + "\n";
+    text += "surface:  " + std::string(app->window ? "present" : "none") + "\n";
+    if (!client->lastError.empty()) text += "!! " + client->lastError + "\n";
+    if (client->space.known) {
+        text += "storage:  " + std::to_string(client->space.freeBytes / (1024 * 1024)) + " MiB free\n";
+    }
+    text += "log lines: " + std::to_string(logRing().size()) + "\n---\n";
+    text += logText();
+
+    const std::string where = app::androidWriteLog(app->activity, text);
+    if (!where.empty() && where != client->logPath) {
+        client->logPath = where;
+        appLog("log file: %s", where.c_str());
+    }
+}
+
+// -----------------------------------------------------------------------------
 //  The screen that cannot be black
 // -----------------------------------------------------------------------------
 // While the renderer is not up there is no frame to put a panel in, and the phone
@@ -800,6 +882,10 @@ void updateFallbackScreen(android_app* app, Client* client, u64 now) {
     for (const std::string& line : statusLines(client)) lines.push_back(line);
     if (!client->lastError.empty()) lines.push_back("!! " + client->lastError.substr(0, 52));
     lines.push_back("waiting for a surface and a graphics device");
+    // WHERE TO FIND THE LOG, said on the screen rather than in it: this is the
+    // screen a person photographs when something is wrong, and the file's name is
+    // the only thing they need from us (D-054).
+    if (!client->logPath.empty()) lines.push_back("log: " + client->logPath.substr(0, 60));
 
     if (!app::drawFallbackScreen(app->window, lines.front(), lines)) {
         // Nothing left to draw on, and saying so once a second is enough.
@@ -1020,6 +1106,15 @@ void android_main(android_app* app) {
                 return;
             }
         }
+
+        // THE DEVICE, ASKED ONCE.  Java's answer, because the native side cannot
+        // read Build.MODEL and has no way to ask about Vulkan system features; if
+        // there is no Java the line stays empty and nothing else changes.
+        if (client.deviceLine.empty()) {
+            client.deviceLine = app::androidSystemInfo(app->activity);
+            if (!client.deviceLine.empty()) appLog("device: %s", client.deviceLine.c_str());
+        }
+        updateLogFile(app, &client, nowMillis());
 
         if (!client.ready) {
             // The platform may hand the surface over late, or the first device

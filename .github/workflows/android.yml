@@ -409,7 +409,8 @@ jobs:
             your position, and the state of the world.
           * **Left half of the screen steers, right half looks; the two buttons at
             the top right climb and descend.**  Everything goes to logcat
-            (\`adb logcat -s mumbai\`).
+            (\`adb logcat -s mumbai\`) and, every few seconds, to \`Downloads/mumbai-log.txt\`
+            — a file you can send without a cable.
 
           ## The whole city is a download, and it is yours to start
 
@@ -424,6 +425,15 @@ jobs:
 
           This build was compiled against world \`${SHA}\`: the app refuses a published
           world whose manifest is not that one, before it fetches a byte.
+
+          ## If the screen stays black
+
+          The app writes \`mumbai-log.txt\` into your **Downloads** folder, and the
+          log's first lines name your device, whether it reports **Vulkan 1.1**, and
+          what the renderer said when it tried to start.  Send that file — it is the
+          whole story, and without it "black screen" cannot be told apart from a
+          device that simply has no Vulkan 1.1, which is a hardware floor rather than
+          a bug.
 
           ## If you are holding an earlier copy of this app
 

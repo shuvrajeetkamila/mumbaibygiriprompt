@@ -62,6 +62,7 @@ APKs; a phone is the only thing that can run them.
 |---|---|---|
 | D1 | 30 FPS worst case on Adreno 730 / Mali-G710 | no GPU; `mumbai_sim` measures CPU cost only (p99 0.18 ms) |
 | D2 | zero rendering artifacts, TAA/WBOIT behaviour | needs the renderer of A1 |
+| D5 | *why* a phone shows a black screen | no device here runs the app: the build now reports the device's own Vulkan verdict and writes `Downloads/mumbai-log.txt` (D-054), so the answer travels back in a file instead of a guess |
 | D3 | ≤160 GB installed | the current tier is 686 MB; the figure only becomes meaningful once B1 and A8 are at production density |
 | D4 | the visual standard — motorcycle on the coastal highway at golden hour, wet asphalt reflecting the sky | the preview approximates it in a browser; the specification's answer is the renderer of A1 |
 

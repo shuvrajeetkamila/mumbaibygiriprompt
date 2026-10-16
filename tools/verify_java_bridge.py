@@ -36,6 +36,14 @@ EXPECTED = {
     "lastError": ("()Ljava/lang/String;", [], "String"),
     "lastTotal": ("()J", [], "long"),
     "onChunk": ("(J[BI)Z", ["long", "byte[]", "int"], "boolean"),
+    # The two calls that exist for a phone whose screen is black: the device summary
+    # and the log file (D-054).  Both take the activity, because the Java side needs
+    # a Context and the C++ side has one wrapped in `activity->clazz` — which is also
+    # what the class loader lookup needs (see findAppClass in android_http.cpp).
+    "systemInfo": ("(Landroid/content/Context;)Ljava/lang/String;",
+                   ["android.content.Context"], "String"),
+    "writeLog": ("(Landroid/content/Context;Ljava/lang/String;)Ljava/lang/String;",
+                 ["android.content.Context", "String"], "String"),
 }
 
 failures = 0

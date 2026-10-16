@@ -34,4 +34,25 @@ namespace mumbai::app {
 world::Fetcher* createAndroidFetcher(struct ANativeActivity* activity);
 void destroyAndroidFetcher(world::Fetcher* fetcher);
 
+// -----------------------------------------------------------------------------
+//  THE TWO THINGS THAT ONLY JAVA CAN DO
+// -----------------------------------------------------------------------------
+// Both exist for the same reason, and it is a failure this project has already had
+// once: a phone showed a black screen and the only thing anybody could say about it
+// was "nothing here" (D-045, D-054).  A log that is only reachable over adb is not a
+// log a person can send, and a device's own verdict about Vulkan is not something
+// the native side can ask without the platform's installer machinery.
+//
+// Both return an empty string when there is no Java to talk to (the host build, an
+// activity without a VM) or when the call fails — the client treats "nothing to
+// report" as nothing to report, and never blocks on either.
+
+// One line naming the device, its Android version, its ABI, and whether it reports
+// Vulkan 1.1.  Empty on a host.
+std::string androidSystemInfo(struct ANativeActivity* activity);
+// Writes `text` where a person can find it with a file manager (Downloads, with the
+// app's own external directory as a fallback) and returns where it went.  Empty when
+// it could not be written at all.
+std::string androidWriteLog(struct ANativeActivity* activity, const std::string& text);
+
 }  // namespace mumbai::app

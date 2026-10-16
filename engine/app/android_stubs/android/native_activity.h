@@ -3,18 +3,22 @@
 //
 //  A HOST SHIM, NOT THE NDK.  See android/log.h in this directory for the rule.
 //
-//  THE ONE PLACE THIS SHIM IS NOT VERBATIM, and why it is harmless: the NDK's
-//  ANativeActivity begins with `JavaVM* vm; JNIEnv* env; jobject clazz;`, which
-//  would drag <jni.h> onto a machine with no JDK.  Those three members are `void*`
-//  here — same size, same positions, same names — and the client never touches
-//  them (it goes through NativeActivity precisely so that no Java object is ever
-//  in its hands).  Every member it *does* touch is the NDK's own type: the two
-//  data paths are `const char*` and the asset manager is a real `AAssetManager*`.
+//  NOW VERBATIM, INCLUDING THE THREE JAVA MEMBERS.  The NDK's ANativeActivity begins
+//  with `JavaVM* vm; JNIEnv* env; jobject clazz;`, and this shim used to make those
+//  three `void*` to keep <jni.h> out of a host compile — which was fine while the
+//  client never touched them.  It does now: engine/app/android_http.cpp looks the
+//  app's own class up through the *activity's* class loader (the only loader that can
+//  see it from a native thread, D-054), so `clazz` is passed to JNI functions that
+//  take a jobject.  The shim includes its own <jni.h> instead, and the rule these
+//  stubs exist for holds again: the same names with the same types, so a mismatch is
+//  a compile error here rather than a silent failure on a phone.
 // =============================================================================
 #ifndef MUMBAI_ANDROID_STUBS_NATIVE_ACTIVITY_H
 #define MUMBAI_ANDROID_STUBS_NATIVE_ACTIVITY_H
 
 #include <stdint.h>
+
+#include <jni.h>
 
 #include <android/asset_manager.h>
 #include <android/looper.h>
@@ -31,13 +35,10 @@ typedef struct ANativeActivity ANativeActivity;
 struct ANativeActivity {
     struct ANativeActivityCallbacks* callbacks;
 
-    // JavaVM*, JNIEnv*, jobject in the NDK; void* here only to keep <jni.h> out of
-    // a host compile.  The client reads `vm` — that is how engine/app/android_http.cpp
-    // reaches the platform's HTTP stack — and a `static_cast` from void* is what
-    // makes the same line compile under both headers.
-    void* vm;
-    void* env;
-    void* clazz;
+    // The NDK's own types, spelled the same way (see the header comment).
+    JavaVM* vm;
+    JNIEnv* env;
+    jobject clazz;
 
     // The path the engine's own world data is installed into, and the APK's asset
     // manager.  These two are the client's entire relationship with the platform

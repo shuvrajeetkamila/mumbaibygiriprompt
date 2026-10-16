@@ -80,9 +80,14 @@ struct JNINativeMethod {
 struct JNIEnv {
     // ---- class and method lookup
     jclass FindClass(const char* name);
-    jclass GetObjectClass(jobject obj);
     jmethodID GetStaticMethodID(jclass clazz, const char* name, const char* sig);
     jfieldID GetStaticFieldID(jclass clazz, const char* name, const char* sig);
+    // The instance forms: used to reach the *activity's* class loader, which is the
+    // only class loader that can see the app's own classes from a native thread
+    // (engine/app/android_http.cpp, findAppClass).
+    jclass GetObjectClass(jobject obj);
+    jmethodID GetMethodID(jclass clazz, const char* name, const char* sig);
+    jobject CallObjectMethod(jobject obj, jmethodID methodID, ...);
 
     // ---- strings and references
     jstring NewStringUTF(const char* utf);

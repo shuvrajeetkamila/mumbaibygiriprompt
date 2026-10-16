@@ -59,6 +59,124 @@ public final class WorldFetch {
     private static native boolean onChunk(long handle, byte[] data, int length);
 
     /** Why the last get() returned -1.  Never null; empty when there is nothing to say. */
+    /**
+     * WHAT DEVICE THIS IS, IN ONE LINE.
+     *
+     * It exists because a phone that shows a black screen cannot be debugged from
+     * the machine that built the app: the log lives on the device, and the person
+     * holding it is not going to run adb.  So the app asks three questions it
+     * cannot answer in C++ — the model, the Android version, and whether this
+     * device can do Vulkan 1.1 at all — and puts the answer on the screen and in
+     * the log file below (D-054).
+     *
+     * hasSystemFeature(name, version) is the platform's own answer to the Vulkan
+     * question, and it is the one the installer uses to decide whether this app may
+     * be installed at all.  0x00401000 is Vulkan 1.1.
+     *
+     * Never throws: a device that cannot answer must not stop the app.
+     */
+    public static String systemInfo(android.content.Context context) {
+        final StringBuilder out = new StringBuilder();
+        try {
+            out.append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL);
+            out.append(" / Android ").append(android.os.Build.VERSION.RELEASE);
+            final String[] abis = android.os.Build.SUPPORTED_ABIS;
+            out.append(" / ").append(abis.length > 0 ? abis[0] : "unknown abi");
+        } catch (Throwable failure) {
+            out.append("device info unavailable: ").append(failure);
+        }
+        try {
+            final android.content.pm.PackageManager manager = context.getPackageManager();
+            final boolean vulkan11 = manager.hasSystemFeature(
+                    android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, 0x00401000);
+            out.append(" / Vulkan 1.1: ").append(vulkan11 ? "yes" : "NO");
+        } catch (Throwable failure) {
+            out.append(" / Vulkan 1.1: unknown");
+        }
+        return out.toString();
+    }
+
+    /**
+     * THE LOG FILE A PERSON CAN SEND.
+     *
+     * Written to Downloads, because that is the one place every file manager offers
+     * and every share sheet can reach — no cable, no adb, no developer options.  A
+     * file manager on a modern Android cannot easily browse the app's own private
+     * directories, which is exactly where a log would otherwise be hidden.  If the
+     * Downloads collection refuses (an unusual device, a policy), this falls back to
+     * the app's own external files directory and returns that path instead.
+     *
+     * Each write replaces the previous file, so what is on the phone is the newest
+     * log and never a stale one wearing the same name.  Returns where it went, or a
+     * sentence saying it could not; never throws.
+     */
+    public static String writeLog(android.content.Context context, String text) {
+        final byte[] bytes = text.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        final String name = "mumbai-log.txt";
+        try {
+            final android.content.ContentResolver resolver = context.getContentResolver();
+            // Remove any earlier copy, so the file a person sends is this one.  A
+            // refused delete is not a failed write: the new file then lands under a
+            // suffixed name, and the newest is still the newest.
+            try {
+                final android.database.Cursor existing = resolver.query(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        new String[]{android.provider.MediaStore.MediaColumns._ID},
+                        android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=?",
+                        new String[]{name}, null);
+                if (existing != null) {
+                    while (existing.moveToNext()) {
+                        final android.net.Uri doomed = android.content.ContentUris.withAppendedId(
+                                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                                existing.getLong(0));
+                        resolver.delete(doomed, null, null);
+                    }
+                    existing.close();
+                }
+            } catch (Throwable ignored) {
+                // ignored on purpose: see above
+            }
+            final android.content.ContentValues values = new android.content.ContentValues();
+            values.put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name);
+            values.put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+            values.put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                       android.os.Environment.DIRECTORY_DOWNLOADS);
+            final android.net.Uri uri = resolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+            if (uri != null) {
+                final java.io.OutputStream out = resolver.openOutputStream(uri, "rwt");
+                if (out != null) {
+                    try {
+                        out.write(bytes);
+                        out.flush();
+                    } finally {
+                        out.close();
+                    }
+                }
+                return "Downloads/" + name;
+            }
+        } catch (Throwable failure) {
+            // Falls through to the private directory below.
+        }
+        try {
+            final java.io.File directory = context.getExternalFilesDir(null);
+            if (directory != null) {
+                final java.io.File file = new java.io.File(directory, name);
+                final java.io.FileOutputStream out = new java.io.FileOutputStream(file);
+                try {
+                    out.write(bytes);
+                    out.flush();
+                } finally {
+                    out.close();
+                }
+                return file.getAbsolutePath();
+            }
+        } catch (Throwable failure) {
+            return "no place to write a log: " + failure;
+        }
+        return "no place to write a log";
+    }
+
     public static String lastError() {
         return lastError;
     }

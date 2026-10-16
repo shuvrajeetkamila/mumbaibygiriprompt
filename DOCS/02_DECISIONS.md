@@ -2826,3 +2826,63 @@ its own: it is a copy from the package into app storage, it fails visibly on the
 if it cannot be written, and the app is useful without it.  Neither check is a
 quota-management system; they are two compares against two constants that came from
 measuring the world this repository actually publishes.
+
+## D-054 — A black screen has to be able to say why: the device's own verdict, a log a person can send, and the class-loader bug that hid the transport
+
+**The report, and what it exposed.**  A build on a phone showed a black screen and the
+only thing the person holding it could say was "nothing here".  That is a process
+failure before it is a rendering failure: the app had logcat, which needs a cable; a
+fallback screen, which paints only on some of the paths that can go wrong; and no way
+to say *which* device it was on.  Three fixes came out of it, and one of them is a real
+bug found by reading rather than by running.
+
+**1. The transport was invisible on every device, and nothing said so.**  `createAndroidFetcher`
+looked the app's own Java class up with `FindClass`.  `FindClass` resolves a name
+through the class loader of the *current native frame*, and the frame this runs in has
+none: `android_native_app_glue` runs the app on a thread it created itself, so the
+lookup goes to the system loader — which has never heard of `com.mumbai.exact.WorldFetch`.
+On a phone that fails silently: the fetcher comes back null, and the client reports
+"city download: no transport in this build", which reads exactly like a desktop build
+that legitimately has none.  **Every test in this repository passed** — the host build
+has no transport by design, the CMake check only links, `verify_java_bridge.py` compares
+spelling — so nothing here could have caught it, which is precisely why it is worth
+writing down.  The fix is to ask the activity's own loader
+(`activity->clazz.getClassLoader().loadClass(...)`), which is the loader that loaded
+the app's classes; `findAppClass()` does that and logs when it cannot.
+
+**2. The device answers for itself.**  `WorldFetch.systemInfo(Context)` returns one
+line — manufacturer, model, Android version, ABI, and whether the device reports
+**Vulkan 1.1** through `PackageManager.hasSystemFeature(FEATURE_VULKAN_HARDWARE_VERSION,
+0x00401000)`, which is the platform's own verdict and the same one an installer uses.
+It goes on the status panel, on the fallback screen, and at the top of the log.  On a
+black-screen report that line is most of the diagnosis: a device without Vulkan 1.1 is
+a hardware floor, not a bug, and the app can now say so instead of showing black.
+
+**3. A log a person can send without a cable.**  `WorldFetch.writeLog(Context, String)`
+writes to `Downloads/mumbai-log.txt` through MediaStore — the one place every file
+manager and share sheet reaches — falling back to the app's own external files
+directory and returning whichever path it used.  `android_main.cpp` keeps a 160-line
+ring of everything it logs, writes the whole thing with the device, the renderer's
+state, whether a surface exists, the last error and the free space at the top, every
+two seconds while the renderer is **not** running and every twenty while it is, and
+prints the file's location on the fallback screen.  Rewritten, not appended: the file
+on the phone is always the current one.
+
+None of this is a graphics fix, and it is not offered as one.  What it changes is that
+the next black screen can be answered: the first two lines of that file say whether the
+device has the Vulkan the renderer requires, and the last error says what the graphics
+device refused.
+
+**Cost, stated.**  The APK's dex grows by three small methods; `verify_java_bridge.py`
+grew from 25 to 33 checks and now covers both new calls, signatures and all, because
+these are looked up by name at runtime and neither compiler checks the other language.
+The `android_stubs` shim's `ANativeActivity` is now verbatim — `JavaVM*`, `JNIEnv*`,
+`jobject` instead of three `void*` — because `clazz` is passed to real JNI functions;
+that is the shim's rule (same names, same types) applied honestly rather than a
+loosening of it.
+
+**The trap this is all about, named for the record.**  A black screen has, so far, four
+known ways to happen: no Vulkan 1.1; a graphics device that refuses to initialise; a
+swapchain that never arrives; and the app dying before its first frame — and this app
+has never yet been run on a phone by anyone who could read a log.  The build that
+carries this decision is the first one where a person can tell us which.
