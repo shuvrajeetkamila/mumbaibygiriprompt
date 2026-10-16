@@ -112,9 +112,48 @@ jobs:
       - name: Build the APKs
         working-directory: android
         run: |
+          set -o pipefail
           gradle --no-daemon --stacktrace \
             -PmumbaiPhysics=${{ github.event.inputs.physics == 'false' && 'OFF' || 'ON' }} \
-            assembleDebug assembleRelease
+            assembleDebug assembleRelease 2>&1 | tee gradle-build.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Surface the build errors
+        # The build's own log is the whole point of running it, and a runner's log
+        # files are not always retrievable from outside.  Annotations and the step
+        # summary are, through the API, so the first errors are copied there where
+        # they can be read and fixed (D-045).
+        if: failure()
+        run: |
+          python3 - <<'PYTHON'
+          import os, re, glob
+          logs = []
+          for path in glob.glob('/home/runner/work/**/gradle-build.log', recursive=True) +                       glob.glob(os.path.join(os.getcwd(), 'gradle-build.log')):
+              try:
+                  logs.append((path, open(path, errors='replace').read()))
+              except OSError:
+                  pass
+          if not logs:
+              print('no gradle log found')
+          pattern = re.compile(r'(error:|error C[0-9]|CMake Error|FAILURE:|What went wrong|'
+                               r'Execution failed for task|Caused by:|ninja: error|'
+                               r'undefined reference|No such file or directory|'
+                               r'Could not (resolve|find|determine))')
+          for path, text in logs:
+              lines = text.splitlines()
+              hits = [l.strip() for l in lines if pattern.search(l)]
+              print(f'--- {path}: {len(lines)} lines, {len(hits)} error-ish')
+              for line in hits[:10]:
+                  print(f'::error::{line[:900]}')
+              summary = os.environ.get('GITHUB_STEP_SUMMARY')
+              if summary:
+                  with open(summary, 'a') as f:
+                      f.write(f'### {path} — last 80 lines\n\n```\n')
+                      f.write('\n'.join(lines[-80:]))
+                      f.write('\n```\n')
+              print('--- last 60 lines')
+              print('\n'.join(lines[-60:]))
+          PYTHON
 
       - name: Report what was built
         if: always()
