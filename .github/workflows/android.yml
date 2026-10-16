@@ -156,24 +156,42 @@ jobs:
           PYTHON
 
       - name: Report what was built
+        # The report goes three places on purpose: the log (for a human watching
+        # the run), annotations and the job summary (because a runner's log files
+        # and the log-download CDN are not reachable from every machine that needs
+        # to answer "how big is the APK and what is in it") — D-045.
         if: always()
         run: |
-          echo "=== APKs ====================================================="
-          find android/app/build/outputs -name '*.apk' -printf '%10s  %p\n' 2>/dev/null | sort -k2 || echo "none"
-          for apk in $(find android/app/build/outputs -name '*.apk' 2>/dev/null); do
-            echo "--- $apk"
-            unzip -l "$apk" | awk '$4 ~ /^lib\// { printf "    %10d  %s\n", $1, $4 }'
-            unzip -l "$apk" | tail -1
-          done
-          echo "=== native libraries ========================================="
-          find android/app/build -name 'libmumbai.so' -printf '%10s  %p\n' 2>/dev/null || true
-          echo "=== shaders embedded in the generated header ================="
-          find . -name 'shaders_generated.h' -newer android/CMakeLists.txt 2>/dev/null | head -3
-          for header in $(find android -name 'shaders_generated.h' 2>/dev/null | head -2); do
-            echo "--- $header"
-            grep -c "inline constexpr std::uint32_t" "$header" || true
-            grep -o "kWorldFragSpvWords = [0-9]*" "$header" || true
-          done
+          OUT=apk-report.txt
+          {
+            echo "=== APKs ==="
+            find android/app/build/outputs -name '*.apk' -printf '%10s  %p\n' 2>/dev/null | sort -k2 \
+              || echo "none built"
+            for apk in $(find android/app/build/outputs -name '*.apk' 2>/dev/null); do
+              echo "--- contents of $apk"
+              unzip -l "$apk" | awk 'NR <= 3 || $4 ~ /lib\/|classes|resources|META-INF/ { printf "%10d  %s\n", $1, $4 }'
+              echo "--- total"
+              unzip -l "$apk" | tail -1
+            done
+            echo "=== native libraries ==="
+            find android/app/build -name 'libmumbai.so' -printf '%10s  %p\n' 2>/dev/null || true
+            echo "=== shaders embedded in the binary ==="
+            for header in $(find android/app/.cxx -name 'shaders_generated.h' 2>/dev/null | head -2); do
+              echo "--- $header"
+              grep -c "inline constexpr std::uint32_t" "$header" || true
+              grep -o "SpvWords = [0-9]*" "$header" | tr '\n' ' '
+              echo
+            done
+          } > "$OUT" 2>&1 || true
+          cat "$OUT"
+          grep -E "apk|libmumbai|words" "$OUT" | head -24 | sed 's/^/::notice::/'
+          {
+            echo "## APK report"
+            echo ""
+            echo '```'
+            cat "$OUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the debug APK
         uses: actions/upload-artifact@v4
