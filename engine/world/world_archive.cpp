@@ -316,7 +316,17 @@ ExtractingSink::~ExtractingSink() {
     }
 }
 
+std::string ExtractingSink::storedPath(const std::string& archivePath) {
+    const size_t suffix = std::strlen(kGzipSuffix);
+    if (archivePath.size() > suffix &&
+        archivePath.compare(archivePath.size() - suffix, suffix, kGzipSuffix) == 0) {
+        return archivePath.substr(0, archivePath.size() - suffix);
+    }
+    return archivePath;
+}
+
 void ExtractingSink::abortCurrent() {
+    m_inflater.reset();
     if (m_file) {
         std::fclose(m_file);
         m_file = nullptr;
@@ -331,10 +341,17 @@ void ExtractingSink::abortCurrent() {
 
 bool ExtractingSink::begin(const TarEntry& entry) {
     m_seenBytes = 0;
+    m_memberBytes = 0;
     m_expectedBytes = entry.size;
     m_lastPath = entry.path;
-    m_partPath = m_root + "/" + entry.path + ".part";
-    m_finalPath = m_root + "/" + entry.path;
+    m_inflater.reset();
+    // The archive's name decides how the bytes are read; the *stored* name decides
+    // where they land.  A member named `cells/x.mumbai_chunk.gz` becomes
+    // `cells/x.mumbai_chunk`, so the world on disk looks the same whether it came
+    // out of the APK, out of this sink, or off a tar somebody unpacked by hand.
+    m_finalPath = m_root + "/" + storedPath(entry.path);
+    m_partPath = m_finalPath + ".part";
+    m_memberIsGzip = m_finalPath != m_root + "/" + entry.path;
 
     if (m_expected.find(entry.path) == m_expected.end()) {
         m_rejected += 1;
@@ -353,6 +370,21 @@ bool ExtractingSink::begin(const TarEntry& entry) {
         m_error = "cannot open " + m_partPath + " for writing";
         return false;
     }
+    if (m_memberIsGzip) {
+        // The inflater's sink is the part file; the hash above covers the bytes
+        // that arrive, because those are the bytes the published checksum list
+        // describes.  A short write into the part file is reported through the
+        // inflater, which stops on the first false it sees.
+        m_inflater = std::make_unique<GzipInflater>();
+        m_inflater->setSink([this](const u8* bytes, size_t count) {
+            if (std::fwrite(bytes, 1, count, m_file) != count) {
+                m_error = "short write into " + m_partPath;
+                return false;
+            }
+            m_bytesWritten += count;
+            return true;
+        });
+    }
     return true;
 }
 
@@ -360,6 +392,16 @@ bool ExtractingSink::data(const u8* bytes, size_t count) {
     if (!m_file) {
         m_error = "data arrived for a file that was never opened";
         return false;
+    }
+    if (m_memberIsGzip) {
+        m_hash.update(bytes, count);
+        m_seenBytes += count;
+        m_memberBytes += count;
+        if (!m_inflater->update(bytes, count)) {
+            m_error = "in " + m_partPath + ": " + m_inflater->error();
+            return false;
+        }
+        return true;
     }
     if (std::fwrite(bytes, 1, count, m_file) != count) {
         m_error = "short write into " + m_partPath;
@@ -376,11 +418,26 @@ bool ExtractingSink::end() {
         m_error = "a file ended that was never opened";
         return false;
     }
+    if (m_inflater) {
+        // A member that ran out of bytes before its own end marker is a truncated
+        // download, not a file: zlib says so here (and checks the trailer's CRC-32
+        // and length while it is at it), and the part file is thrown away below.
+        if (!m_inflater->finish()) {
+            std::fclose(m_file);
+            m_file = nullptr;
+            m_error = m_inflater->error().empty()
+                          ? std::string("the compressed member ended early")
+                          : m_inflater->error();
+            return false;
+        }
+        m_inflater.reset();
+    }
     std::fclose(m_file);
     m_file = nullptr;
 
     std::error_code ec;
     const std::string hex = m_hash.digestHex();
+    m_memberIsGzip = false;
     const auto it = m_expected.find(m_lastPath);
     if (m_seenBytes != m_expectedBytes || it == m_expected.end() || it->second != hex) {
         m_rejected += 1;

@@ -41,9 +41,13 @@ file(GLOB MUMBAI_WORLD_SRC ${MUMBAI_ROOT}/engine/world/*.cpp)
 file(GLOB MUMBAI_SIM_SRC   ${MUMBAI_ROOT}/engine/sim/*.cpp)
 file(GLOB MUMBAI_AUDIO_SRC ${MUMBAI_ROOT}/engine/audio/*.cpp)
 file(GLOB MUMBAI_RENDER_SRC ${MUMBAI_ROOT}/engine/render/*.cpp)
+# The vendored inflate half of zlib (third_party/zlib/README.md): the world arrives
+# as an uncompressed tar whose members are gzipped, so the client needs one, and it
+# is a C library, so it is one of the few sources in this build that is not C++.
+file(GLOB MUMBAI_ZLIB_SRC ${MUMBAI_ROOT}/third_party/zlib/*.c)
 
 set(MUMBAI_SOURCES ${MUMBAI_CORE_SRC} ${MUMBAI_WORLD_SRC} ${MUMBAI_SIM_SRC} ${MUMBAI_AUDIO_SRC}
-                   ${MUMBAI_RENDER_SRC})
+                   ${MUMBAI_RENDER_SRC} ${MUMBAI_ZLIB_SRC})
 
 # The client's own sources: everything in engine/app/ except the programs, each of
 # which defines main() for a host tool.  A glob, filtered by name, rather than a
@@ -127,8 +131,15 @@ if(ANDROID)
     target_include_directories(mumbai PRIVATE
         ${MUMBAI_ROOT}
         ${MUMBAI_ROOT}/third_party
+        ${MUMBAI_ROOT}/third_party/zlib
         ${MUMBAI_ROOT}/third_party/vulkan/include
         ${CMAKE_BINARY_DIR})
+
+    # Z_PREFIX renames the vendored zlib's symbols to `z_*`, so the platform's own
+    # libz cannot be bound to this copy (or the other way round).  It has to be on
+    # both sides of the include — the library and the code that includes zlib.h —
+    # and a global define here is what makes that impossible to get half right.
+    target_compile_definitions(mumbai PRIVATE Z_PREFIX)
 
     # The Android surface is created from an ANativeWindow; without this the
     # renderer compiles against the desktop path and fails at the first frame.
@@ -181,9 +192,10 @@ else()
     target_include_directories(mumbai_cmake_hostcheck PRIVATE
         ${MUMBAI_ROOT}
         ${MUMBAI_ROOT}/third_party
+        ${MUMBAI_ROOT}/third_party/zlib
         ${MUMBAI_ROOT}/third_party/vulkan/include
         ${CMAKE_BINARY_DIR})
-    target_compile_definitions(mumbai_cmake_hostcheck PRIVATE MUMBAI_NO_VULKAN)
+    target_compile_definitions(mumbai_cmake_hostcheck PRIVATE MUMBAI_NO_VULKAN Z_PREFIX)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
         # The same Jolt feature set the Makefile's own build uses, so a scene baked
         # on one machine behaves the same on the other.

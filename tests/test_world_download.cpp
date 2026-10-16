@@ -686,3 +686,114 @@ TEST(worldDownloadStreamsAnArchiveMadeByGnuTar) {
     }
     CHECK(!std::filesystem::exists(dir + "/.download"));   // finished: nothing to resume
 }
+
+TEST(worldDownloadInstallsTheArchiveTheReleaseStepPacks) {
+    // The state machine has been tested against tars built by hand and against a
+    // tar built by `tar`.  Neither is what the release publishes: the published
+    // archive is packed by tools/pack_world.py, gzipped members inside a plain
+    // tar (D-050).  This case runs that tool over a world it writes itself and
+    // installs the result through the same steps the client uses, so a change in
+    // the packer's member names or the sink's `.gz` rule fails here rather than on
+    // somebody's phone.
+    if (!std::filesystem::exists("tools/pack_world.py")) {
+        std::printf("  (skipped: no tools/pack_world.py in this directory)\n");
+        return;
+    }
+    if (std::system("python3 -c 'pass' 2>/dev/null") != 0) {
+        std::printf("  (skipped: no python3 on this machine)\n");
+        return;
+    }
+
+    const std::string processed = "/tmp/mumbai_packed_world";
+    const std::string outDir = "/tmp/mumbai_packed_release";
+    std::error_code ec;
+    std::filesystem::remove_all(processed, ec);
+    std::filesystem::remove_all(outDir, ec);
+    std::filesystem::create_directories(processed + "/cells", ec);
+    std::filesystem::create_directories(processed + "/textures", ec);
+
+    // Two chunks whose bytes are worth compressing, so the case would notice if the
+    // tool quietly stored them raw.
+    std::string chunkA;
+    std::string chunkB;
+    for (int i = 0; i < 4000; ++i) {
+        chunkA += "A1: a terrain vertex, and the triangles that use it\n";
+        chunkB += "B2: another cell, another four thousand lines of it\n";
+    }
+    const std::string texture(9000, 'T');
+    const std::string manifest =
+        "{\"cells\":[{\"file\":\"cells/cell_0_0.mumbai_chunk\",\"bytes\":" +
+        std::to_string(chunkA.size()) + "}],\"totals\":{}}";
+    writeWholeFile(processed + "/cells/cell_0_0.mumbai_chunk", chunkA);
+    writeWholeFile(processed + "/cells/cell_1_0.mumbai_chunk", chunkB);
+    writeWholeFile(processed + "/textures/albedo.mumbaitex", texture);
+    writeWholeFile(processed + "/world_manifest.json", manifest);
+
+    const std::string command = "python3 tools/pack_world.py --processed " + processed +
+                                " --out " + outDir + " --verify > /tmp/mumbai_pack.log 2>&1";
+    CHECK_EQ(std::system(command.c_str()), 0);   // the packer verifies its own archive
+
+    std::string sumsPath;
+    std::string tarPath;
+    for (const std::filesystem::directory_entry& entry :
+         std::filesystem::directory_iterator(outDir)) {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind("sha256sums-", 0) == 0) sumsPath = entry.path().string();
+        if (name.rfind("mumbai-world-", 0) == 0) tarPath = entry.path().string();
+    }
+    CHECK(!sumsPath.empty());
+    CHECK(!tarPath.empty());
+    if (sumsPath.empty() || tarPath.empty()) return;
+
+    // The list must name the members the archive carries, and the manifest's entry
+    // in it must be the manifest this build would accept.
+    const std::string list = readWhole(sumsPath);
+    CHECK(list.find("cells/cell_0_0.mumbai_chunk.gz") != std::string::npos);
+    CHECK(list.find("textures/albedo.mumbaitex.gz") != std::string::npos);
+    CHECK(list.find("world_manifest.json") != std::string::npos);
+    std::string manifestHex;
+    CHECK(sha256HexFile(processed + "/world_manifest.json", &manifestHex));
+
+    const std::string dir = freshWorldDir("packed");
+    FileFetcher fetcher;
+    fetcher.checksumsPath = sumsPath;
+    fetcher.archivePath = tarPath;
+    DownloadConfig config;
+    config.checksumsUrl = fetcher.checksumsUrl;
+    config.archiveUrl = fetcher.archiveUrl;
+    config.manifestSha16 = manifestHex.substr(0, 16);
+    config.worldDir = dir;
+    config.baseUrl = "file:///";
+
+    WorldDownload download(&fetcher, config);
+    for (int i = 0; i < 2000 && download.state() != WorldDownload::State::Done &&
+                    download.state() != WorldDownload::State::Failed;
+         ++i) {
+        download.step(96u << 10);
+    }
+    CHECK_EQ(static_cast<int>(download.state()), static_cast<int>(WorldDownload::State::Done));
+    CHECK(download.error().empty());
+    CHECK_EQ(download.filesWritten(), 4u);   // two chunks, one texture array, the manifest
+
+    // The phone ends up with the pipeline's tree, not the archive's: no `.gz`, no
+    // part file, and every byte the packer read back out of the archive.
+    CHECK_EQ(readWhole(dir + "/cells/cell_0_0.mumbai_chunk"), chunkA);
+    CHECK_EQ(readWhole(dir + "/cells/cell_1_0.mumbai_chunk"), chunkB);
+    CHECK_EQ(readWhole(dir + "/textures/albedo.mumbaitex"), texture);
+    CHECK(!std::filesystem::exists(dir + "/cells/cell_0_0.mumbai_chunk.gz"));
+    CHECK(!std::filesystem::exists(dir + "/cells/cell_0_0.mumbai_chunk.part"));
+    CHECK(download.sawManifest());
+
+    // A world packed for a different build is refused before a byte of the archive
+    // is fetched: the checksum list names the manifest, and the manifest is the
+    // identity of the world (D-048).
+    DownloadConfig elsewhere = config;
+    elsewhere.manifestSha16 = std::string(16, 'f');
+    elsewhere.worldDir = freshWorldDir("packed_wrong");
+    WorldDownload wrongFetcher(&fetcher, elsewhere);
+    wrongFetcher.step(64u << 10);
+    CHECK_EQ(static_cast<int>(wrongFetcher.state()),
+             static_cast<int>(WorldDownload::State::Failed));
+    CHECK(!wrongFetcher.error().empty());
+    CHECK_EQ(wrongFetcher.receivedBytes(), 0u);   // nothing of the archive was pulled
+}

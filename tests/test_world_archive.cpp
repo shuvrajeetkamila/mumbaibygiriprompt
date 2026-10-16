@@ -117,6 +117,21 @@ std::string readWhole(const std::string& path) {
     return out;
 }
 
+// Compresses with the real `gzip`, as the release step does.  An empty string means
+// the tool is missing, and the cases that use it then skip themselves.
+std::string gzipBytes(const std::string& payload) {
+    const std::string in = "/tmp/mumbai_archive_test_in.bin";
+    const std::string out = "/tmp/mumbai_archive_test_out.gz";
+    std::remove(out.c_str());
+    std::FILE* file = std::fopen(in.c_str(), "wb");
+    if (!file) return std::string();
+    std::fwrite(payload.data(), 1, payload.size(), file);
+    std::fclose(file);
+    const std::string command = "gzip -6 -n -c '" + in + "' > '" + out + "' 2>/dev/null";
+    if (std::system(command.c_str()) != 0) return std::string();
+    return readWhole(out);
+}
+
 }  // namespace
 
 TEST(sha256MatchesTheStandardsOwnVectors) {
@@ -357,4 +372,84 @@ TEST(tarReaderFollowsGnuLongNamesAndSkipsDirectories) {
     CHECK_EQ(sink.filesWritten(), 1u);
     CHECK_EQ(readWhole(root + "/" + longName), std::string("hello"));
     CHECK(!std::filesystem::exists(root + "/truncated-name"));
+}
+
+TEST(tarReaderInflatesGzipMembersIntoTheNamesTheManifestUses) {
+    // THE SHAPE THE RELEASE ACTUALLY PUBLISHES (D-050).  `world-data` is an
+    // uncompressed tar whose members are gzipped, so that a paused download keeps
+    // its resume points (every file boundary is one) and the transfer is about an
+    // eighth of the size.  What has to hold: the *archive's* name is what the
+    // checksum list covers, and the *stored* name is what the manifest describes —
+    // `cells/a.mumbai_chunk.gz` in, `cells/a.mumbai_chunk` out, byte for byte.
+    std::string chunk;
+    for (int line = 0; line < 40; ++line) {
+        chunk += "a terrain chunk that compresses, so the test is really reading gzip\n";
+    }
+    const std::string gz = gzipBytes(chunk);
+    if (gz.empty()) return;   // no `gzip` on this machine
+    const std::string manifest = "{\"cells\":[{\"file\":\"cells/a.mumbai_chunk\"}]}";
+    const std::string textureGz = gzipBytes(std::string(700, 'T'));
+
+    std::vector<u8> archive;
+    appendFile(archive, "cells/a.mumbai_chunk.gz", gz);
+    appendFile(archive, "textures/albedo.mumbaitex.gz", textureGz);
+    appendFile(archive, "world_manifest.json", manifest);
+    finishArchive(archive);
+
+    std::string list;
+    list += checksumLine("cells/a.mumbai_chunk.gz", gz);
+    list += checksumLine("textures/albedo.mumbaitex.gz", textureGz);
+    list += checksumLine("world_manifest.json", manifest);
+    std::map<std::string, std::string> expected;
+    CHECK(parseChecksumList(list, &expected));
+
+    const std::string root = tempRoot("gzip");
+    ExtractingSink sink(root, expected);
+    TarReader reader(sink);
+    CHECK(reader.feed(archive.data(), archive.size()));
+    CHECK(reader.finish());
+    CHECK_EQ(sink.filesWritten(), 3u);
+    CHECK(sink.sawManifest());
+    // The compressed bytes are what arrived; what landed is the payload.
+    CHECK_EQ(readWhole(root + "/cells/a.mumbai_chunk"), chunk);
+    CHECK_EQ(std::filesystem::file_size(root + "/cells/a.mumbai_chunk"), chunk.size());
+    CHECK_EQ(readWhole(root + "/textures/albedo.mumbaitex"), std::string(700, 'T'));
+    // No `.gz` and no part file is left anywhere under the world directory: the
+    // reader of the world never has to know it arrived compressed.
+    CHECK(!std::filesystem::exists(root + "/cells/a.mumbai_chunk.gz"));
+    CHECK(!std::filesystem::exists(root + "/cells/a.mumbai_chunk.part"));
+    CHECK(!std::filesystem::exists(root + "/textures/albedo.mumbaitex.gz"));
+    CHECK_EQ(sink.bytesWritten(), chunk.size() + 700 + manifest.size());
+
+    // A member whose bytes are not a gzip stream at all is refused, and it leaves
+    // nothing behind: `storedPath` may take the suffix off, but the inflater has to
+    // agree that there was a stream under it.
+    std::vector<u8> lying;
+    appendFile(lying, "cells/a.mumbai_chunk.gz", "this is not deflate at all, not even close");
+    appendFile(lying, "world_manifest.json", manifest);
+    finishArchive(lying);
+    std::string lyingList;
+    lyingList += checksumLine("cells/a.mumbai_chunk.gz", "this is not deflate at all, not even close");
+    lyingList += checksumLine("world_manifest.json", manifest);
+    std::map<std::string, std::string> lyingExpected;
+    CHECK(parseChecksumList(lyingList, &lyingExpected));
+    const std::string lyingRoot = tempRoot("gzip_lying");
+    ExtractingSink lyingSink(lyingRoot, lyingExpected);
+    TarReader lyingReader(lyingSink);
+    CHECK(!lyingReader.feed(lying.data(), lying.size()));
+    CHECK(!lyingSink.error().empty());
+    CHECK(!std::filesystem::exists(lyingRoot + "/cells/a.mumbai_chunk"));
+
+    // A member cut short — a download that ended in the middle of a file — must be
+    // refused too, even though every byte that did arrive was genuine.
+    std::vector<u8> shortArchive;
+    appendFile(shortArchive, "cells/a.mumbai_chunk.gz", gz.substr(0, gz.size() - 24));
+    finishArchive(shortArchive);
+    std::string shortList = checksumLine("cells/a.mumbai_chunk.gz", gz.substr(0, gz.size() - 24));
+    std::map<std::string, std::string> shortExpected;
+    CHECK(parseChecksumList(shortList, &shortExpected));
+    ExtractingSink shortSink(tempRoot("gzip_short"), shortExpected);
+    TarReader shortReader(shortSink);
+    CHECK(!shortReader.feed(shortArchive.data(), shortArchive.size()));
+    CHECK(!shortSink.error().empty());
 }

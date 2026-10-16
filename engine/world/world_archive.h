@@ -9,6 +9,14 @@
 //  with no index and no random access, so a 1.3 GB download can be unpacked as it
 //  arrives and hash-checked entry by entry.
 //
+//  THE MEMBERS ARE GZIPPED AND THE CONTAINER IS NOT.  A compressed stream has no
+//  offsets a paused download can return to, and an uncompressed one is 1.4 GB of
+//  somebody's data plan; compressing each *member* while leaving the tar itself
+//  plain gives both — every file boundary is still a resume point, and the payload
+//  travels at about an eighth of its size (D-050).  The sink inflates a member
+//  whose name ends in `.gz` and writes it under the name without the suffix, so
+//  what lands on the phone is the layout the manifest describes, byte for byte.
+//
 //  Two pieces, both deliberately free of Android and of sockets so they can be
 //  tested on a machine with neither:
 //
@@ -24,11 +32,13 @@
 // =============================================================================
 #pragma once
 #include "engine/core/core.h"
+#include "engine/core/gzip.h"
 #include "engine/core/sha256.h"
 
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 
 namespace mumbai::world {
@@ -118,7 +128,10 @@ class ExtractingSink : public TarSink {
     bool end() override;
 
     u64 filesWritten() const { return m_filesWritten; }
+    // Bytes that landed on disk, which for a gzipped member is the decompressed
+    // size and not the size of the stream that carried it.
     u64 bytesWritten() const { return m_bytesWritten; }
+    u64 memberBytes() const { return m_memberBytes; }
     u64 rejected() const { return m_rejected; }
     bool sawManifest() const { return m_sawManifest; }
     const std::string& manifestHex() const { return m_manifestHex; }
@@ -134,6 +147,17 @@ class ExtractingSink : public TarSink {
 
     // The paths a caller needs without knowing the archive's layout.
     static constexpr const char* kManifestName = "world_manifest.json";
+
+    // The suffix that means "this member is gzipped".  It is the whole of the
+    // format's self-description: a member ends in `.gz` or it does not, and a
+    // member whose name says gzip but whose bytes are not a gzip stream is refused
+    // by the inflater rather than written out as a chunk nobody can read.
+    static constexpr const char* kGzipSuffix = ".gz";
+
+    // The name a member is stored under: the archive's name with any `.gz` taken
+    // off.  Public because the workflow and the tests have to agree with the sink
+    // about what an archive's member names mean.
+    static std::string storedPath(const std::string& archivePath);
 
   private:
     void closePart(bool keep);
@@ -153,6 +177,9 @@ class ExtractingSink : public TarSink {
     u64 m_filesWritten = 0;
     u64 m_bytesWritten = 0;
     u64 m_rejected = 0;
+    u64 m_memberBytes = 0;   // compressed bytes seen for the member being written
+    std::unique_ptr<GzipInflater> m_inflater;
+    bool m_memberIsGzip = false;
 };
 
 // Removes every `<name>.part` file under `root` and returns how many went away.  A

@@ -2554,3 +2554,77 @@ resume rule intact:
 Both are safe to adopt later precisely because the *identity* of a world is not its
 container: it is the sha256 of its manifest, carried in the asset name, listed in the
 checksum list, and verified file by file after every transfer (D-048).
+
+## D-050 — The city is an uncompressed tar of gzipped members, and 370 MiB is what it costs
+
+**D-049 recorded the problem and both ways out; the first one is now built**, in the
+shape that file described: the container stays a plain tar, each *member* is a gzip
+stream, and the client inflates a member as it extracts it.
+
+**Why this shape.**  The client resumes at a byte offset that is a file boundary, and
+only an uncompressed container has those; the transfer wants compression, and only a
+compressed payload has that.  Compressing members and not the container gives both at
+once, and it needs no seekable archive format, no index, and no second file format for
+a human to learn.
+
+**What it measures on the real city**, this checkout's `data/processed`, packed by
+`tools/pack_world.py --verify`:
+
+| | bytes | ratio |
+|---|---:|---:|
+| `data/processed` (the pipeline's own output) | 1,437,273,553 | — |
+| the published archive | 387,921,920 | **27.0 %** |
+| of which: cell chunks | 1,328,994,192 → ~280 MB | 21–29 % |
+| of which: texture arrays | 107,921,238 → 21,677,166 | 20.1 % |
+| packing and verifying the whole world | 45 s on two cores | — |
+
+**D-049's 180–250 MB estimate was measured on the wrong files and this corrects it.**
+Its 11.4 % came from six of the *smallest* cells — 117 KB fragments that are mostly
+padding, which compress to 11.5 %.  A spread-out sample of the real cells compresses
+to **27.6 %**: the cells that carry terrain are 245 KB–2.7 MB of high-entropy vertex
+and instance data, and deflate does not do better than that.  The honest headline is
+**1.37 GiB in, 370 MiB out**, which is still the difference between an upload that
+failed twice and an upload that is a rounding error, and between a download nobody
+finishes and one that is 20 minutes on a train.
+
+**What is deliberately not compressed.**  `world_manifest.json` (358 KB).  Its sha256
+is the identity of the world: it names the asset, it is the entry in the checksum list
+that a build checks before it pulls a byte, and compressing it would mean hashing it
+twice to keep that property.
+
+**The contract of the archive, and who enforces it.**
+
+* the **checksum list** names members by their *archive* name (`cells/x.mumbai_chunk.gz`);
+* the **sink** (`world::ExtractingSink`) writes a member under the name without `.gz`,
+  so the install directory holds exactly the tree the manifest describes;
+* the **hash** covers the compressed bytes — what actually crossed the network — and
+  zlib's own trailer check (CRC-32 and length) covers the decompressed payload, so
+  neither a corrupted member nor a truncated one can reach the disk under its final
+  name.  A member whose name promises gzip and whose bytes are not a gzip stream is
+  refused by the inflater, not written out as an unreadable chunk.
+
+**The packer is a tool, not a line of shell.**  `tools/pack_world.py` writes the
+archive, the checksum list and nothing else, from fixed metadata (gzip `mtime=0`, tar
+`mtime`/uid/gid/mode fixed, members in name order) so packing the same world twice
+gives the same bytes; `--verify` re-reads the archive it just wrote, inflates every
+member and compares it with the pipeline's file.  That last part exists because the
+previous version of this step published a 1.44 GB tar and **failed in CI twice** with
+nothing readable from outside the runner; the step now also asks the CDN for the asset
+with a HEAD request after uploading, since a phone is about to, and the job has a final
+`if: failure()` step that puts disk, sizes and the tail of the publish log into
+annotations.
+
+**The cost, stated.**  The client needs an inflater: `third_party/zlib` (the inflate
+half of zlib 1.3.1, ~250 KB of source, zlib's licence) compiled with `-DZ_PREFIX` so
+that its symbols cannot collide with the zlib inside Android — and `engine/core/gzip.h`
+is the only place in the engine that includes `zlib.h`.  Measured on this machine: a
+300 KB payload inflates identically when fed one byte at a time, which is the transport
+case the budget rule creates.
+
+**What did not change.**  `data/processed` is still the pipeline's mmap-able output and
+is exactly what the desktop harness and the viewer read; the starter slice inside the
+APK is still uncompressed and is still copied out of the package on first run; the
+pipeline is untouched; and the world's identity is still the manifest's sha256, which
+is why this format change did not need a version number — no archive of the old shape
+was ever published (the release does not exist yet, which is the failure this
+supersedes).

@@ -22,10 +22,18 @@
 .DEFAULT_GOAL := all
 
 CXX      ?= g++
+CC       ?= gcc
 CXXSTD   ?= -std=c++20
 OPT      ?= -O2
 WARN     := -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
-CXXFLAGS ?= $(CXXSTD) $(OPT) -g -pthread $(WARN) -I. -MMD -MP
+# The two zlib flags live in the general flag set on purpose.  The vendored zlib is
+# compiled with -DZ_PREFIX, which renames every zlib symbol to `z_*` so that an
+# Android process's own zlib cannot bind to ours; if the code that *includes*
+# zlib.h were compiled without it, the engine would call `inflate` and the vendored
+# object would define `z_inflate`, and the link would fail with two names for one
+# function.  One flag set for both sides of that include removes the failure mode
+# instead of documenting it (third_party/zlib/README.md).
+CXXFLAGS ?= $(CXXSTD) $(OPT) -g -pthread $(WARN) -I. -Ithird_party/zlib -DZ_PREFIX -MMD -MP
 LDFLAGS  ?=
 LDLIBS   ?= -pthread
 
@@ -141,6 +149,25 @@ $(OBJ)/third_party/%.o: third_party/%.cpp
 	@$(CXX) $(JOLT_FLAGS) -MMD -MP -c $< -o $@
 
 ENGINE_OBJ  := $(patsubst %.cpp,$(OBJ)/%.o,$(ENGINE_SRC))
+
+# --- Vendored zlib, inflate only (D-050) -------------------------------------
+# The world arrives as an uncompressed tar whose members are gzipped, so the client
+# needs an inflater; third_party/zlib/README.md says which files and why only the
+# inflate half.  It is a C library, so it gets its own rule and its own compiler
+# variable rather than being smuggled through the C++ ones.  Its objects are part
+# of ENGINE_OBJ because every binary that links the engine links the code that
+# calls into them, and a link line that could forget them is a link line that will.
+ZLIB_DIR   := third_party/zlib
+ZLIB_SRC   := $(wildcard $(ZLIB_DIR)/*.c)
+ZLIB_OBJ   := $(patsubst $(ZLIB_DIR)/%.c,$(OBJ)/$(ZLIB_DIR)/%.o,$(ZLIB_SRC))
+CFLAGS     ?= $(OPT) -g -Wall -Wextra
+
+$(OBJ)/$(ZLIB_DIR)/%.o: $(ZLIB_DIR)/%.c
+	@mkdir -p $(dir $@)
+	@echo "  CC   $<"
+	@$(CC) $(CFLAGS) -DZ_PREFIX -I$(ZLIB_DIR) -c $< -o $@
+
+ENGINE_OBJ  += $(ZLIB_OBJ)
 PIPE_OBJ    := $(patsubst %.cpp,$(OBJ)/%.o,$(PIPE_SRC))
 
 MAIN_OBJ     := $(OBJ)/pipeline/main.o
