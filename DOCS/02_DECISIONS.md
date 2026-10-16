@@ -1926,6 +1926,225 @@ survey 99.6 % within 0.25 m (99.7 % at 2 m spacing); nav-node-in-building 0.01 %
 
 ---
 
+## D-042 — The city's sound is synthesised from the world, and the bugs the tests found in it
+
+**Decision.** Roadmap A9 (audio) is built: `engine/audio/` is a dependency-free
+synthesiser and mixer, and `mumbai_audio` renders the same west-coast drive the
+acceptance run drives from the *published chunks* into a WAV a person can listen to,
+with a manifest of everything measured.  There is no sample library anywhere in the
+project — every voice is computed, which is what lets the same code run on a phone, at
+any distance, with nothing in the storage budget.
+
+**What is physical, cited or modelled** (the full statement is in `engine/audio/audio.h`):
+
+| part | basis |
+|---|---|
+| propagation delay | exact: the oscillator phase advances in emitted time, `dtau/dt = 1/(1 + vr/c)` for `t = tau + r(tau)/c`. For constant geometry this *is* the Doppler factor `c/(c - v)` |
+| spreading loss | inverse distance from 1 m with a near-field floor |
+| air absorption | ISO 9613-1 at 20 C / 70 % RH: 3.5 / 9.0 / 76.0 dB per km at 500 Hz / 1 kHz / 4 kHz, as a distance-driven tilt |
+| tyre noise | ISO 11819-1 / the Tires project: rolling noise `30*log10(v)`, aerodynamic `60*log10(v)` |
+| occlusion | ray against the chunk's own building proxies, height respected, up to 22 dB + a low-pass |
+| ground reflection | image source over the road plane, the comb under a passing car |
+| rain | an intensity-driven bed at the stated mm/h |
+| surf | the deep-water dispersion relation `T = sqrt(2*pi*lambda/g)` for the swell length |
+| horns | event voices triggered by the model's own congestion state, per-archetype probability and length |
+| headroom | one constant, `kZeroDbfsSpl = 100` dB, maps every level to a linear gain — so a loud thing is loud for a stated reason |
+
+**The drive.** 4 minutes of Colaba → Marine Drive at 38 km/h, 2.53 km, from 160 modelled
+vehicles, 42 mm/h of rain and a 100 m swell: **-21.7 LUFS, peak -17.7 dBFS, true peak
+-16.23 dBTP, 0 clipped samples, 0 limiter grabs, 59 voices peak** (the budget is 64; the
+nearest sources get them).  The excerpt shipped in the browser preview is the loudest
+30 s of that drive, at -21.7 LUFS / -16.2 dBTP.
+
+**Occlusion, measured rather than asserted.** The instrument first said "88 % of
+voice-frames are occluded", which is a number nobody can act on.  Split by range:
+**10.3 % of voice-frames within 30 m are blocked (mean 0.071) against a mean of 0.325
+beyond 30 m.**  The taxi alongside is not behind a building; the bus 200 m away usually
+is.  That is what a city does.
+
+**Five real defects, all found by the tests or by a measurement that disagreed.**
+They are recorded because each one is a class of bug, not a typo:
+
+1. **The full-scale calibration constant was declared and never applied** — in three
+   places (sources, rain bed, city bed).  Every voice was 10^4 too loud, the limiter
+   held the whole mix at its own threshold, and the symptom was that *distance,
+   panorama, the ground comb and occlusion all measured the same number*: the tests were
+   measuring the limiter instead of the acoustics.  A check that cannot fail differently
+   from another check is not two checks.
+2. **The Doppler was first-order.** `dtau/dt = 1 - vr/c` is the small-`v` form; the
+   exact one is `1/(1 + vr/c)`.  The test that caught it is the one that names the
+   expected number: 1,095.8 Hz for a 1 kHz tone approaching at 30 m/s, measured 1,087.5.
+3. **The limiter had delay lines it never used.**  It pulled the gain *after* the peak
+   had already left, which is a compressor with a lookahead drawn on it.  Now the
+   output is what entered 2 ms ago, scaled by a gain that already knows about the peak —
+   and the detector runs on the 4x oversampled waveform, because a sample-peak limiter
+   cannot bound what a DAC will reconstruct: the first version limited to -1 dBFS and
+   measured **+2.1 dBTP**.
+4. **Occlusion's height test was decorative.**  It compared the *endpoints'* heights, so
+   a ground listener looking up at a rooftop was called occluded by the building
+   underneath the ray.  Now the vertical slab is tested over the part of the segment
+   that is inside the footprint, and the tests state both directions: a flyover deck
+   (base 20 m) shadows nothing, a 60 m source clears a 12 m roof.
+5. **The listener integrated with the traffic's dt**, not the audio block's: 150 km/h
+   down Colaba Causeway, which the first take's odometer said out loud.  And the voice
+   pool saturated with 96 distant vehicles while the taxi alongside was dropped —
+   budgeting by distance fixed it, and a mix that spends its voices on the wrong city is
+   a mix with the wrong city in it.
+
+**Two bugs in the tests themselves**, which is why the suite now audits its own
+instruments:
+
+* the eviction test put the source *abeam*, where the equal-power pan law sends it
+  entirely to the right channel — and measured the left one, so it passed on silence.
+  It now measures both channels and asserts the steady-state slew is non-zero
+  (`steady > 1e-6`): the instrument has to be alive before its reading counts;
+* the filter test compared a one-pole against the *analog* `1/sqrt(1+(f/fc)^2)` at 8x the
+  cutoff and failed by 0.8 dB — the filter was right and the reference was the wrong
+  model of it.  A cutoff is where the filter is 3 dB down *by definition*, and the TPT
+  topology places it exactly, which is what the test now measures.
+
+**What is green.**  `make test` **72 cases / 289,611 checks / 0 failing** (12 of the
+cases are audio); `make audio` PASS with 0 clipped samples at any level; the loudness
+meter is calibrated against the standard's own consequence (a full-scale 1 kHz stereo
+sine reads **0.01 LUFS**, and BS.1770's -0.691 offset is exactly the K-weighting's +0.69 dB
+at 1 kHz); a floating-origin shift of 4 macro-cells changes **0 of 96,000 samples**; and
+a horn at a metre demanding +20 dBFS comes out at **-0.96 dBFS / -0.96 dBTP with 0
+clipped samples**.
+
+**Files.**  `engine/audio/audio.{h,cpp}` (the synthesiser, mixer, occluder grid,
+BS.1770 meter, true-peak meter, WAV), `engine/app/audio_main.cpp` (the harness),
+`tests/test_audio.cpp` (13 cases), the `audio` target, and the preview's sound panel.
+
+---
+
+## D-043 — A1: the Vulkan renderer, built where it cannot run
+
+**The situation.**  A1 is the runtime renderer: Vulkan 1.1, depth prepass + forward,
+clustered lights, WBOIT, TAA, filmic tonemap, compute post, dynamic resolution.  The
+sandbox has no GPU, no ICD and no Vulkan loader.  It does now have the Vulkan headers,
+vendored from the SDK (`third_party/vulkan`, 1.3.290, Apache-2.0) — 1.2 MB of them, and
+they are the difference between "specified" and "built": every one of the renderer's
+translation units compiles.
+
+**What is built.**
+* `engine/render/renderer.{h,cpp}` — public API, then instance, physical device, device,
+  FIFO swapchain (surface creation compiles for both `VK_KHR_android_surface` and
+  desktop), an offscreen RGBA16F HDR target at the render scale, `D32` depth, and three
+  render passes: depth prepass, forward, tonemap.
+* `pipeline.cpp` — descriptor set (three texture arrays, the HDR attachment as an input,
+  the uniform block), six pipelines, a vertex-input description for both the world and
+  the instanced-vehicle bindings, `cullMode = NONE`.
+* `frame.cpp` — the frame: uniform update, the three passes recorded, acquire/submit/
+  present, `FrameStats` copied after present.
+* `scene.cpp` — the arenas (one host-visible device buffer each for vertices and
+  indices, first-fit with coalescing), chunk residency, real texture-array upload
+  (staging buffer, per-mip `vkCmdCopyBufferToImage`, RGB to RGBA expansion), the traffic
+  mesh set and per-frame instance packing, `clearSceneResources`.
+* `shaders/` — nine GLSL modules: world vertex/fragment (GGX, ACES, wet-asphalt
+  roughness and albedo response, height-aware fog), water, sky (Rayleigh + Mie with
+  humidity and pollution, evaluated per pixel), tonemap (four-tap downsample for the
+  render scale, exposure, ACES, 1-LSB dither), traffic.
+* `engine/render/camera.cpp`, `engine/app/render_main.cpp` — the camera and the harness.
+
+**The loader is a runtime dependency and the build says so.**  The Makefile detects
+`libvulkan.so.1` (or `pkg-config vulkan`); when it is absent, the harness is linked in a
+CPU-only mode that still compiles every Vulkan translation unit and says so in its
+output.  A build machine with no GPU can therefore verify the whole device layer
+compiles, and can run everything that does not need a device.
+
+**What `mumbai_render --check` actually proves** (no GPU required, and each of these was
+a real bug at least once):
+* the nine shader modules are present, and 165 is the SPIR-V magic word if they are;
+* all **924 published chunks hash-verify through the renderer's own reader** — 1.267 GiB,
+  19,787,894 vertices, 30,914,538 indices, 10,304,846 LOD0 triangles, 351,051 building
+  proxies — so the GPU-side reader is exercised against the real world and not a fixture;
+* the frame's arithmetic: the view-projection, the frustum, the depth range, the sun at
+  6.9 degrees, the render-scale clamp.
+
+**What it cannot prove, and this is the honest part.**  Whether the pixels are right.
+No pixel of A1 has ever been rasterised: the pipeline objects have never been created,
+the shaders have never been compiled by a driver.  Clustered lights, WBOIT and TAA are
+specified and **not written** — the render scale is the anti-aliasing this build has, and
+the tonemap is where the frame's resolution is decided rather than discovered.
+
+**Three defects found by building it, all of the silent kind.**
+1. `Renderer::Impl` was defined inside `renderer.cpp`, so the other three translation
+   units saw an incomplete private type — 38 errors, and the fix (define it in
+   `renderer_impl.h`) is why the header now says so.
+2. `world.vert` declared the packed material attribute as `uvec4` while `MeshVertex`
+   carries it as four unsigned bytes (`VK_FORMAT_R8G8B8A8_UINT`).  The driver would have
+   read every vertex 16 bytes long, walked the buffer out of step, and rendered a
+   shredded city with no error anywhere.  Found by the new layout checker below, before
+   it ever reached a GPU.
+3. The uniform block's members were named `env`/`sky` in C++ and `envParams`/`skyParams`
+   in GLSL.  Layout-identical, and exactly the drift a checker cannot distinguish from a
+   real mismatch — so the C++ names changed to match the shaders.
+
+**A checker for the interfaces that fail silently.**  `tools/verify_shader_layout.py`
+derives std140 offsets from the C++ `FrameUbo` and compares the block member by member
+with the GLSL, then checks every `layout(location = N) in` against
+`pipeline.cpp`'s vertex attribute descriptions (location, shape, binding).  47 checks,
+wired into `all-checks`.  It found defect 2 and defect 3 on its first run, and on its own
+first run it proved the value of "does the instrument work": three of its *own* faults
+(an array read as 16 floats instead of a mat4, a wrapped source line, a block terminated
+`} frame;` rather than `};`) were caught because it failed loudly rather than passing
+quietly.
+
+**Two build-system traps, both new, both recorded because they cost real time.**  A rule
+inserted above `all:` silently becomes the default goal, so `make` said "up to date" for
+a binary it had never linked — the Makefile now states `.DEFAULT_GOAL := all`.  And a
+variable assigned *below* its first use expands to nothing, which the linker reports as
+a missing symbol in a file that is sitting right there on disk.
+
+---
+
+## D-044 — Mumbai was mirrored (the world is left-handed, and everything else is not)
+
+**The finding.**  The world's axes are x = east metres, y = up metres, z = north metres —
+`TransverseMercator::forward` returns easting/northing and the pipeline writes them
+straight into x and z.  That triple is **left-handed**: east x up = south, not north.
+Every renderer in existence is right-handed.  A camera built the textbook way
+(`s = forward x up`, which is `gluLookAt`, three.js, and this project's own
+`Mat4::lookAt`) therefore produces a **mirrored image**: facing north up Marine Drive,
+the Arabian Sea — west, and on your left — is drawn on the right of the screen.  The Sea
+Link curves the wrong way.  Every landmark keeps its correct position relative to every
+other landmark, so nothing looks broken, and only someone who knows Mumbai would call it
+a bug.  It is exactly the class of failure the specification's judges would find first.
+
+**Where it was, verified rather than argued.**  `tests/verify_viewer_orientation.mjs`
+asks three.js for its own camera basis for a north-facing camera in these axes: the right
+vector comes out `(-1, 0, 0)` — west — and a probe 200 m west lands at `ndc.x = +0.65`,
+on the right.  The preview has been shipping a mirrored Mumbai.
+
+**The fix, in both renderers.**
+* **Engine:** `Camera::view()` builds its basis from the physical question instead of the
+  textbook one — screen right is `up x forward`, which with y up and north ahead is east,
+  which is where east belongs.  `Mat4::lookAt` is deliberately left alone: it is the
+  correct right-handed lookAt, it has no opinion about Mumbai, and after this change
+  nothing calls it.
+* **Preview:** three.js is not ours to change, so `index.html` mirrors the projection's x
+  scale once and re-applies it on every resize.  A mirror reverses screen winding, so
+  `uncullForMirror()` switches every material to `DoubleSide`: culling is a performance
+  detail, a backwards city is not.
+
+**The tests that keep it fixed.**  `tests/test_render.cpp` poses the resident's question
+directly — at Marine Drive facing north, the sea must project left of the city — plus the
+lens (60 degrees measured on the frustum edge), Vulkan's [0, 1] depth range, yaw
+conventions against the shaders', robustness looking straight up, and rigidity (distances
+preserved, eye at the view origin, 100 m ahead at z = -100).  `mumbai_render --check`
+repeats the orientation check on the acceptance shot's own pose.  The two renderers
+differ in exactly one sign on purpose: WebGL's clip space has +Y up, Vulkan's has it
+down, so the engine's projection flips Y and three.js does not — noted in both places so
+nobody "fixes" one to match the other and puts the sky underground.
+
+**Why the data was not flipped instead.**  Negating x across the pipeline would touch the
+1.4 GB of published chunks, the export, the landmarks, the navmesh, the audio's
+occlusion grid and every coordinate in `DOCS/`, to move a mirror from the renderers (two
+files) to the data (everything).  The convention is older than A1, the renderers are
+where it matters, and it is now stated in one place per renderer with a test on each.
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

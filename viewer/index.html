@@ -39,6 +39,12 @@
   #keys kbd { background:#16233a; border:1px solid #2b3d5c; border-radius:4px;
               padding:0 4px; color:#cfe3ff; }
   #ride { bottom:12px; right:12px; text-align:right; display:none; }
+  #sound { top:12px; right:12px; max-width:330px; }
+  #sound .soundhead { display:flex; justify-content:space-between; gap:10px;
+                      color:#ffd9a0; letter-spacing:.12em; font-size:10px;
+                      text-transform:uppercase; margin-bottom:6px; }
+  #sound audio { width:100%; height:32px; filter:saturate(.9); }
+  #sound .soundnote { color:#6d7f9c; font-size:10px; line-height:1.45; margin-top:6px; }
   #ride .big { font-size:30px; color:#ffd9a0; line-height:1; }
   #loading { position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
              flex-direction:column; gap:12px; background:#05070c; z-index:10;
@@ -85,11 +91,45 @@
   <div class="big" id="ride-kmh">0</div>
   <div>km/h · <span id="ride-road">Sea Link</span></div>
 </div>
+<!-- A9: the city's sound.  It is synthesised, not sampled — engine/audio builds
+     every voice from the world's own numbers — and this is the four-minute
+     Colaba -> Borivali drive, rendered offline from the published chunks.  The
+     excerpt is the loudest 30 s of that drive; the caption is read from the
+     manifest the render wrote, so what it claims is what was measured. -->
+<div class="panel" id="sound">
+  <div class="soundhead"><span>engine audio · A9</span><b id="sound-lufs">—</b></div>
+  <audio id="sound-player" controls preload="metadata"
+         src="./data/audio/mumbai_drive_excerpt.wav"></audio>
+  <div class="soundnote" id="sound-note">
+    the loudest 30 s of a 4-minute Colaba&nbsp;→&nbsp;Borivali drive, synthesised
+    from the published world: traffic, horns, rain, surf and the buildings that
+    shadow them.
+  </div>
+</div>
 
 <script type="importmap">
 { "imports": { "three": "./vendor/three.module.js" } }
 </script>
 <script type="module">
+// The audio caption comes from the render's own manifest.  A number nobody
+// measured is a number nobody can act on, so if the file is missing the panel
+// says so instead of inventing a level.
+fetch('./data/audio/audio_manifest.json').then(r => r.ok ? r.json() : null).then(m => {
+  if (!m) return;
+  const el = document.getElementById('sound-lufs');
+  // The panel shows the *excerpt's* own level, because that is what is playing;
+  // the note below it describes the drive the excerpt was cut from.
+  if (el) el.textContent = `${m.excerptLufs.toFixed(1)} LUFS · ${m.excerptTruePeakDbtp.toFixed(1)} dBTP`;
+  const note = document.getElementById('sound-note');
+  if (note) {
+    note.textContent =
+      `${(m.driveMetres / 1000).toFixed(2)} km in ${m.minutes} min at ` +
+      `${(m.driveMetres / (m.minutes * 60) * 3.6).toFixed(0)} km/h · ` +
+      `${m.vehicles} vehicles, ${m.hornBlasts} horn blasts, ${m.rainMmPerHour} mm/h rain · ` +
+      `${m.clippedSamples} clipped samples`;
+  }
+}).catch(() => {});
+
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/OrbitControls.js';
 
@@ -1100,9 +1140,45 @@ function animate() {
     fpsAcc = 0; fpsFrames = 0;
   }
 }
+
+// -----------------------------------------------------------------------------
+//  MIRROR (D-044)
+//
+//  The world's axes are x = east metres, y = up metres, z = north metres — the
+//  frame the geospatial pipeline publishes.  That triple is LEFT-handed (east x
+//  up = south, not north), while three.js, like every other graphics library, is
+//  right-handed.  Rendered straight, Mumbai comes out mirrored left-to-right: the
+//  Arabian Sea lands on the wrong side of Marine Drive and the Sea Link curves the
+//  wrong way.  Nothing looks broken until you know the city, which is exactly why
+//  it survived this long.
+//
+//  The fix is to mirror the projection's x scale once, and to stop culling: a
+//  mirror reverses triangle winding, so FrontSide would cull the faces that are
+//  now facing the camera.  Culling is a performance detail; a backwards city is
+//  not.
+// -----------------------------------------------------------------------------
+function applyMirror() {
+  camera.projectionMatrix.elements[0] *= -1;
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+}
+function uncullForMirror() {
+  const seen = new Set();
+  scene.traverse(o => {
+    const m = o.material;
+    if (!m) return;
+    for (const mat of (Array.isArray(m) ? m : [m])) {
+      if (seen.has(mat) || mat.side === THREE.DoubleSide) continue;
+      seen.add(mat);
+      mat.side = THREE.DoubleSide;
+      mat.needsUpdate = true;
+    }
+  });
+}
+
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  applyMirror();                     // updateProjectionMatrix rebuilds it unmirrored
   renderer.setSize(innerWidth, innerHeight);
 });
 
@@ -1122,6 +1198,8 @@ try {
   buildRain();
   setTime(4.2, 288, 3.2, 'golden hour');
   presets['4']();
+  uncullForMirror();
+  applyMirror();
   setProgress(1, 'ready');
   $('loading').style.opacity = '0';
   setTimeout(() => { $('loading').style.display = 'none'; }, 750);

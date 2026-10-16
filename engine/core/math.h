@@ -96,6 +96,11 @@ struct Mat4 {
     }
     static Mat4 perspective(f32 fovYRadians, f32 aspect, f32 nearZ, f32 farZ);
     static Mat4 orthographic(f32 l, f32 r, f32 b, f32 t, f32 n, f32 f);
+    // The textbook right-handed lookAt (screen right = forward x up).  Correct
+    // for a right-handed world; this project's world is left-handed (x east,
+    // y up, z north), so the renderer's camera builds its own basis instead of
+    // calling this — see engine/render/camera.cpp and D-044.  Kept because the
+    // maths is right and something may want a right-handed view later.
     static Mat4 lookAt(const Vec3& eye, const Vec3& center, const Vec3& up);
     static Mat4 fromQuat(const Vec4& q);          // q = (x,y,z,w)
     static Mat4 rotationAxis(const Vec3& axis, f32 radians);

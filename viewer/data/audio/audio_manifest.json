@@ -1,0 +1,90 @@
+{
+  "bits": 16,
+  "cellsWithoutGround": 0,
+  "channels": 2,
+  "clippedSamples": 0,
+  "dither": true,
+  "dopplerMaxFactor": 1.06286543,
+  "dopplerMinFactor": 0.943279842,
+  "driveMetres": 2533.95665,
+  "earshotMetres": 220,
+  "excerpt": "viewer/data/audio/mumbai_drive_excerpt.wav",
+  "excerptSeconds": 30,
+  "frames": 11520000,
+  "hornBlasts": 7,
+  "hornRuleSeconds": 1.5,
+  "integratedLufs": -21.7362659,
+  "layers": [
+    {
+      "maxVoices": 24,
+      "name": "engine",
+      "referenceDbAt10m": 76
+    },
+    {
+      "maxVoices": 24,
+      "name": "tyres",
+      "referenceDbAt10m": 70
+    },
+    {
+      "maxVoices": 8,
+      "name": "horn",
+      "referenceDbAt10m": 96
+    },
+    {
+      "maxVoices": 1,
+      "name": "rain",
+      "referenceDbAt10m": 62
+    },
+    {
+      "maxVoices": 6,
+      "name": "surf",
+      "referenceDbAt10m": 70
+    },
+    {
+      "maxVoices": 1,
+      "name": "city",
+      "referenceDbAt10m": 55
+    },
+    {
+      "maxVoices": 4,
+      "name": "tone",
+      "referenceDbAt10m": 80
+    }
+  ],
+  "limiterGrabs": 0,
+  "maxRangeRateMetresPerSecond": 20.6248595,
+  "meanOcclusionBeyond30m": 0.325257049,
+  "meanOcclusionWithin30m": 0.071456077,
+  "minutes": 4,
+  "occludedVoiceFrames": 258298560,
+  "occludedVoiceFramesWithin30m": 1916797,
+  "occluders": 3764,
+  "peak": 0.130296241,
+  "peakDbfs": -17.7013623,
+  "peakVehiclesUnderDesiredSpeed": 9,
+  "peakVehiclesWithCloseLeader": 7,
+  "peakVoices": 59,
+  "rainMmPerHour": 42,
+  "renderSeconds": 404.027172,
+  "rmsDbfs": -27.6812036,
+  "routeMetres": 37708.9547,
+  "sampleRate": 48000,
+  "submitted": {
+    "layer0": 2830525,
+    "layer1": 0,
+    "layer2": 208,
+    "layer3": 0,
+    "layer4": 0,
+    "layer5": 0,
+    "layer6": 0,
+    "tyreVoices": 1184057
+  },
+  "swellMetres": 100,
+  "truePeakDbtp": -16.2281259,
+  "vehicles": 160,
+  "voiceBudget": 64,
+  "voiceFrames": 619418880,
+  "voiceFramesWithin30m": 18586260,
+  "wav": "build/audio/mumbai_drive.wav",
+  "wetness": 0.65
+}
