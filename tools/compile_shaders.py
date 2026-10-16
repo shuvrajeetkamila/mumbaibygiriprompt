@@ -31,23 +31,41 @@ STAGES = {'.vert': 'vertex', '.frag': 'fragment', '.comp': 'compute'}
 SPIRV_MAGIC = 0x07230203
 
 
+def classify(path):
+    """Which compiler is this?  The two take different flags, so guessing here
+    makes the compile step fail on a machine that has a perfectly good compiler."""
+    base = os.path.basename(path)
+    return 'glslc' if base.startswith('glslc') else 'glslang'
+
+
 def find_compiler():
-    for name, kind in (('glslc', 'glslc'), ('glslangValidator', 'glslang')):
-        path = os.environ.get('MUMBAI_GLSL_COMPILER') if name == 'glslc' else None
-        path = path or shutil.which(name)
-        if path:
-            return kind, path
+    # An explicit override wins, whatever it is called: a machine that has built
+    # glslang from source has a binary named `glslang`, and one that installed the
+    # Vulkan SDK has `glslc`.
     env = os.environ.get('MUMBAI_GLSL_COMPILER')
-    if env and os.path.isfile(env):
-        return ('glslc' if os.path.basename(env).startswith('glslc') else 'glslang'), env
+    if env:
+        if os.path.isfile(env):
+            return classify(env), env
+        found = shutil.which(env)
+        if found:
+            return classify(found), found
+    for name in ('glslc', 'glslangValidator', 'glslang'):
+        found = shutil.which(name)
+        if found:
+            return classify(found), found
     return None, None
 
 
 def command_for(kind, compiler, source, out, include_dir):
     if kind == 'glslc':
+        # glslc is a command-line-tool with the `--flag=value` spelling.
         return [compiler, f'-I{include_dir}', '--target-env=vulkan1.1', '-O', source, '-o', out]
-    # glslangValidator infers the stage from the file extension and writes SPIR-V
-    # with -V.  -o is supported with -V in every version this project builds with.
+    # glslangValidator (and its newer name, `glslang`) infers the stage from the
+    # file extension and writes SPIR-V with -V.  ITS FLAGS ARE SEPARATE ARGUMENTS:
+    # `--target-env vulkan1.1`, not `--target-env=vulkan1.1`.  The `=` spelling is
+    # glslc's, and passing it here makes every shader fail with "unrecognized
+    # command-line option" — which is how this was found, on the first machine that
+    # had a compiler for both and could compare them.
     return [compiler, '-V', '--target-env', 'vulkan1.1', f'-I{include_dir}', '-o', out, source]
 
 

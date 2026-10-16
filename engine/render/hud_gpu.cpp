@@ -17,6 +17,13 @@
 //     there is no colour in the texture to have a colour space.
 // =============================================================================
 #include "engine/render/renderer_impl.h"
+// The HUD's SPIR-V lives in the generated header, and this file uses it
+// directly: it needs the include itself, not one inherited from a neighbour.
+// (CI's clean checkout found exactly that: the array names were undeclared
+// here while the same file compiled against a stale object on a machine that
+// had built it once.  `make` cannot see a missing include in a file it did not
+// need to rebuild.)
+#include "shaders_generated.h"
 
 #include <cstring>
 
