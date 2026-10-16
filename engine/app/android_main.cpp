@@ -39,6 +39,8 @@
 #include <cstdio>
 #include <string>
 
+using namespace mumbai;
+
 #if defined(__ANDROID__)
 #include <android/log.h>
 #include <android/native_window.h>

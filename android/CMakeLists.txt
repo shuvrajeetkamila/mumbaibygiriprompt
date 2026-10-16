@@ -208,6 +208,17 @@ else()
     list(APPEND MUMBAI_HOST_SRC ${MUMBAI_PHYS_SRC})
   endif()
 
+  # android_main.cpp is compiled on the host too, as an object library that is
+  # never linked (its !__ANDROID__ branch is a main() of its own).  Without this,
+  # the only machine that ever saw the file compile was the CI runner — which is
+  # how "unknown type name 'u32'" got as far as a red build.  An OBJECT library
+  # builds it and links nothing.
+  add_library(mumbai_android_main_compilecheck OBJECT
+    "${MUMBAI_ROOT}/engine/app/android_main.cpp")
+  target_include_directories(mumbai_android_main_compilecheck PRIVATE
+    "${MUMBAI_ROOT}" "${MUMBAI_ROOT}/third_party" "${GENERATED_DIR}")
+  mumbai_add_shaders(mumbai_android_main_compilecheck)
+
   add_executable(mumbai_hostcheck
     "${MUMBAI_ROOT}/engine/app/host_check.cpp"
     ${MUMBAI_HOST_SRC})
