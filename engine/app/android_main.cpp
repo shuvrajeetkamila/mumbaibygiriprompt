@@ -37,6 +37,7 @@
 //  found only by a CI run.
 // =============================================================================
 #include "engine/core/core.h"
+#include "engine/app/fallback_screen.h"
 #include "engine/core/geo.h"     // MACRO_CELL_SIZE: the floating origin of section 4A
 #include "engine/render/hud.h"
 #include "engine/render/renderer.h"
@@ -123,6 +124,7 @@ struct Client {
     u64 frames = 0;
     u64 lastStatMs = 0;
     u64 nextRetryMs = 0;
+    u64 nextFallbackMs = 0;
     std::string lastError;
 
     // camera, in f64 world metres with a f32 render offset: the floating origin of
@@ -495,15 +497,12 @@ std::string format(const char* fmt, ...) {
     return std::string(buffer);
 }
 
-void updateHud(Client* client) {
-    render::HudFrame frame;
-    const f32 w = static_cast<f32>(client->width);
-    const f32 scale = w >= 1400.0f ? 3.0f : (w >= 900.0f ? 2.5f : 2.0f);
-
-    frame.rects.push_back({0.0f, 0.0f, std::min(w, 900.0f * scale / 3.0f), 0.0f});
-
+// WHAT THE CLIENT SAYS ABOUT ITSELF, in one place.  The GPU panel and the CPU
+// fallback screen (engine/app/fallback_screen.h) draw the same sentences at
+// different times: the panel whenever there is a frame, the fallback while there
+// is not.  Two lists would drift, and the list is the client's only voice.
+std::vector<std::string> statusLines(Client* client) {
     std::vector<std::string> lines;
-    lines.push_back("MUMBAI 1:1 EXACT");
     if (client->ready) {
         const render::FrameStats& st = client->renderer.stats();
         lines.push_back(format("%.0f FPS   %u draws   %u triangles", client->fps, st.drawCalls,
@@ -542,7 +541,15 @@ void updateHud(Client* client) {
         if (!load.firstError.empty()) lines.push_back("chunk: " + load.firstError.substr(0, 42));
     }
     lines.push_back("left half: move    right half: look");
+    return lines;
+}
 
+void updateHud(Client* client) {
+    render::HudFrame frame;
+    const f32 w = static_cast<f32>(client->width);
+    const f32 scale = w >= 1400.0f ? 3.0f : (w >= 900.0f ? 2.5f : 2.0f);
+
+    const std::vector<std::string> lines = statusLines(client);
     f32 y = 14.0f;
     f32 panelWidth = 0.0f;
     for (const std::string& text : lines)
@@ -577,6 +584,30 @@ void updateHud(Client* client) {
                                render::kHudGreen});
     }
     client->renderer.setHud(frame);
+}
+
+// -----------------------------------------------------------------------------
+//  The screen that cannot be black
+// -----------------------------------------------------------------------------
+// While the renderer is not up there is no frame to put a panel in, and the phone
+// shows whatever the window had — which is how "nothing here" is what a person
+// reports.  This paints the same status lines straight into the window buffer on
+// the CPU, at two hertz, and never touches the window once Vulkan owns it.
+void updateFallbackScreen(android_app* app, Client* client, u64 now) {
+    if (client->ready || !app->window) return;
+    if (now < client->nextFallbackMs) return;
+    client->nextFallbackMs = now + 500;
+
+    std::vector<std::string> lines;
+    lines.push_back("MUMBAI 1:1 EXACT");
+    for (const std::string& line : statusLines(client)) lines.push_back(line);
+    if (!client->lastError.empty()) lines.push_back("!! " + client->lastError.substr(0, 52));
+    lines.push_back("waiting for a surface and a graphics device");
+
+    if (!app::drawFallbackScreen(app->window, lines.front(), lines)) {
+        // Nothing left to draw on, and saying so once a second is enough.
+        appLog("fallback screen could not be painted (no lockable window buffer)");
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -697,6 +728,7 @@ void android_main(android_app* app) {
             // created may have been one that could not present.  One retry a second,
             // so a device that recovers recovers, and one that cannot does not spin.
             const u64 now = nowMillis();
+            updateFallbackScreen(app, &client, now);
             if (app->window && now >= client.nextRetryMs) {
                 client.nextRetryMs = now + 1000;
                 startRenderer(app, &client);

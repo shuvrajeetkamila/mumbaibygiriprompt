@@ -125,7 +125,18 @@ jobs:
         run: bash tools/fetch_data.sh
 
       - name: Build the pipeline and the engine
-        run: make -j4
+        # The log is kept because a runner's log files are unreachable from some
+        # machines (D-045) but step summaries and annotations are not: the step
+        # below copies this file's errors into both.
+        run: |
+          set -o pipefail
+          echo "::notice::compiler: $(c++ --version | head -1)"
+          if pkg-config --exists vulkan 2>/dev/null; then
+            echo "::notice::vulkan loader detected by pkg-config: the renderer will link it"
+          else
+            echo "::notice::no vulkan.pc: the renderer compiles CPU-only"
+          fi
+          make -j4 2>&1 | tee build.log
 
       - name: Build the world
         # 924 cells, 1.27 GiB: the same `make world` any machine runs.  Its own
@@ -179,17 +190,24 @@ jobs:
         run: |
           python3 - <<'PYTHON'
           import os, re, glob
+          # Every log the workflow writes, newest steps first: a failure in the
+          # native build used to be invisible from outside the runner, because only
+          # Gradle's log was copied into the annotations.
+          names = ['gradle-build.log', 'starter-world.log', 'world-build.log', 'build.log']
           logs = []
-          for path in glob.glob('/home/runner/work/**/gradle-build.log', recursive=True) +                       glob.glob(os.path.join(os.getcwd(), 'gradle-build.log')):
-              try:
-                  logs.append((path, open(path, errors='replace').read()))
-              except OSError:
-                  pass
+          for name in names:
+              for path in glob.glob('/home/runner/work/**/' + name, recursive=True) + \
+                          glob.glob(os.path.join(os.getcwd(), name)):
+                  try:
+                      logs.append((path, open(path, errors='replace').read()))
+                  except OSError:
+                      pass
           if not logs:
-              print('no gradle log found')
+              print('no build log found to surface')
           pattern = re.compile(r'(error:|error C[0-9]|CMake Error|FAILURE:|What went wrong|'
                                r'Execution failed for task|Caused by:|ninja: error|'
                                r'undefined reference|No such file or directory|'
+                               r'does not name a type|was not declared in this scope|'
                                r'Could not (resolve|find|determine))')
           for path, text in logs:
               lines = text.splitlines()

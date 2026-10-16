@@ -346,11 +346,13 @@ host-check:
 # same file compiles here with __ANDROID__ defined.  This is a compile check, not a
 # run: the stubs have no implementation, which is exactly right for one.
 ANDROID_STUBS    := engine/app/android_stubs
-ANDROID_MAIN_OBJ := $(OBJ)/engine/app/android_main.hostcheck.o
-android-check: $(ANDROID_MAIN_OBJ)
+ANDROID_APP_SRC  := engine/app/android_main.cpp engine/app/fallback_screen.cpp
+ANDROID_APP_OBJ  := $(patsubst engine/app/%.cpp,$(OBJ)/engine/app/%.hostcheck.o,$(ANDROID_APP_SRC))
+android-check: $(ANDROID_APP_OBJ)
 	@echo "== android_main.cpp compiles with __ANDROID__ against the host stubs =="
 
-$(ANDROID_MAIN_OBJ): engine/app/android_main.cpp $(wildcard $(ANDROID_STUBS)/*.h $(ANDROID_STUBS)/android/*.h) engine/render/hud.h engine/render/renderer.h engine/render/world_index.h
+$(OBJ)/engine/app/%.hostcheck.o: engine/app/%.cpp $(wildcard $(ANDROID_STUBS)/*.h $(ANDROID_STUBS)/android/*.h) \
+        engine/render/hud.h engine/render/renderer.h engine/render/world_index.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -D__ANDROID__ -isystem $(ANDROID_STUBS) -c $< -o $@
 

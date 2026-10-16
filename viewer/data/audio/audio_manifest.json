@@ -67,10 +67,10 @@
   "peakVehiclesWithCloseLeader": 7,
   "peakVoices": 59,
   "rainMmPerHour": 42,
-  "renderSeconds": 555.750488,
   "rmsDbfs": -27.6812036,
   "routeMetres": 37708.9547,
   "sampleRate": 48000,
+  "simulatedSeconds": 240,
   "submitted": {
     "layer0": 2830525,
     "layer1": 0,

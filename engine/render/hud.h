@@ -104,4 +104,29 @@ u32 buildHudVertices(const HudFrame& frame, f32 viewportW, f32 viewportH,
 f32 hudTextWidth(const std::string& text, f32 scale);
 f32 hudLineHeight(f32 scale);
 
+// --- the same font, drawn by the CPU -----------------------------------------
+// WHY THERE ARE TWO RASTERISERS AND ONE FONT.  When the renderer is not up — the
+// device refused a graphics device, the surface arrived without a swapchain, the
+// app is still installing its world — there is no frame to put a panel in, and a
+// black rectangle is all a person holding the phone gets.  The client therefore
+// paints its own startup and failure screens straight into the window's buffer
+// with these functions.  One font, two rasterisers: a second font would drift
+// from the first, and a screen that says "the renderer did not start" is worthless
+// if it cannot be read.
+//
+// The target is an 8-bit coverage buffer: row-major, top-left origin, `stride`
+// bytes per row (the stride a locked Android window hands back is in *pixels*,
+// so a caller with a 4-byte-per-pixel window multiplies before calling).
+//
+// Every blit is clipped to `clipW` x `clipH`, which the caller takes from the
+// locked window's own width and height: a rasteriser that trusts its caller to
+// stay in bounds is a rasteriser that writes past the end of a mapped buffer.
+u8 glyphRow(char c, u32 row);   // 5-bit mask, bit 4 leftmost; 0 for a non-glyph
+void blitRect(u8* pixels, i32 stride, i32 clipW, i32 clipH, i32 x, i32 y, i32 w, i32 h,
+              u8 value);
+void blitText(u8* pixels, i32 stride, i32 clipW, i32 clipH, i32 x, i32 y,
+              const std::string& text, u32 scale, u8 value);
+i32 textPixelWidth(const std::string& text, u32 scale);
+i32 textPixelHeight(u32 scale);
+
 }  // namespace mumbai::render

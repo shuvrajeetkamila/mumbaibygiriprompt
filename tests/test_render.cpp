@@ -447,3 +447,62 @@ TEST(worldIndexReadsAManifestAndCountsCellsByRadius) {
         CHECK(nearGateway >= 9);
     }
 }
+
+// =============================================================================
+//  The CPU rasteriser — the same font, for screens that have no frame in them.
+//
+//  This is the path a phone takes while the renderer is not up, so the two things
+//  it must never do are fail to draw a legible glyph and write outside the buffer
+//  the platform handed it.  Both are checked here, on a machine with no GPU.
+// =============================================================================
+TEST(cpuRasteriserDrawsTheSharedFontAndStaysInBounds) {
+    // Glyph rows come from the same table the GPU panel's geometry is built from.
+    const u8 aRow0 = render::glyphRow('A', 0);
+    CHECK(aRow0 != 0u);
+    CHECK((aRow0 & 0xE0u) == 0u);          // five bits of glyph, nothing above
+    CHECK_EQ(render::glyphRow('\n', 0), 0u);   // not a glyph
+    CHECK_EQ(render::glyphRow('A', render::kGlyphH), 0u);   // past the last row
+    CHECK_EQ(render::glyphRow('A', render::kGlyphH - 1), 0x11u);   // the two stems
+
+    // Space is blank in every row: a wrong table shows up here first.
+    for (u32 row = 0; row < render::kGlyphH; ++row) CHECK_EQ(render::glyphRow(' ', row), 0u);
+
+    // Text geometry, in pixels: one cell of advance per character.
+    CHECK_EQ(render::textPixelWidth("ABCD", 3), static_cast<i32>(4 * render::kCellW * 3));
+    CHECK_EQ(render::textPixelHeight(3), static_cast<i32>(render::kCellH * 3));
+    CHECK_EQ(render::textPixelWidth("", 3), 0);
+
+    // Drawing, with canaries: a 64x32 image inside a border of zeros.  Everything
+    // asked for here is deliberately outside the image in at least one direction.
+    const i32 w = 64, h = 32, pad = 8;
+    const i32 stride = w + 2 * pad;
+    std::vector<u8> canvas(static_cast<size_t>(stride) * (h + 2 * pad), 0);
+    u8* origin = canvas.data() + static_cast<size_t>(pad) * stride + pad;
+
+    render::blitText(origin, stride, w, h, -12, -6, "MUMBAI", 6, 1);   // up and off left
+    render::blitRect(origin, stride, w, h, 60, 28, 40, 40, 1);         // off the bottom right
+    render::blitText(origin, stride, w, h, 4, 4, "renderer not started", 2, 1);
+
+    // Something was drawn...
+    size_t lit = 0;
+    for (i32 y = 0; y < h; ++y)
+        for (i32 x = 0; x < w; ++x)
+            if (origin[static_cast<size_t>(y) * stride + x] != 0) ++lit;
+    CHECK(lit > 100u);
+
+    // ...and not one byte outside the image was touched.
+    bool clean = true;
+    for (i32 y = -pad; y < h + pad; ++y) {
+        for (i32 x = -pad; x < w + pad; ++x) {
+            if (x >= 0 && x < w && y >= 0 && y < h) continue;
+            if (origin[static_cast<size_t>(y) * stride + x] != 0) clean = false;
+        }
+    }
+    CHECK(clean);
+
+    // A zero-size or null target is refused rather than written to.
+    render::blitText(nullptr, stride, w, h, 0, 0, "x", 2, 1);
+    render::blitRect(origin, 0, w, h, 0, 0, 4, 4, 1);
+    render::blitText(origin, stride, 0, h, 0, 0, "x", 2, 1);
+    CHECK(origin[static_cast<size_t>(4) * stride + 4] == 0u);   // still the second blit's pixel
+}

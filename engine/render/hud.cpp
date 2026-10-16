@@ -156,6 +156,61 @@ void buildFontAtlas(std::vector<u8>& out) {
     }
 }
 
+// --- the CPU rasteriser ------------------------------------------------------
+u8 glyphRow(char c, u32 row) {
+    const i32 index = static_cast<u8>(c) - static_cast<i32>(kFirstGlyph);
+    if (index < 0 || index >= static_cast<i32>(kGlyphCount) || row >= kGlyphH) return 0;
+    return static_cast<u8>(kFont[static_cast<u32>(index)][row] & ((1u << kGlyphW) - 1u));
+}
+
+void blitRect(u8* pixels, i32 stride, i32 clipW, i32 clipH, i32 x, i32 y, i32 w, i32 h,
+              u8 value) {
+    if (!pixels || stride <= 0 || clipW <= 0 || clipH <= 0 || w <= 0 || h <= 0) return;
+    const i32 x0 = x < 0 ? 0 : x;
+    const i32 y0 = y < 0 ? 0 : y;
+    const i64 x1 = static_cast<i64>(x) + w;
+    const i64 y1 = static_cast<i64>(y) + h;
+    const i32 xEnd = static_cast<i32>(x1 < clipW ? x1 : clipW);
+    const i32 yEnd = static_cast<i32>(y1 < clipH ? y1 : clipH);
+    for (i32 py = y0; py < yEnd; ++py) {
+        u8* line = pixels + static_cast<size_t>(py) * static_cast<size_t>(stride);
+        for (i32 px = x0; px < xEnd; ++px) line[px] = value;
+    }
+}
+
+i32 textPixelWidth(const std::string& text, u32 scale) {
+    return static_cast<i32>(text.size()) * static_cast<i32>(kCellW) * static_cast<i32>(scale);
+}
+
+i32 textPixelHeight(u32 scale) {
+    return static_cast<i32>(kCellH) * static_cast<i32>(scale);
+}
+
+void blitText(u8* pixels, i32 stride, i32 clipW, i32 clipH, i32 x, i32 y,
+              const std::string& text, u32 scale, u8 value) {
+    if (!pixels || scale == 0) return;
+    const i32 step = static_cast<i32>(scale);
+    i32 penX = x;
+    i32 penY = y;
+    for (char ch : text) {
+        if (ch == '\n') {
+            penX = x;
+            penY += static_cast<i32>(kCellH) * step;
+            continue;
+        }
+        for (u32 row = 0; row < kGlyphH; ++row) {
+            const u8 bits = glyphRow(ch, row);
+            if (!bits) continue;
+            for (u32 col = 0; col < kGlyphW; ++col) {
+                if (!((bits >> (kGlyphW - 1 - col)) & 1u)) continue;
+                blitRect(pixels, stride, clipW, clipH, penX + static_cast<i32>(col) * step,
+                         penY + static_cast<i32>(row) * step, step, step, value);
+            }
+        }
+        penX += static_cast<i32>(kCellW) * step;
+    }
+}
+
 f32 hudTextWidth(const std::string& text, f32 scale) {
     return static_cast<f32>(text.size()) * static_cast<f32>(kCellW) * scale;
 }
