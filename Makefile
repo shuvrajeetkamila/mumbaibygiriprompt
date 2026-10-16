@@ -87,9 +87,15 @@ RENDER_CPU_OBJ := $(OBJ)/engine/render/camera.o $(OBJ)/engine/render/hud.o \
 # installed the renderer's sources are still compiled — which is the part of A1 a
 # machine without a GPU can verify — and the harness links in CPU-only mode
 # instead of failing at link time with "cannot find -lvulkan".
-VULKAN_LOADER := $(shell { command -v pkg-config >/dev/null 2>&1 && pkg-config --exists vulkan && echo yes; } || \
-                        ls /usr/lib/libvulkan.so* /usr/lib/*/libvulkan.so* \
-                           /usr/local/lib/libvulkan.so* 2>/dev/null | head -1)
+# The test is an actual link, not an inspection of the filesystem.  An earlier
+# version looked for libvulkan.so* and found libvulkan.so.1 on GitHub's Ubuntu
+# image — the runtime library, which ships without the development symlink that
+# -lvulkan needs — so the build tried to link something that was never linkable
+# and stopped with "cannot find -lvulkan" on a machine that had *more* Vulkan
+# installed than the sandbox this was written in.  A probe cannot make that
+# mistake, and it costs one trivial compile per make invocation.
+VULKAN_LOADER := $(shell printf 'int main(){return 0;}\n' | $(CXX) $(CXXSTD) -x c++ - -lvulkan \
+                          -o /dev/null 2>/dev/null && echo yes)
 ifeq ($(VULKAN_LOADER),)
 RENDER_MAIN_FLAGS := -DMUMBAI_NO_VULKAN
 else
