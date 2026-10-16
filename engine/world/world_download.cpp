@@ -48,6 +48,35 @@ DownloadConfig configForRelease(const WorldRelease& release, const std::string& 
     return config;
 }
 
+bool cityFitsIn(DiskSpace space) {
+    if (!space.known) return true;
+    return space.freeBytes >= kCityInstalledBytes + kCityInstallMargin;
+}
+
+bool cityHasRunningRoom(DiskSpace space) {
+    if (!space.known) return true;
+    return space.freeBytes >= kCityRunningReserve;
+}
+
+std::string startSpaceSentence(DiskSpace space) {
+    if (!space.known || cityFitsIn(space)) return std::string();
+    char buffer[160];
+    std::snprintf(buffer, sizeof(buffer), "not enough storage: %.1f GB free, about %.1f GB needed",
+                  static_cast<f64>(space.freeBytes) / (1024.0 * 1024.0 * 1024.0),
+                  static_cast<f64>(kCityInstalledBytes + kCityInstallMargin) /
+                      (1024.0 * 1024.0 * 1024.0));
+    return std::string(buffer);
+}
+
+std::string runningSpaceSentence(DiskSpace space) {
+    if (!space.known || cityHasRunningRoom(space)) return std::string();
+    char buffer[160];
+    std::snprintf(buffer, sizeof(buffer),
+                  "storage nearly full: %.0f MiB free — the download is paused",
+                  static_cast<f64>(space.freeBytes) / (1024.0 * 1024.0));
+    return std::string(buffer);
+}
+
 void WorldDownload::restart() {
     m_reader.reset();
     if (m_sink) m_sink->abortCurrent();

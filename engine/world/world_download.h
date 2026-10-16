@@ -139,6 +139,48 @@ class WorldDownload {
     bool m_paused = false;
 };
 
+// -----------------------------------------------------------------------------
+//  ROOM FOR THE CITY
+// -----------------------------------------------------------------------------
+// A 370 MiB download that unpacks to 1.35 GiB must not be discovered at ninety per
+// cent.  Without a check, a phone with too little space downloads for twenty
+// minutes and then fails with "short write into cells/....part" — the person has
+// paid for the transfer and has nothing to show for it.  So the arithmetic lives
+// here, as pure functions over a number the platform supplies (android_main.cpp
+// asks the filesystem; everything else can pass a simulated one), and the
+// sentences are written once, beside the numbers they explain.
+//
+// MEASURED, NOT GUESSED: this checkout's city is 1,328,994,192 bytes of cells plus
+// 107,921,238 bytes of texture arrays plus the manifest — 1.35 GiB on disk — while
+// the archive that carries it is 370 MiB.  The starter slice is already installed
+// by the time this is asked, and the 25 cells it contains are overwritten by the
+// city rather than duplicated.
+struct DiskSpace {
+    u64 freeBytes = 0;
+    bool known = false;   // false: the platform could not tell, so nothing is refused
+};
+
+inline constexpr u64 kCityInstalledBytes = 1449ull * 1024 * 1024;  // 1.35 GiB, rounded up
+inline constexpr u64 kCityInstallMargin = 128ull * 1024 * 1024;    // room to keep running
+inline constexpr u64 kCityRunningReserve = 96ull * 1024 * 1024;    // pause before the disk fills
+
+// Enough room to start?  An unknown answer never refuses: a guard that blocks a
+// download because it could not read a filesystem is worse than the failure it
+// exists to prevent, and the failure it prevents is only ever a delay.
+bool cityFitsIn(DiskSpace space);
+// Enough room to keep going, asked again while the download runs (a phone's free
+// space also shrinks for reasons that have nothing to do with this app).
+bool cityHasRunningRoom(DiskSpace space);
+// One sentence for the panel, or an empty string when there is nothing to say.
+// Two functions rather than one, because the two situations want different advice
+// and only one of them is true at a time: someone *pressing* GET CITY on a phone
+// with no room needs to be told how much to free, and someone whose download is
+// already running needs to be told it has paused and why.  One function that
+// guessed which of those it was looking at would say "nearly full, paused" to a
+// person who has not started, or invent a figure to free mid-download.
+std::string startSpaceSentence(DiskSpace space);
+std::string runningSpaceSentence(DiskSpace space);
+
 // One URL in the release's shape: <repo>/releases/download/<tag>/<asset>.
 std::string worldReleaseUrl(const std::string& repository, const std::string& tag,
                             const std::string& asset);

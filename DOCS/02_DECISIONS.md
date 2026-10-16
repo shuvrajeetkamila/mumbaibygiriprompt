@@ -2788,3 +2788,41 @@ section D says it is — a device measurement, still unrun.  What is now true is
 device which cannot hold the target has something that will trade resolution for
 frames, and that the policy's equilibrium was chosen to sit on the right side of the
 target rather than the convenient side.
+
+## D-053 — The download asks the filesystem first, because the failure it prevents costs twenty minutes of somebody's data
+
+**What was missing.**  Nothing anywhere in the client or the downloader looked at free
+space.  The published city is a **370 MiB** download that unpacks to **1.35 GiB**
+(cells 1,328,994,192 B + texture arrays 107,921,238 B + the manifest), so a phone with
+less room than that would stream for twenty minutes, fail with `short write into
+cells/....part`, and leave the person with nothing to show for the transfer.  The
+download itself is safe — a part file is never renamed into place until its checksum
+matches (D-048) — but "safe" is not "worth doing".
+
+**The arithmetic is pure, the platform call is one function.**  `world::cityFitsIn`,
+`world::cityHasRunningRoom`, `world::startSpaceSentence` and
+`world::runningSpaceSentence` live in `engine/world/world_download.{h,cpp}` with the
+measured numbers beside them, and are driven by a unit test that walks the boundary:
+exactly enough room is allowed, a byte less is refused, a full disk is refused, and an
+**unknown answer is never a refusal** — a guard that blocks a download because it could
+not read a filesystem is worse than the failure it exists to prevent.
+`android_main.cpp` supplies the number from `statvfs` on the app's own directory, which
+needs no permission on any Android this app runs on (minSdk 29, own data directory), so
+the manifest gained nothing.
+
+**Two sentences, because the two situations need different advice.**  Pressing GET CITY
+with no room says *"not enough storage: 0.6 GB free, about 1.5 GB needed"* and does
+**not** start — the first version of this collapsed both cases into one function and
+told a person who had not started that their download was paused.  A download that runs
+the disk down says *"storage nearly full: 42 MiB free — the download is paused"*: it
+stops with the resume marker intact, so freeing space and tapping again continues from
+where it stopped rather than from zero.  The check is re-asked every two seconds while
+the download runs, because a phone's free space also shrinks for reasons that have
+nothing to do with this app, and the free space itself is printed on the panel during a
+download — a number a person can act on before it becomes a sentence they have to read.
+
+**Not covered, and named.**  The starter slice (96 MiB out of the APK) has no check of
+its own: it is a copy from the package into app storage, it fails visibly on the panel
+if it cannot be written, and the app is useful without it.  Neither check is a
+quota-management system; they are two compares against two constants that came from
+measuring the world this repository actually publishes.

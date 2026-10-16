@@ -45,6 +45,10 @@
 #include "engine/render/renderer.h"
 #include "engine/render/world_index.h"
 #include "engine/world/world_download.h"
+
+#if defined(__ANDROID__)
+#include <sys/statvfs.h>   // how much room the filesystem has (see diskSpace())
+#endif
 #include "engine/world/world_release.h"
 
 #include <cmath>
@@ -214,7 +218,32 @@ struct Client {
     bool downloadWanted = false;
     bool downloadApplied = false;
     std::string downloadNote;
+    // What the filesystem said, and how long ago: asked before a download starts
+    // (asking is free, discovering at ninety per cent is not) and re-asked while one
+    // runs, because a phone's free space also shrinks for reasons that have nothing
+    // to do with this app.
+    world::DiskSpace space;
+    u64 lastSpaceCheckMs = 0;
+    std::string spaceNote;
 };
+
+// How much room is left where the world is installed.  `known` is false when the
+// filesystem will not say — and then nothing is refused, because a guard that
+// blocks a download it could not measure is worse than the failure it prevents
+// (world_download.h).
+world::DiskSpace diskSpace(const std::string& dir) {
+#if defined(__ANDROID__)
+    struct statvfs info {};
+    if (statvfs(dir.c_str(), &info) == 0) {
+        world::DiskSpace space;
+        space.freeBytes = static_cast<u64>(info.f_bavail) * static_cast<u64>(info.f_frsize);
+        space.known = true;
+        return space;
+    }
+#endif
+    (void)dir;
+    return world::DiskSpace{};
+}
 
 u64 nowMillis() {
     timespec ts{};
@@ -681,6 +710,12 @@ std::vector<std::string> statusLines(Client* client) {
     }
     if (client->download) {
         lines.push_back(client->download->status());
+        if (!client->spaceNote.empty()) {
+            lines.push_back(client->spaceNote);
+        } else if (client->space.known) {
+            lines.push_back(format("%.1f GB free", static_cast<f64>(client->space.freeBytes) /
+                                                        (1024.0 * 1024.0 * 1024.0)));
+        }
     } else if (!client->downloadNote.empty()) {
         lines.push_back(client->downloadNote);
     }
@@ -840,6 +875,40 @@ void renderFrame(android_app* app, Client* client, f32 dt) {
 void stepDownload(Client* client) {
     if (!client->download || !client->downloadWanted) return;
     using State = world::WorldDownload::State;
+
+    // ROOM, BEFORE THE FIRST BYTE AND WHILE IT RUNS.  The archive is 370 MiB and the
+    // tree it unpacks to is 1.35 GiB, so a phone with less space than that would
+    // download for twenty minutes and then fail with "short write" — the person
+    // having paid for the transfer.  The arithmetic is world::cityFitsIn (measured,
+    // unit-tested); this is the platform's half: ask the filesystem, no more often
+    // than every two seconds.
+    const u64 now = nowMillis();
+    if (now >= client->lastSpaceCheckMs + 2000) {
+        client->lastSpaceCheckMs = now;
+        client->space = diskSpace(client->dataDir);
+    }
+    if (client->download->state() == State::Idle && !world::cityFitsIn(client->space)) {
+        const std::string sentence = world::startSpaceSentence(client->space);
+        client->downloadWanted = false;      // nothing is pulled; the tap did not start
+        if (client->spaceNote != sentence) {
+            client->spaceNote = sentence;
+            appLog("city download not started: %s", sentence.c_str());
+        }
+        return;
+    }
+    if (!world::cityHasRunningRoom(client->space)) {
+        const std::string sentence = world::runningSpaceSentence(client->space);
+        client->downloadWanted = false;      // paused, and it resumes where it stopped
+        if (client->spaceNote != sentence) {
+            client->spaceNote = sentence;
+            appLog("city download paused: %s", sentence.c_str());
+        }
+        return;
+    }
+    if (!client->spaceNote.empty() &&
+        (client->download->state() == State::Archive || client->download->state() == State::Done)) {
+        client->spaceNote.clear();           // there is room again; stop saying otherwise
+    }
     if (client->download->state() == State::Failed) {
         // A tap after a failure is a retry, not a restart: the part of the world
         // that arrived before the failure is on disk and verified, and the boundary

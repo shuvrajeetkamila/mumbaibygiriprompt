@@ -797,3 +797,57 @@ TEST(worldDownloadInstallsTheArchiveTheReleaseStepPacks) {
     CHECK(!wrongFetcher.error().empty());
     CHECK_EQ(wrongFetcher.receivedBytes(), 0u);   // nothing of the archive was pulled
 }
+
+TEST(diskSpaceIsCheckedBeforeTheCityIsPulledAndNeverOnAGuess) {
+    // The failure this prevents: a phone with too little room downloads 370 MiB,
+    // then fails with "short write into cells/....part" and has nothing to show
+    // for the transfer.  The numbers are measured (world_download.h) and the
+    // decision is pure, so it can be driven here.
+    DiskSpace plenty{4000ull * 1024 * 1024, true};
+    CHECK(cityFitsIn(plenty));
+    CHECK(cityHasRunningRoom(plenty));
+    CHECK(startSpaceSentence(plenty).empty());     // nothing to say, either way
+    CHECK(runningSpaceSentence(plenty).empty());
+
+    // Room for the world but not for the world plus a margin: refused, and the
+    // sentence says both numbers so a person knows how much to free.
+    DiskSpace tight{kCityInstalledBytes + 1024, true};
+    CHECK(!cityFitsIn(tight));
+    const std::string sentence = startSpaceSentence(tight);
+    CHECK(sentence.find("not enough storage") != std::string::npos);
+    CHECK(sentence.find("GB") != std::string::npos);
+
+    // Exactly the requirement: allowed.  A guard that refuses the boundary is a
+    // guard that refuses machines which would have worked.
+    DiskSpace exact{kCityInstalledBytes + kCityInstallMargin, true};
+    CHECK(cityFitsIn(exact));
+
+    // Mid-download, the reserve is what matters: the world has already been
+    // written, so what is left to protect is the next chunk's part file and the
+    // app's own working room.
+    DiskSpace running{kCityRunningReserve + 1024, true};
+    CHECK(cityHasRunningRoom(running));
+    CHECK(cityFitsIn(running) == false);        // and starting here would be refused
+    // A phone with nothing left gets the *start* advice when the button is pressed,
+    // and the *paused* advice once a download is already running: the two are not
+    // the same sentence, and neither invents the other's number.
+    DiskSpace nearlyFull{1024, true};
+    CHECK(!cityHasRunningRoom(nearlyFull));
+    CHECK(startSpaceSentence(nearlyFull).find("not enough storage") != std::string::npos);
+    CHECK(runningSpaceSentence(nearlyFull).find("nearly full") != std::string::npos);
+    CHECK(runningSpaceSentence(nearlyFull).find("paused") != std::string::npos);
+
+    // AN UNKNOWN ANSWER NEVER REFUSES.  A platform that cannot report free space
+    // must not stop a download that would have worked, and the panel must not
+    // invent a number: the sentence is empty and the checks pass.
+    DiskSpace unknown{0, false};
+    CHECK(cityFitsIn(unknown));
+    CHECK(cityHasRunningRoom(unknown));
+    CHECK(startSpaceSentence(unknown).empty());
+    CHECK(runningSpaceSentence(unknown).empty());
+
+    // Zero free with a known answer is a full disk, and that is not unknown.
+    DiskSpace full{0, true};
+    CHECK(!cityFitsIn(full));
+    CHECK(!cityHasRunningRoom(full));
+}
