@@ -9,6 +9,7 @@
 //  when A5 lands; the Fresnel, the depth blend and the fog are already here.
 // =============================================================================
 #version 450
+#extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
 layout(location = 0) in vec3 vWorldPos;

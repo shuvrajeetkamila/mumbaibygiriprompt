@@ -12,6 +12,7 @@
 //  gradient bands visibly, and a 1-LSB ordered dither costs one add.
 // =============================================================================
 #version 450
+#extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
 layout(location = 0) in vec2 vUv;

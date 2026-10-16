@@ -10,6 +10,7 @@
 //  refinement, not a different model.
 // =============================================================================
 #version 450
+#extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
 layout(location = 0) in vec2 vNdc;

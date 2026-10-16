@@ -1,0 +1,88 @@
+// =============================================================================
+//  MUMBAI 1:1 EXACT — android/app/build.gradle
+//
+//  The APK's contents, and the reason for each non-obvious line:
+//
+//    * **No Java, no Kotlin, no AndroidX.**  The manifest launches
+//      android.app.NativeActivity with `android:hasCode="false"`; the app is
+//      libmumbai.so and nothing else.  `android.useAndroidX=false` is honest
+//      rather than hopeful.
+//    * **c++_static.**  The NDK's C++ runtime is linked into libmumbai.so, so the
+//      APK carries one .so instead of two and there is no runtime library to get
+//      out of step with the engine.
+//    * **arm64-v8a.**  The specification's performance targets are Adreno 730 /
+//      Mali-G710 — arm64 devices.  Adding armeabi-v7a or x86_64 is one line, and
+//      costs a second full compile of Jolt in CI.
+//    * **extractNativeLibs=false / useLegacyPackaging=false.**  The library is
+//      mapped straight out of the APK: no extraction on install, and the APK's
+//      size on disk is the APK's size.
+//    * **minSdk 29.**  Vulkan 1.1 is guaranteed by the platform from Android 10;
+//      the renderer targets 1.1 as its floor (D-043), so claiming support below
+//      that would be claiming something the device list does not promise.
+// =============================================================================
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.mumbai.exact'
+    compileSdk 34
+    ndkVersion '26.1.10909125'
+
+    defaultConfig {
+        applicationId 'com.mumbai.exact'
+        minSdk 29
+        targetSdk 34
+        versionCode 1
+        versionName '0.1.0-first-build'
+
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
+        externalNativeBuild {
+            cmake {
+                // The engine is C++20 with no third-party runtime dependencies.
+                arguments '-DANDROID_STL=c++_static',
+                          '-DCMAKE_BUILD_TYPE=Release',
+                          '-DMUMBAI_PHYSICS=ON'
+                cppFlags '-O2 -fno-omit-frame-pointer'
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('../CMakeLists.txt')
+            version '3.22.1'
+        }
+    }
+
+    buildTypes {
+        debug {
+            // Debug builds keep symbols; the APK the first build produces is a
+            // debug APK because it is installable without a signing key, and
+            // because the first question about a new platform port is "what does
+            // the log say".
+            debuggable true
+            jniDebuggable true
+        }
+        release {
+            minifyEnabled false
+            // No signing config: a release APK from CI is unsigned on purpose.
+            // Signing needs a key that belongs to whoever ships this, not to a
+            // build script.
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging false
+        }
+    }
+
+    // The world format's files are the app's data, not its assets; keeping this
+    // off stops a stray build/ tree from being packaged by accident.
+    androidResources {
+        noCompress 'mumbai_chunk', 'mumbaitex'
+    }
+}

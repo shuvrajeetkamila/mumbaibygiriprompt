@@ -17,3 +17,11 @@ npm-debug.log*
 .idea/
 *.swp
 .DS_Store
+
+# Android/Gradle build output and machine-local SDK paths.  local.properties is
+# written by whoever opens the project (it holds sdk.dir); CI sets ANDROID_HOME.
+android/local.properties
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/build/

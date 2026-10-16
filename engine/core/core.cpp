@@ -16,6 +16,20 @@ LogLevel logGetLevel() { return g_level; }
 
 void logMessage(LogLevel lvl, const char* fmt, ...) {
     if (static_cast<int>(lvl) < static_cast<int>(g_level)) return;
+#if defined(__ANDROID__)
+    // One call, tag "mumbai", priority from the level: `adb logcat -s mumbai`.
+    {
+        va_list args;
+        va_start(args, fmt);
+        const int prio = (lvl == LogLevel::Error)   ? ANDROID_LOG_ERROR
+                         : (lvl == LogLevel::Warn)  ? ANDROID_LOG_WARN
+                         : (lvl == LogLevel::Info)  ? ANDROID_LOG_INFO
+                                                    : ANDROID_LOG_DEBUG;
+        __android_log_vprint(prio, "mumbai", fmt, args);
+        va_end(args);
+    }
+    return;
+#else
     const char* tag = "INFO ";
     switch (lvl) {
         case LogLevel::Trace: tag = "TRACE"; break;
@@ -43,6 +57,7 @@ void logMessage(LogLevel lvl, const char* fmt, ...) {
     va_end(args);
     std::fputc('\n', out);
     std::fflush(out);
+#endif
 }
 
 // -----------------------------------------------------------------------------

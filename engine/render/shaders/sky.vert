@@ -7,6 +7,7 @@
 //  once and paying for it under every building in Bandra.
 // =============================================================================
 #version 450
+#extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
 layout(location = 0) out vec2 vNdc;

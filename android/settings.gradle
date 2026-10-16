@@ -1,0 +1,22 @@
+// =============================================================================
+//  MUMBAI 1:1 EXACT — android/settings.gradle
+//  One module.  Groovy DSL rather than Kotlin: the app has no Java or Kotlin
+//  source at all (the manifest says `android:hasCode="false"`), so a language
+//  for the build scripts buys nothing and another moving part costs something.
+// =============================================================================
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = 'mumbai'
+include ':app'

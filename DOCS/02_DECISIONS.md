@@ -2145,6 +2145,97 @@ where it matters, and it is now stated in one place per renderer with a test on 
 
 ---
 
+## D-045 — The first APK, and what "make the first build" actually required
+
+**The situation.**  The user's directive: make the first build of the APK.  The
+sandbox has no JDK, no Android SDK, no NDK, and `dl.google.com`, `repo1.maven.org`
+and `services.gradle.org` are all blocked, so no APK can be produced here.  GitHub
+Actions runners have all of it.  So the APK is built by CI, and what had to be
+built here is everything CI would otherwise discover for the first time.
+
+**What went in.**
+
+* `android/CMakeLists.txt` — `libmumbai.so`: engine core, world reader, simulation,
+  audio, physics (Jolt) and the Vulkan renderer, plus `engine/app/android_main.cpp`.
+  Jolt's source list is *parsed from `third_party/jolt_sources.mk`*, the same file
+  the Makefile builds from, so the two build systems cannot drift.  The Vulkan
+  headers are the vendored ones, not the NDK's, so the desktop and device builds
+  cannot disagree about the API.
+* `engine/app/android_main.cpp` — a NativeActivity client with no Java in the loop
+  (`android:hasCode="false"`, entered through `ANativeActivity_onCreate`, kept by
+  `-u`).  The lifecycle is written longhand: the renderer is created on
+  `APP_CMD_INIT_WINDOW`, destroyed on `APP_CMD_TERM_WINDOW`, retried once a second
+  if the platform hands the surface over late, and every frame is skipped while
+  there is no surface.  That is the "works until you press home and come back"
+  crash, and it is cheaper to write than to debug.
+* `engine/core/core.cpp` — `MLOG_*` routes to logcat under `__ANDROID__`.  Android
+  discards an app's stdout, so without this the first APK would report nothing at
+  all and every failure would look the same.
+* `android/app`, `android/*.gradle`, `AndroidManifest.xml` — AGP 8.4.2, Gradle 8.7,
+  compileSdk 34, **minSdk 29** (Vulkan 1.1 is guaranteed by the platform from
+  Android 10, and the renderer's instance is 1.1), arm64-v8a, `c++_static` so the
+  APK carries one .so instead of two, `extractNativeLibs=false` so the library is
+  mapped out of the APK rather than extracted, and a `uses-feature` for Vulkan 1.1
+  so a device that cannot run this is told by the store instead of by a black screen.
+* `.github/workflows/android.yml` — installs JDK 17, the SDK, NDK 26.1.10909125 and
+  the SDK's CMake; installs `glslang-tools`; **compiles the shaders as their own
+  step** (a shader error should name the shader, not hide under 122 Jolt objects);
+  builds debug and unsigned release APKs; prints the APK and per-library sizes;
+  uploads both APKs and, on failure, the generated native build files.
+
+**The shaders had never been compiled — by anything.**  Nine GLSL modules written
+against the Vulkan renderer, and the only tool that had ever read them was a
+grepper.  Getting a compiler here took a detour (no `glslc`, no Vulkan SDK, no
+`glslang-tools` in apt, and PyPI has no shader compiler), so `tools/get_glslang.sh`
+fetches glslang from `codeload` — the release-asset CDN is blocked, the source
+tarball is not — and builds `glslangValidator` in about two minutes.  It found the
+first real bug immediately: `#include "common.glsl"` needs
+`GL_GOOGLE_include_directive`, which `glslc` enables implicitly and the reference
+compiler does not.  A shader that compiles under one front end only is a shader
+that fails in CI or on a device, and it failed here instead.  All nine now compile
+(`tools/compile_shaders.py`, 44.0 KiB of SPIR-V, magic-word checked), and the four
+vertex/fragment pairs are **linked** against each other so a `flat` qualifier
+mismatch or a location mismatch cannot reach a GPU.
+
+**"The build file has never been configured" is a real failure mode.**  `cmake` is
+not in the sandbox either; it is on PyPI, so it is now here, and
+`android/CMakeLists.txt` has a host mode (`-DMUMBAI_HOST_CHECK=ON`) that configures
+without Android and builds a host executable from the same source lists.  That
+caught three defects before CI ever ran: a function called before its definition
+(CMake executes as it reads), a `PARENT_SCOPE` assignment that left the generated
+directory empty, and a Jolt list parse whose greedy `[^\n]*` swallowed the
+continuation backslashes and reported "2 sources" for a 122-file library.  The
+full host build — 122 Jolt objects, the engine, the shaders — links, and
+`make host-check` runs it.
+
+**What the first APK is, and what it is not.**  It is the engine: a Vulkan device,
+a swapchain on the device's own surface, the pipelines, the sky and the tonemap,
+drawn every frame, logging its stats once a second.  It is *not* Mumbai yet: the
+world is 1.3 GB of chunks and a first-run download, so the app draws the sky, and
+says on the log — with the path the world belongs in — that the world is absent.
+Clustered lights, WBOIT and TAA remain unwritten, so the render scale is the
+anti-aliasing this build has (D-043).  Those are the next honest steps, not
+omissions to paper over.
+
+---
+
+## D-046 — The mirror in the preview (what D-044 left behind)
+
+D-044 found that every camera built the textbook way renders Mumbai mirrored, and
+fixed it in the engine's camera and in the preview.  Two follow-ups were needed and
+are done here: the preview re-applies the mirror after every
+`updateProjectionMatrix()` (a resize would otherwise silently un-mirror the city),
+and the window winding argument is now a test rather than a comment —
+`tests/verify_viewer_orientation.mjs` asks three.js's own matrices for the camera's
+right vector, checks that the sea lands left of the city after the mirror, checks
+that the heading stays centred, and checks that the mirror really does reverse
+screen winding (which is *why* every material is `DoubleSide`).  It also documents
+the one deliberate sign difference between the two renderers: WebGL's clip space
+has +Y up and Vulkan's has it down, so the engine's projection flips Y and three.js
+does not.  "Fixing" either one to match the other puts the sky underground.
+
+---
+
 ## Open decisions (deliberately deferred)
 
 * **Drainage-sentinel filtering.** Resolved in D-026: the hydrology classifies

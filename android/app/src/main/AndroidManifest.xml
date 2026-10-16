@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MUMBAI 1:1 EXACT — the Android client's manifest.
+
+  NativeActivity, and no code of our own in the Dalvik sense: `hasCode="false"`
+  says so, and it is true — the app is libmumbai.so, entered through
+  ANativeActivity_onCreate (CMake links it with -u so the linker keeps it).
+
+  The Vulkan feature is declared *required*, at 1.1: the renderer's instance is
+  created with VK_API_VERSION_1_1 and there is no fallback path, so a device that
+  cannot do it should be told by the store rather than by a black screen.
+
+  No permissions: this build reads nothing but its own data directory.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-feature android:name="android.hardware.vulkan.version"
+                  android:version="0x00401000"
+                  android:required="true" />
+    <uses-feature android:name="android.hardware.touchscreen"
+                  android:required="false" />
+
+    <application
+        android:label="Mumbai 1:1"
+        android:hasCode="false"
+        android:extractNativeLibs="false"
+        android:allowBackup="false"
+        android:hardwareAccelerated="true">
+
+        <activity
+            android:name="android.app.NativeActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density|uiMode"
+            android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+            <meta-data android:name="android.app.lib_name" android:value="mumbai" />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

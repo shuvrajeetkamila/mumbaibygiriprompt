@@ -2,6 +2,7 @@
 //  post.vert — the tonemap's full-screen triangle
 // =============================================================================
 #version 450
+#extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
 
 layout(location = 0) out vec2 vUv;

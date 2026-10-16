@@ -59,16 +59,15 @@ SHADER_SRC  := $(wildcard $(SHADER_DIR)/*.vert $(SHADER_DIR)/*.frag $(SHADER_DIR
 SHADER_HDR  := $(OBJ)/shaders_generated.h
 SHADERS_OK  := $(shell command -v $(GLSLC) 2>/dev/null)
 
-$(SHADER_HDR): $(SHADER_SRC) tools/embed_spirv.py
+$(SHADER_HDR): $(SHADER_SRC) tools/embed_spirv.py tools/compile_shaders.py
 	@mkdir -p $(OBJ)/spv
-	@if [ -n "$(SHADERS_OK)" ]; then \
-	    for f in $(SHADER_DIR)/*.vert $(SHADER_DIR)/*.frag; do \
-	        $(GLSLC) -I$(SHADER_DIR) --target-env=vulkan1.1 -O $$f -o $(OBJ)/spv/$$(basename $$f).spv || exit 1; \
-	    done; \
-	else \
-	    echo "  NOTE no glslc: embedding placeholders (pipelines will refuse)"; \
-	fi
+	@python3 tools/compile_shaders.py $(SHADER_DIR) $(OBJ)/spv
 	@python3 tools/embed_spirv.py $@ $(OBJ)/spv
+
+# `make shaders` compiles and embeds in one step and is worth running on its own:
+# it is the only thing in this project that a GPU driver will ever read.
+shaders: $(SHADER_HDR)
+	@echo "== shaders embedded in $<=="
 
 # --- Vulkan headers (A1) -----------------------------------------------------
 # Vendored (SDK 1.3.290, Apache-2.0) so the renderer compiles anywhere, GPU or
@@ -158,7 +157,7 @@ AUDIO_BIN    := $(BIN)/mumbai_audio
 
 TEST_SRC := $(wildcard tests/*.cpp)
 
-.PHONY: all test world simulate physics audio render render-objects viewer serve clean all-checks stats verify-artifacts
+.PHONY: all test world simulate physics audio render render-objects shaders glslang host-check viewer serve clean all-checks stats verify-artifacts
 
 all: $(PIPELINE_BIN) $(SIM_BIN) $(TEST_BIN) $(PHYS_BIN) $(AUDIO_BIN) $(RENDER_BIN)
 
@@ -311,6 +310,26 @@ stats: $(PIPELINE_BIN)
 
 verify-artifacts:
 	@bash tools/verify_artifacts.sh
+
+# A GLSL compiler for machines that have none.  The shaders are the one thing in
+# this project a GPU driver reads; "they have never been compiled" is not a state
+# a renderer can ship in.
+glslang:
+	@bash tools/get_glslang.sh
+
+# Configure and build the Android project's host twin: the same CMakeLists, the
+# same source lists, the shaders compiled and embedded, and no Android toolchain
+# needed.  It is what a machine without an SDK can check about the APK build
+# (D-045); CI builds the real thing.
+HOST_CHECK_DIR := build/cmake-host-check
+host-check:
+	@command -v cmake >/dev/null 2>&1 || { \
+	    echo "cmake is needed for the host check (pip install cmake ninja)"; exit 1; }
+	@python3 tools/compile_shaders.py engine/render/shaders $(OBJ)/spv || true
+	@cmake -S android -B $(HOST_CHECK_DIR) -DMUMBAI_HOST_CHECK=ON -DMUMBAI_PHYSICS=ON \
+	       -DCMAKE_BUILD_TYPE=Release >/dev/null
+	@cmake --build $(HOST_CHECK_DIR) -j2 --target mumbai_hostcheck
+	@$(HOST_CHECK_DIR)/mumbai_hostcheck
 
 viewer:
 	@bash tools/setup_viewer.sh
