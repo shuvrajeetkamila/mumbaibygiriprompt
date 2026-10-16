@@ -42,9 +42,12 @@ android {
         externalNativeBuild {
             cmake {
                 // The engine is C++20 with no third-party runtime dependencies.
+                // Physics is a Gradle property so a run can build a lean APK (the
+                // renderer needs none of Jolt) without editing this file; the default
+                // is the full client.
                 arguments '-DANDROID_STL=c++_static',
                           '-DCMAKE_BUILD_TYPE=Release',
-                          '-DMUMBAI_PHYSICS=ON'
+                          "-DMUMBAI_PHYSICS=" + (project.findProperty('mumbaiPhysics') ?: 'ON')
                 cppFlags '-O2 -fno-omit-frame-pointer'
             }
         }

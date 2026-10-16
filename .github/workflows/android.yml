@@ -1,23 +1,31 @@
 # =============================================================================
 #  MUMBAI 1:1 EXACT — .github/workflows/android.yml
 #
-#  Builds the Android APK.  This workflow exists because a runner is the only
-#  machine in the loop that has a JDK, the Android SDK, the NDK and unrestricted
-#  network: the development sandbox has none of them, and an APK that has never
-#  been built is not an APK (D-045).
+#  Builds the Android APK.  A runner is the only machine in this loop with a JDK,
+#  the Android SDK, the NDK and unrestricted network; the development sandbox has
+#  none of them, and an APK that has never been built is not an APK (D-045).
 #
-#  What it produces, and what each thing is for:
+#  What it produces:
 #
-#    app-debug.apk    installable as-is (signed with the debug key).  This is the
-#                     "first build": `adb install` and it runs.
-#    app-release-unsigned.apk
-#                     the same code without debug symbols, unsigned on purpose —
-#                     signing needs a key that belongs to whoever ships this.
-#    apk report       per-ABI library sizes, APK sizes, and the shader/SPIR-V
-#                     inventory, printed into the log and attached as an artifact.
+#    app-debug.apk             installable as-is (signed with the debug key).
+#                              This is the "first build": `adb install` it.
+#    app-release-unsigned.apk  the same code, no debug symbols, unsigned on
+#                              purpose — signing needs a key that belongs to
+#                              whoever ships this, not to a build script.
+#    a size report             APK sizes, per-ABI library sizes, and the shader
+#                              inventory, printed into the log.
 #
-#  The world is deliberately *not* in the APK: 1.3 GB of chunks is a first-run
-#  download, so the app reports an empty scene and says where the world belongs.
+#  Two deliberate choices about the setup:
+#
+#    * **No android-actions/setup-android.**  The runner image already carries an
+#      Android SDK and cmdline-tools; the action was the first thing to fail here
+#      and it is one more moving part between the log and the compiler.
+#    * **The shaders compile as their own step, before Gradle.**  If they fail,
+#      the reason is next to the shader's name instead of buried under a native
+#      build that also compiled 122 Jolt translation units.
+#
+#  The world is not in the APK: 1.3 GB of chunks is a first-run download, so the
+#  first build draws its sky, and says on the log where the world belongs.
 # =============================================================================
 name: android
 
@@ -26,81 +34,107 @@ on:
     branches: ['**']
   pull_request:
   workflow_dispatch:
+    inputs:
+      physics:
+        description: 'Build Jolt and the physics engine into the client'
+        type: boolean
+        default: true
 
 jobs:
   apk:
     name: build APK
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Locate the Android SDK
+        run: |
+          set -e
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "no SDK at $SDK; looking for one"
+            SDK=$(dirname "$(dirname "$(find / -maxdepth 6 -type d -name 'platform-tools' 2>/dev/null | head -1)")")
+          fi
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "sdk.dir=$SDK" > android/local.properties
+          echo "sdk.dir=$SDK"
+          ls "$SDK" || true
 
       - name: Install platform, build tools, NDK and CMake
         run: |
-          set -x
-          sdkmanager --install \
+          set -e
+          SDKMANAGER=$(command -v sdkmanager || find "$ANDROID_SDK_ROOT" -maxdepth 5 -name sdkmanager -type f | head -1)
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" --install \
             "platforms;android-34" \
             "build-tools;34.0.0" \
             "ndk;26.1.10909125" \
-            "cmake;3.22.1" 2>&1 | tail -20
-          sdkmanager --list_installed | tail -20
+            "cmake;3.22.1" 2>&1 | tail -5
+          echo "--- installed"
+          "$SDKMANAGER" --list_installed 2>/dev/null | tail -12
 
-      - name: Install a GLSL compiler (glslangValidator)
+      - name: Install a GLSL compiler
+        # apt first (seconds); the project's own fetcher as the fallback, which is
+        # also the path a machine with no Vulkan SDK takes.
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq glslang-tools
-          glslangValidator --version | head -2
+          set -e
+          if command -v glslc >/dev/null || command -v glslangValidator >/dev/null; then
+            echo "already present"
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq glslang-tools || bash tools/get_glslang.sh
+          fi
+          glslangValidator --version 2>/dev/null | head -2 || \
+            echo "built by tools/get_glslang.sh into build/tools/glslang"
 
-      - name: Point Gradle at the SDK
-        # AGP reads sdk.dir from android/local.properties, otherwise the
-        # ANDROID_HOME/ANDROID_SDK_ROOT environment.  Writing it explicitly means
-        # the build does not depend on which of the three the runner exports.
+      - name: Compile the shaders, on their own
         run: |
-          echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > android/local.properties
-          cat android/local.properties
+          set -e
+          export PATH="$PWD/build/tools/glslang:$PATH"
+          python3 tools/compile_shaders.py engine/render/shaders build/spv
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Compile the shaders first, by themselves
-        # If the shaders fail, the reason must be in the log next to the shader's
-        # name, not buried in a native build that also compiled 122 Jolt files.
-        run: python3 tools/compile_shaders.py engine/render/shaders build/spv
-
       - name: Build the APKs
         working-directory: android
-        run: gradle --no-daemon --stacktrace assembleDebug assembleRelease
+        run: |
+          gradle --no-daemon --stacktrace \
+            -PmumbaiPhysics=${{ github.event.inputs.physics == 'false' && 'OFF' || 'ON' }} \
+            assembleDebug assembleRelease
 
       - name: Report what was built
+        if: always()
         run: |
-          set -e
           echo "=== APKs ====================================================="
-          find android/app/build/outputs -name '*.apk' -printf '%10s  %p\n' | sort -k2
-          echo
-          for apk in $(find android/app/build/outputs -name '*.apk'); do
+          find android/app/build/outputs -name '*.apk' -printf '%10s  %p\n' 2>/dev/null | sort -k2 || echo "none"
+          for apk in $(find android/app/build/outputs -name '*.apk' 2>/dev/null); do
             echo "--- $apk"
             unzip -l "$apk" | awk '$4 ~ /^lib\// { printf "    %10d  %s\n", $1, $4 }'
             unzip -l "$apk" | tail -1
           done
           echo "=== native libraries ========================================="
-          find android/app/build -name 'libmumbai.so' -printf '%10s  %p\n' || true
-          echo "=== shaders embedded in the binary ==========================="
-          grep -c "inline constexpr std::uint32_t" \
-            android/app/.cxx/*/*/*/generated/shaders_generated.h 2>/dev/null || \
-            echo "(generated header not found where expected; see the log above)"
+          find android/app/build -name 'libmumbai.so' -printf '%10s  %p\n' 2>/dev/null || true
+          echo "=== shaders embedded in the generated header ================="
+          find . -name 'shaders_generated.h' -newer android/CMakeLists.txt 2>/dev/null | head -3
+          for header in $(find android -name 'shaders_generated.h' 2>/dev/null | head -2); do
+            echo "--- $header"
+            grep -c "inline constexpr std::uint32_t" "$header" || true
+            grep -o "kWorldFragSpvWords = [0-9]*" "$header" || true
+          done
 
       - name: Upload the debug APK
         uses: actions/upload-artifact@v4
@@ -116,7 +150,14 @@ jobs:
           path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: warn
 
-      - name: Upload the build log detail (native build files)
+      - name: Upload the SPIR-V modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: mumbai-spirv
+          path: build/spv/*.spv
+          if-no-files-found: warn
+
+      - name: Upload the native build's own files (on failure)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
@@ -124,4 +165,5 @@ jobs:
           path: |
             android/app/.cxx/**/build.ninja
             android/app/build/**/*.log
+            android/local.properties
           if-no-files-found: ignore
