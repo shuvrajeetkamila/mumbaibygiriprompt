@@ -89,7 +89,8 @@ RENDER_FLAGS := $(CXXFLAGS) -Ithird_party/vulkan/include -I$(OBJ)
 # assigned below its first use expands to nothing, and the linker then reports a
 # missing symbol in a file that is sitting right there on disk.)
 RENDER_CPU_OBJ := $(OBJ)/engine/render/camera.o $(OBJ)/engine/render/hud.o \
-                  $(OBJ)/engine/render/fallback_atlas.o $(OBJ)/engine/render/world_index.o
+                  $(OBJ)/engine/render/fallback_atlas.o $(OBJ)/engine/render/world_index.o \
+                  $(OBJ)/engine/render/dynamic_resolution.o
 
 # The Vulkan *loader* is a runtime dependency, not a build one.  When it is not
 # installed the renderer's sources are still compiled — which is the part of A1 a

@@ -16,6 +16,7 @@
 #include "engine/render/fallback_atlas.h"
 #include "engine/render/hud.h"
 #include "engine/render/renderer.h"
+#include "engine/render/dynamic_resolution.h"
 #include "engine/render/world_index.h"
 #include "tests/test_harness.h"
 
@@ -505,4 +506,130 @@ TEST(cpuRasteriserDrawsTheSharedFontAndStaysInBounds) {
     render::blitRect(origin, 0, w, h, 0, 0, 4, 4, 1);
     render::blitText(origin, stride, 0, h, 0, 0, "x", 2, 1);
     CHECK(origin[static_cast<size_t>(4) * stride + 4] == 0u);   // still the second blit's pixel
+}
+
+// =============================================================================
+//  Dynamic resolution (S6: 720p-1080p, 30 FPS worst case)
+//
+//  The policy is fed frame times from a *simulated device* rather than from a
+//  phone, because the phone is the one thing this repository cannot run.  The
+//  simulator is one line of physics: a device whose frame cost is proportional to
+//  the pixels it renders, so a scale of s costs `costAtFull * s^2` seconds.  That
+//  is enough to have an equilibrium, to be too slow for it, and to be fast enough
+//  that the policy should give the resolution back.
+// =============================================================================
+namespace {
+
+render::ResolutionPolicy testPolicy() {
+    render::ResolutionPolicy policy;
+    policy.targetSeconds = 1.0 / 30.0;
+    return policy;
+}
+
+// Runs `frames` frames of a device whose full-resolution frame takes
+// `costAtFull` seconds and whose cost scales with the pixels rendered.
+struct SimulatedDevice {
+    f64 costAtFull = 0.045;
+    f64 cost(f32 scale) const { return costAtFull * static_cast<f64>(scale) * static_cast<f64>(scale); }
+};
+
+f32 settle(render::DynamicResolution& resolution, const SimulatedDevice& device, int frames,
+           int* changesInLastHalf = nullptr) {
+    const int half = frames / 2;
+    u64 changesAtHalf = 0;
+    for (int i = 0; i < frames; ++i) {
+        resolution.update(device.cost(resolution.scale()));
+        if (i + 1 == half) changesAtHalf = resolution.changes();
+    }
+    if (changesInLastHalf) *changesInLastHalf = static_cast<int>(resolution.changes() - changesAtHalf);
+    return resolution.scale();
+}
+
+}  // namespace
+
+TEST(dynamicResolutionFindsTheScaleADeviceCanAffordAndStops) {
+    // A device whose full-resolution frame takes 45 ms cannot hold 30 FPS at 1080p.
+    // Cost is quadratic in scale, so the largest scale that holds the target is
+    // sqrt((1/30)/0.045) = 0.861 — and the policy has to find that neighbourhood and
+    // then LEAVE IT ALONE: a loop that keeps changing the resolution rebuilds its
+    // render targets every second, which is worse than the frame rate it was
+    // protecting.  Measured (D-052): scale 0.820 after three decisions, 30.3 ms a
+    // frame, no further change for the remaining 480 frames of the run.
+    render::DynamicResolution resolution(testPolicy());
+    const SimulatedDevice device{0.045};
+    int lateChanges = 0;
+    const f32 scale = settle(resolution, device, 900, &lateChanges);
+    CHECK(scale > 0.79f);
+    CHECK(scale < 0.90f);
+    CHECK(lateChanges <= 2);                       // converged, not oscillating
+    CHECK(resolution.changes() >= 1u);             // and it did have to give ground
+    // The point of the asymmetric band: what it settles at is AT the target, not
+    // 10 % over it.  A symmetric band passes every check above and lands at 28.7 FPS.
+    CHECK(resolution.smoothedSeconds() <= resolution.policy().targetSeconds);
+}
+
+TEST(dynamicResolutionGivesResolutionBackToADeviceWithHeadroom) {
+    // 5 ms at full resolution: this device could render far above the panel's
+    // resolution, and the policy must climb back to the maximum and then stop.
+    render::DynamicResolution resolution(testPolicy());
+    // Start it low, as if the scene had been heavy a moment ago.
+    for (int i = 0; i < 200; ++i) resolution.update(0.060);
+    CHECK(resolution.scale() < 0.9f);
+    const SimulatedDevice fast{0.005};
+    int lateChanges = 0;
+    const f32 scale = settle(resolution, fast, 900, &lateChanges);
+    CHECK_EQ(scale, 1.0f);
+    CHECK(lateChanges <= 1);
+}
+
+TEST(dynamicResolutionIgnoresAStallAndKeepsItsResolution) {
+    // One two-second stall — a chunk being paged in, the OS taking the CPU — must
+    // not cost the app resolution: a policy that reacted to it would spend the next
+    // half minute climbing back for a frame that was not about the resolution.
+    render::DynamicResolution resolution(testPolicy());
+    const SimulatedDevice device{0.010};   // comfortably fast
+    for (int i = 0; i < 200; ++i) resolution.update(device.cost(resolution.scale()));
+    const f32 before = resolution.scale();
+    resolution.update(2.0);                // the stall
+    // The average must have been left where it was, and the scale untouched.
+    CHECK_EQ(resolution.scale(), before);
+    for (int i = 0; i < 200; ++i) resolution.update(device.cost(resolution.scale()));
+    CHECK_EQ(resolution.scale(), 1.0f);
+}
+
+TEST(dynamicResolutionNeverLeavesItsWindowAndNeverPanics) {
+    render::ResolutionPolicy policy = testPolicy();
+    render::DynamicResolution resolution(policy);
+    // A device that is hopeless: 200 ms a frame at any resolution.
+    for (int i = 0; i < 2000; ++i) resolution.update(0.200);
+    CHECK(resolution.scale() >= policy.minScale - 1e-6f);
+    CHECK_EQ(resolution.scale(), policy.minScale);   // it did reach the floor
+    // A hopeless device must not have moved the scale more than the window allows:
+    // 1.0 to 0.667 in 0.06 steps is six decisions, not sixty.
+    CHECK(resolution.changes() <= 8u);
+
+    // And the nonsense inputs: zero, negative and not-a-number frame times are not
+    // evidence about resolution, and none of them may move the scale out of range.
+    const f32 held = resolution.scale();
+    resolution.update(0.0);
+    resolution.update(-1.0);
+    resolution.update(std::numeric_limits<f64>::quiet_NaN());
+    resolution.update(std::numeric_limits<f64>::infinity());
+    CHECK_EQ(resolution.scale(), held);
+    CHECK(resolution.scale() >= policy.minScale - 1e-6f);
+    CHECK(resolution.scale() <= policy.maxScale + 1e-6f);
+}
+
+TEST(dynamicResolutionStartsFullAndStepsDownDecisivelyButNotAtOnce) {
+    // The first frames render at full resolution: a pipeline that starts at the
+    // floor and climbs is a pipeline that shows a soft image to everyone with a
+    // fast phone.  The first decision also must not fling the scale to the floor —
+    // one bad second is not proof that the device cannot manage.
+    render::DynamicResolution resolution(testPolicy());
+    CHECK_EQ(resolution.scale(), 1.0f);
+    resolution.update(0.200);              // one awful frame
+    CHECK_EQ(resolution.scale(), 1.0f);    // still no decision: the cooldown is running
+    for (int i = 0; i < 40; ++i) resolution.update(0.200);
+    CHECK(resolution.scale() < 1.0f);      // it did act
+    CHECK(resolution.scale() > 0.7f);      // but it did not panic
 }

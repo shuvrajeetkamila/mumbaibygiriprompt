@@ -2722,3 +2722,69 @@ the client's job and the client does it: `android_main.cpp` writes
 `beginInstall` on every later run (D-048, Decision 7).  Both files live in the app's
 own files directory, so a user who clears the app's data loses the world and the
 marker together, and a fresh download is then the truth rather than a bug.
+
+## D-052 — Dynamic resolution gets a policy, and the band is asymmetric because a symmetric one breaks the frame-rate promise
+
+**What was missing.**  S6 asks for a render resolution between 720p and 1080p *and*
+30 frames per second in the worst case, which are two promises that fight over a
+phone's frame budget.  The renderer had the mechanism — `Environment::renderScale`,
+`swapchain x renderScale` offscreen targets, a rebuild path in `setEnvironment`, a
+clamp in `buildOffscreen` — and **nothing anywhere ever set the number**.  It sat at
+1.0 on every device, so the specification's dynamic resolution was a knob with no
+hand on it.
+
+**The policy**, in `engine/render/dynamic_resolution.h`: fed the interval between
+frames, it returns the scale to render the next one at.  It acts on an exponential
+moving average (weight 0.15), at most once every 30 frames, in steps of 0.06 down and
+0.03 up, inside [0.667, 1.0] — 720p on a 1080p panel at the floor, never above the
+panel at the ceiling.  A frame longer than 0.5 s is not evidence and is skipped
+rather than averaged: a chunk being paged in is not a statement about resolution.
+The client feeds it the real frame interval, skips the first interval after the
+renderer starts or the surface changes (that interval spans a swapchain rebuild), and
+re-applies the environment when the scale moves, which rebuilds the offscreen targets
+at most once a second.
+
+**The trace that changed the design.**  Driving the first version with a simulated
+device — cost quadratic in pixels, 45 ms at full resolution — it settled at **scale
+0.880, 34.8 ms a frame, 28.7 FPS**, and held there for the rest of a 600-frame run.  It
+was stable, it was not oscillating, and it was *below the specification's own floor*,
+because the dead band was symmetric: "inside ±10 % of the target" means the loop
+stops when the frame time is up to `target x 1.10`, and 90 % of 30 FPS is 28.7 FPS.
+Every assertion a symmetric band suggests — no oscillation, few changes, convergence —
+passes while the thing the band exists for is not delivered.
+
+The band is now asymmetric: **`overrunSlack` is zero** (a late device is acted on) and
+`headroomSlack` is 0.10 (a device must be genuinely fast before resolution is given
+back).  The same device:
+
+| frames | scale | frame time | decisions made |
+|---:|---:|---:|---:|
+| 1 | 1.000 | 45.0 ms | 0 |
+| 120 | 0.820 | 30.3 ms | 3 |
+| 240 | 0.820 | 30.3 ms | 3 |
+| 360 | 0.820 | 30.3 ms | 3 |
+| 600 | 0.820 | 30.3 ms | 3 |
+
+It converges in three decisions (~2 s at the frame times involved), lands **above**
+30 FPS rather than below it, and then makes no further change for 480 frames.  A
+device with headroom (12 ms at full resolution) never moves at all — 1.000 for the
+whole run — and a device sitting exactly at the target (33 ms) never moves either,
+which is the hysteresis working as intended.
+
+**Why the tests are simulations.**  A control loop that can only be judged on a phone
+is a control loop nobody can judge: the tests in `tests/test_render.cpp` drive five
+simulated devices — one that cannot hold the target, one with headroom, one that
+stalls for two seconds, one that is hopeless at every resolution, and one fed
+nonsense (zero, negative, NaN, infinity) — and check the window, the panic bound, the
+stall immunity and the settled frame time.  The last of those is the assertion that
+would have caught the symmetric band: **what it settles at has to be at or under the
+target**, not merely inside a band around it.
+
+**What this cannot claim.**  A simulated device is a model, not a phone: real frame
+times are vsync-quantised, arrive with jitter the model does not have, and are
+affected by thermal state, other apps and the driver.  The acceptance criterion
+("30 FPS worst case on Adreno 730 / Mali-G710") therefore remains what the roadmap's
+section D says it is — a device measurement, still unrun.  What is now true is that a
+device which cannot hold the target has something that will trade resolution for
+frames, and that the policy's equilibrium was chosen to sit on the right side of the
+target rather than the convenient side.

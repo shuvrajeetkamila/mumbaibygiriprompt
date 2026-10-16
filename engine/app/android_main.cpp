@@ -41,6 +41,7 @@
 #include "engine/app/fallback_screen.h"
 #include "engine/core/geo.h"     // MACRO_CELL_SIZE: the floating origin of section 4A
 #include "engine/render/hud.h"
+#include "engine/render/dynamic_resolution.h"
 #include "engine/render/renderer.h"
 #include "engine/render/world_index.h"
 #include "engine/world/world_download.h"
@@ -185,6 +186,21 @@ struct Client {
     render::WorldLoadStats lastLoad;
     u32 resident = 0;
     f32 fps = 0.0f;
+
+    // THE FRAME BUDGET'S OWN KNOB (engine/render/dynamic_resolution.h).  The
+    // renderer builds its offscreen targets at `swapchain x renderScale`; nothing
+    // used to set that scale, so the specification's "720p-1080p dynamic
+    // resolution" was a mechanism without a policy.  This is the policy, and
+    // `env` is kept here so a change of scale can be applied without rebuilding
+    // the rest of the environment around it.
+    render::Environment env;
+    render::DynamicResolution resolution;
+    // A frame's interval is evidence about resolution only if the app was actually
+    // rendering through it: the first frame after the renderer starts, after the
+    // surface resizes, or after a configuration change spans that setup.  Feeding
+    // one of those to the policy would take resolution away because a swapchain was
+    // rebuilt, so it is skipped.
+    bool skipNextFrameSample = false;
 
     // THE REST OF THE CITY, ON REQUEST (D-048).  The APK carries South Bombay; the
     // other 899 cells are a 1.3 GB download, and nothing starts it except a person
@@ -419,9 +435,14 @@ void startRenderer(android_app* app, Client* client) {
         return;
     }
 
-    render::Environment env;                 // golden hour, monsoon humidity
-    client->renderer.setEnvironment(env);
+    // Golden hour, monsoon humidity — and the scale the frame budget had already
+    // settled on, so a renderer restarted after a window went away does not start
+    // again at full resolution and spend half a minute finding its way back down.
+    client->env = render::Environment{};
+    client->env.renderScale = client->resolution.scale();
+    client->renderer.setEnvironment(client->env);
     client->ready = true;
+    client->skipNextFrameSample = true;
     appLog("renderer started: %ux%u, data dir %s", client->width, client->height,
            client->dataDir.c_str());
 }
@@ -565,12 +586,20 @@ void onCommand(android_app* app, int32_t cmd) {
             client->width = static_cast<u32>(ANativeWindow_getWidth(app->window));
             client->height = static_cast<u32>(ANativeWindow_getHeight(app->window));
             if (client->ready) client->renderer.resize(client->width, client->height);
+            client->skipNextFrameSample = true;
             break;
         case APP_CMD_CONFIG_CHANGED:
             client->width = static_cast<u32>(ANativeWindow_getWidth(app->window));
             client->height = static_cast<u32>(ANativeWindow_getHeight(app->window));
             if (client->ready) client->renderer.resize(client->width, client->height);
-            client->renderer.setEnvironment(render::Environment{});
+            // The environment goes back to its defaults (a rotation may change what
+            // the display is doing), but the scale does not: the frame budget worked
+            // that number out from this device's own frame times, and throwing it
+            // away on every rotation would mean re-learning it, visibly.
+            client->env = render::Environment{};
+            client->env.renderScale = client->resolution.scale();
+            client->renderer.setEnvironment(client->env);
+            client->skipNextFrameSample = true;
             break;
         case APP_CMD_LOW_MEMORY:
             appLog("low memory: %u chunks resident", client->renderer.chunkCount());
@@ -614,6 +643,12 @@ std::vector<std::string> statusLines(Client* client) {
         lines.push_back(format("%u chunks resident   %.0f MiB GPU",
                                client->renderer.chunkCount(),
                                static_cast<f64>(st.gpuBytes) / (1024.0 * 1024.0)));
+        // What the frame budget settled on, and what it is measuring.  Both are
+        // needed to read the line above it: 22 FPS at scale 0.67 is the floor and a
+        // device that is out of headroom; 22 FPS at scale 1.00 is a device still
+        // giving resolution back (D-052).
+        lines.push_back(client->resolution.status(client->width, client->height) +
+                        format("   %.0f ms", client->resolution.smoothedSeconds() * 1000.0));
     } else {
         lines.push_back("renderer not started");
         if (!client->lastError.empty()) lines.push_back(client->lastError.substr(0, 46));
@@ -932,8 +967,12 @@ void android_main(android_app* app) {
 
         const u64 now = nowMillis();
         static u64 lastFrameMs = 0;
-        const f32 dt = lastFrameMs ? static_cast<f32>(now - lastFrameMs) / 1000.0f : 0.016f;
+        f32 dt = lastFrameMs ? static_cast<f32>(now - lastFrameMs) / 1000.0f : 0.016f;
         lastFrameMs = now;
+        if (client.skipNextFrameSample) {
+            client.skipNextFrameSample = false;
+            dt = 0.0f;   // not evidence, and `update` ignores a frame time of zero
+        }
 
         // The starter world, installed a few megabytes at a time so the first
         // frames are on screen while it copies.
@@ -954,6 +993,23 @@ void android_main(android_app* app) {
         stepDownload(&client);
         updateCamera(&client, dt);
         streamWorld(&client, now);
+
+        // THE FRAME BUDGET.  One decision per frame at most, and at most one change
+        // per cooldown (a second at 30 FPS): applying it tears the offscreen targets
+        // down and builds them again, which is a device-idle, so it is not something
+        // to do while the picture is holding its rate.  The scale only ever moves
+        // inside the specification's window (engine/render/dynamic_resolution.h).
+        const f32 renderScale = client.resolution.update(static_cast<f64>(dt));
+        if (std::fabs(renderScale - client.env.renderScale) > 1e-3f) {
+            client.env.renderScale = renderScale;
+            client.renderer.setEnvironment(client.env);
+            appLog("render scale %.2f -> %ux%u (%0.f ms a frame, smoothed)",
+                   static_cast<double>(renderScale),
+                   static_cast<u32>(client.width * renderScale),
+                   static_cast<u32>(client.height * renderScale),
+                   client.resolution.smoothedSeconds() * 1000.0);
+        }
+
         renderFrame(app, &client, dt);
 
         if (now - client.lastStatMs >= 1000) {
