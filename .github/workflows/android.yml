@@ -117,7 +117,11 @@ jobs:
       - name: Fetch the map data
         # The raw sources are small (46 MB) and come from GitHub, so a clean
         # runner can rebuild the whole world from scratch — which is also the only
-        # way the pipeline's own reproducibility claim is ever exercised.
+        # way the pipeline's own reproducibility claim is ever exercised.  The
+        # script reads raw.githubusercontent.com first (no credentials) and falls
+        # back to `gh api`, which is the only path that needs the token below.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: bash tools/fetch_data.sh
 
       - name: Build the pipeline and the engine
@@ -264,7 +268,7 @@ jobs:
           words = [int(w) for w in re.findall(r'SpvWords = (\d+)', text)]
           print(f'{len(words)} shader modules, {sum(words)} words total')
           if len(words) != 11:
-              sys.exit(f'expected 9 shader modules, found {len(words)}')
+              sys.exit(f'expected 11 shader modules, found {len(words)}')
           if any(w < 100 for w in words):
               sys.exit('a shader module is empty: the build embedded placeholders, not SPIR-V')
           print('::notice::shaders embedded in the client: %d modules, %d words of SPIR-V'
@@ -330,7 +334,7 @@ jobs:
           needs your own signing key before a phone will accept it.
 
           Built by GitHub Actions; the workflow refuses to publish unless the APK
-          contains the engine library and all nine compiled shader modules.
+          contains the engine library and all eleven compiled shader modules.
           NOTES
           )"
           fi

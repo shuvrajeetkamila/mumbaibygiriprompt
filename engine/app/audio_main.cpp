@@ -802,7 +802,11 @@ int main(int argc, char** argv) {
     j.set("excerptSeconds", static_cast<f64>(excerpt.size() / 2) / sr);
     j.set("excerptLufs", excerptLufs);
     j.set("excerptTruePeakDbtp", excerptTp);
-    j.set("renderSeconds", timer.seconds());
+    // The simulated length, not the wall clock: this file is committed under
+    // viewer/data/, and a number that changes with the machine's speed makes the
+    // published manifest differ on every rebuild.  The wall clock is still logged
+    // (above) for anyone chasing the run's cost.
+    j.set("simulatedSeconds", static_cast<f64>(totalFrames) / static_cast<f64>(sr));
     {
         size_t count = 0;
         const LayerBudget* budgets = layerBudgets(count);

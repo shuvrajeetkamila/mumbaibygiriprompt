@@ -4,9 +4,15 @@ Everything the world is built from is either a **raw dataset** in `data/raw/`
 (re-fetchable, hash-verified) or **authored data** in `data/authored/` (small,
 reviewable, source-cited). Nothing is generated from an unstated assumption.
 
-`bash tools/fetch_data.sh` re-downloads all four raw datasets and verifies
-`data/raw/SHA256SUMS`; `--verify-only` checks the local copies without network
-access. `make all-checks` runs the verification.
+`bash tools/fetch_data.sh` re-downloads all four raw datasets; `--verify-only`
+checks the local copies without touching the network; `make all-checks` runs that
+verification. The identity of each file lives in **`data/sources.sha256`**, which
+is committed precisely so that a download is checked against a known-good value
+instead of trusted — a changed upstream fails the fetch rather than quietly
+building a different city. The script reads `raw.githubusercontent.com` first
+(no credentials needed) and falls back to `gh api` for environments where that
+host is unreachable; the CI workflow gives its fetch step `GH_TOKEN` for exactly
+that fallback.
 
 ## Raw datasets
 
@@ -17,8 +23,11 @@ access. `make all-checks` runs the verification.
 | `slum_clusters.geojson` | 3,373,500 | `348851ec…` | same repository, `Mumbai/slumClusters.geojson` | as published by DataMeet |
 | `mumbai_sra_2017.geojson` | 7,680,732 | `9d20dd90…` | `jkkersey/Mumbai-Mapping-Data`, `Mumbai_SRA_2017.geojson` | CC |
 
-Fetched with `gh api -H "Accept: application/vnd.github.raw"`; `raw.github
-usercontent.com` is unreachable from the build environment, the API is not.
+Fetched by `tools/fetch_data.sh` over either door — `raw.githubusercontent.com`
+or `gh api -H "Accept: application/vnd.github.raw"` — and verified against
+`data/sources.sha256` either way. (This project's own sandbox can reach only the
+API; CI prefers the credential-free path. A fetcher with one door was the bug that
+stopped the client's first CI runs at the fetch step.)
 
 ### `mumbai_region.osm` — the tag inventory of the city
 

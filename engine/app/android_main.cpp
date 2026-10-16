@@ -37,6 +37,7 @@
 //  found only by a CI run.
 // =============================================================================
 #include "engine/core/core.h"
+#include "engine/core/geo.h"     // MACRO_CELL_SIZE: the floating origin of section 4A
 #include "engine/render/hud.h"
 #include "engine/render/renderer.h"
 #include "engine/render/world_index.h"
@@ -604,13 +605,18 @@ void renderFrame(android_app* app, Client* client, f32 dt) {
     // Floating origin: the render origin is the camera's own macro-cell, so the
     // camera's render-space coordinates never leave [0, 1024) and a 45 km world
     // renders with millimetre precision (section 4, D-042).
-    const f64 cellX = std::floor(client->worldX / static_cast<f64>(MACRO_CELL_SIZE));
-    const f64 cellZ = std::floor(client->worldZ / static_cast<f64>(MACRO_CELL_SIZE));
-    client->renderer.setRenderOrigin(cellX * MACRO_CELL_SIZE, cellZ * MACRO_CELL_SIZE);
+    const f64 cellMetres = static_cast<f64>(MACRO_CELL_SIZE);
+    const f64 cellX = std::floor(client->worldX / cellMetres);
+    const f64 cellZ = std::floor(client->worldZ / cellMetres);
+    client->renderer.setRenderOrigin(cellX * cellMetres, cellZ * cellMetres);
 
     render::Camera camera;
-    camera.pos = Vec3{static_cast<f32>(client->worldX - cellX * MACRO_CELL_SIZE), client->altitude,
-                      static_cast<f32>(client->worldZ - cellZ * MACRO_CELL_SIZE)};
+    // The subtraction is done in f64 and only the result is narrowed: the camera's
+    // render-space position is a function of the offset from its own cell origin,
+    // and rounding the operands first is how a floating origin loses its point.
+    camera.pos = Vec3{static_cast<f32>(client->worldX - cellX * static_cast<f64>(MACRO_CELL_SIZE)),
+                      client->altitude,
+                      static_cast<f32>(client->worldZ - cellZ * static_cast<f64>(MACRO_CELL_SIZE))};
     camera.yaw = client->yaw;
     camera.pitch = client->pitch;
     client->renderer.setCamera(camera);

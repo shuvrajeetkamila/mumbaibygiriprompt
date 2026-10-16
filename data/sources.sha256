@@ -1,0 +1,20 @@
+# =============================================================================
+#  MUMBAI 1:1 EXACT — data/sources.sha256
+#
+#  The canonical identity of every raw source the world is built from: sha256,
+#  byte count, name.  It is committed (unlike data/raw/, which is ignored and
+#  re-fetchable) so that a download is *verified* against a known-good file rather
+#  than trusted, and so that a changed upstream is a loud failure instead of a
+#  silently different city.
+#
+#  Provenance, licences and what each file contains: DOCS/01_DATA_SOURCES.md.
+#  Checked by tools/fetch_data.sh — both after a download and in --verify-only
+#  mode, which `make all-checks` runs.
+#
+#  Regenerating this file is a deliberate act: it means accepting whatever the
+#  upstream now serves, and the consequences belong in DOCS/02_DECISIONS.md.
+# =============================================================================
+f8472efd6bfd6c845a9d8c540c675ea41c173c03de61e8475353cd0dc8242f10  994699  bmc_wards.geojson
+54f4f6bc08a5130d901175411534fc0ba004cccc988416ce109ee65541690e33  35312441  mumbai_region.osm
+9d20dd90f067f84a365afa18bcd5cefcbe09a33e8434a6b191e914d0a9064931  7680732  mumbai_sra_2017.geojson
+348851ecf05a680c8d99207a60177b008520a6605c069f7538dd57100663b679  3373500  slum_clusters.geojson

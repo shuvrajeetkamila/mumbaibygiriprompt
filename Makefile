@@ -158,7 +158,7 @@ AUDIO_BIN    := $(BIN)/mumbai_audio
 
 TEST_SRC := $(wildcard tests/*.cpp)
 
-.PHONY: all test world simulate physics audio render render-objects shaders glslang host-check viewer serve clean all-checks stats verify-artifacts
+.PHONY: all test world simulate physics audio render render-objects shaders glslang host-check viewer serve clean all-checks stats verify-artifacts android-check
 
 all: $(PIPELINE_BIN) $(SIM_BIN) $(TEST_BIN) $(PHYS_BIN) $(AUDIO_BIN) $(RENDER_BIN)
 
@@ -297,7 +297,7 @@ physics: $(PHYS_BIN)
 # Independent verification of the published artifacts: the unit suite, the
 # runtime validation run, the viewer payload re-derived from its own offsets by
 # the Node verifier, and the integrity of the raw source data.
-all-checks: test simulate physics audio
+all-checks: test simulate physics audio android-check
 	@node tests/verify_export.mjs
 	@node tests/verify_viewer_shaders.mjs
 	@node tests/verify_viewer_orientation.mjs
@@ -336,8 +336,23 @@ host-check:
 	@python3 tools/compile_shaders.py engine/render/shaders $(OBJ)/spv
 	@cmake -S android -B $(HOST_CHECK_DIR) -DMUMBAI_HOST_CHECK=ON -DMUMBAI_PHYSICS=ON \
 	       -DCMAKE_BUILD_TYPE=Release >/dev/null
-	@cmake --build $(HOST_CHECK_DIR) -j2 --target mumbai_hostcheck
-	@$(HOST_CHECK_DIR)/mumbai_hostcheck
+	@cmake --build $(HOST_CHECK_DIR) -j2 --target mumbai_cmake_hostcheck
+	@$(HOST_CHECK_DIR)/mumbai_cmake_hostcheck
+
+# engine/app/android_main.cpp is the one source file the host build never sees:
+# it is compiled for the NDK only, inside CI, so a typo in it used to cost a full
+# CI round trip.  The Android surface it uses is small enough to mirror as host
+# headers (engine/app/android_stubs/, signatures copied from NDK r26), and then the
+# same file compiles here with __ANDROID__ defined.  This is a compile check, not a
+# run: the stubs have no implementation, which is exactly right for one.
+ANDROID_STUBS    := engine/app/android_stubs
+ANDROID_MAIN_OBJ := $(OBJ)/engine/app/android_main.hostcheck.o
+android-check: $(ANDROID_MAIN_OBJ)
+	@echo "== android_main.cpp compiles with __ANDROID__ against the host stubs =="
+
+$(ANDROID_MAIN_OBJ): engine/app/android_main.cpp $(wildcard $(ANDROID_STUBS)/*.h $(ANDROID_STUBS)/android/*.h) engine/render/hud.h engine/render/renderer.h engine/render/world_index.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -D__ANDROID__ -isystem $(ANDROID_STUBS) -c $< -o $@
 
 viewer:
 	@bash tools/setup_viewer.sh
