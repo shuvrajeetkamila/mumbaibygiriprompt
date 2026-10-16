@@ -2682,3 +2682,43 @@ change: the truncation is stable, and no code looks a timing up by name.
 `world-data` until the next APK replaces the builds that name them, because an installed
 client can still ask for the world it was built against; they are pruned once nothing can
 name them any more.
+
+### D-050, measured again: the real archive, installed by the real downloader
+
+The unit tests drive the download with a fetcher that serves a tar out of memory.
+That proves the state machine and not the artifact, so the artifact was put through
+the client's own code on a machine with no phone in it: `tools/pack_world.py` packed
+this checkout's world (933 files, 1,436,695,330 bytes read, 387,655,680-byte tar,
+27.0 %), and a throwaway harness drove `world::WorldDownload` over it with a
+disk-backed fetcher that serves byte ranges exactly as `WorldFetch.java` does, in
+512 KiB steps — the client's own per-frame budget.
+
+| rehearsal | steps | bytes pulled | files verified | resume marker after |
+|---|---:|---:|---:|---|
+| clean install | 740 | 387,655,680 | 933 | none (finished) |
+| killed on purpose at 41 % | 300 | 150 MiB | 352 | `157267968` |
+| cold start over that | 440 | **230,387,712** | 581 (352 + 581 = 933) | none (finished) |
+
+The cold start printed `city: not started — resuming at 150 MiB` and asked for byte
+157,267,968: the member boundaries of a plain tar are what makes that offset mean
+anything, and gzipping the *members* is what keeps the transfer at 27 % while it does.
+After it finished, `diff -r data/processed <install>` reported **one** difference —
+`source_hash.txt`, which the packer deliberately does not publish — so the installed
+tree is the pipeline's own bytes, all 924 cells at the byte counts the manifest
+claims, with no `.gz` name and no `.part` file left anywhere.
+
+The rehearsal also lied once, and the lie is worth recording: its first version called
+`remove_all` on the install directory at startup, which deleted the resume marker and
+made pass 2 look like a downloader that ignores its own state.  It was the harness
+that ignored it.  A test double that is convenient in exactly the way the real system
+is not will report a defect that does not exist, and cost more to believe than to
+write.
+
+**What the downloader does not do, and the client does.**  A third pass over an
+*already complete* install re-fetched the whole archive, because a `WorldDownload`
+with no `.download` marker has no way to know the files are already there.  That is
+the client's job and the client does it: `android_main.cpp` writes
+`city_complete.txt` when the download reports `Done` and returns early from
+`beginInstall` on every later run (D-048, Decision 7).  Both files live in the app's
+own files directory, so a user who clears the app's data loses the world and the
+marker together, and a fresh download is then the truth rather than a bug.

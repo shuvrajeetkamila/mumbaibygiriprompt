@@ -166,6 +166,23 @@ jobs:
                 f"{world['totals']['triangles']} triangles")
           PYTHON
 
+      - name: Pack the city into the downloadable archive
+        # THIS IS ITS OWN STEP BECAUSE TWO LATER ONES NEED WHAT IT MAKES: the upload
+        # needs the file, and the APK's release notes need its size — the number a
+        # person deciding whether to press GET CITY actually cares about, which is
+        # the packed size and not the 1.27 GiB the world occupies once it is
+        # unpacked.  Packing here also means the slow part (45 s of gzip) happens
+        # before Gradle runs, so a failure in the upload cannot cost a rebuild.
+        run: |
+          set -e
+          mkdir -p release
+          df -h / | sed 's/^/    /'
+          python3 tools/pack_world.py --processed data/processed --out release --verify \
+            2>&1 | tee /tmp/world-publish.log
+          ls -l release | sed 's/^/    /'
+          cp data/processed/world_manifest.json release/world_manifest.json
+          df -h / | sed 's/^/    /'
+
       - name: Write down which world this build ships
         # The client names a download — repository, release asset, checksum list —
         # and the identity of that world is the sha256 of its manifest, which only
@@ -341,60 +358,110 @@ jobs:
       - name: Publish the APK as a release
         # A direct download link, which is the whole point: release assets are
         # fetchable without a session, Actions artifacts are not.
+        #
+        # THE NOTES ARE WRITTEN EVERY RUN, AND THAT IS A FIX.  They used to be
+        # passed to `gh release create` only when the release did not exist yet, so
+        # the first text this workflow ever wrote was the text everybody kept
+        # reading — including numbers that had stopped being true.  Now the notes
+        # go into a file and the file is applied whether the release is created or
+        # edited, with the sizes and the world's hash interpolated from the build
+        # that is being published.
         if: github.event_name == 'push' && success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
           TAG="first-build"
-          # --repo and --target spelled out: gh would otherwise guess a remote, and
-          # the tag would land on the default branch rather than on the commit
-          # that actually produced this APK.
-          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          SHA=$(sha256sum data/processed/world_manifest.json | cut -c1-16)
+          APK_BYTES=$(stat -c%s android/app/build/outputs/apk/debug/app-debug.apk)
+          APK_MB=$(( APK_BYTES / 1048576 ))
+          CELLS=$(python3 -c "import json;print(len(json.load(open('data/processed/world_manifest.json'))['cells']))")
+          WORLD_BYTES=$(python3 -c "import json;w=json.load(open('data/processed/world_manifest.json'));print(sum(c['bytes'] for c in w['cells']))")
+          WORLD_MB=$(( WORLD_BYTES / 1048576 ))
+          STARTER_CELLS=$(python3 -c "import json;print(len(json.load(open('android/app/src/main/assets/world/world_manifest.json'))['cells']))")
+          # The download is the packed archive, not the 1.27 GiB it unpacks to.
+          PACKED=$(ls release/mumbai-world-*.tar 2>/dev/null | head -1)
+          PACKED_MB=$(if [ -n "$PACKED" ]; then echo $(( $(stat -c%s "$PACKED") / 1048576 )); else echo "?"; fi)
+          # The starter slice is a *slice*: if these two numbers ever agree, the step
+          # that packs it read the wrong manifest, and the notes below would tell
+          # someone their package holds the whole city when it does not.
+          if [ "$STARTER_CELLS" = "$CELLS" ]; then
+            echo "::warning::the starter world manifest has the same cell count as the city ($CELLS) - check the pack step, the release notes are quoting it"
+          fi
+          cat > /tmp/mumbai-release-notes.md <<NOTES
+          ## Install
+
+          **Download \`app-debug.apk\`** (${APK_MB} MB) and open it on an Android phone:
+          Android 10 or newer, 64-bit ARM, Vulkan 1.1 — which is every device this
+          renders on.  You may need to allow installing from unknown sources; it is
+          signed with the standard debug key.
+
+          ## What it does
+
+          * Starts on the phone's own Vulkan surface and draws the world with the
+            sky, sun and the tonemapped image.
+          * Installs a slice of Mumbai out of the package on first run — **${STARTER_CELLS} cells
+            of South Bombay**, a minute or so of copying, with its progress on the
+            screen.  The screen is never black: if the graphics device refuses to
+            start, the client paints the reason into the window on the CPU instead.
+          * Streams the cells around the camera as you move, and shows what it is
+            doing in a panel over the frame: frames per second, chunks resident,
+            your position, and the state of the world.
+          * **Left half of the screen steers, right half looks; the two buttons at
+            the top right climb and descend.**  Everything goes to logcat
+            (\`adb logcat -s mumbai\`).
+
+          ## The whole city is a download, and it is yours to start
+
+          South Bombay travels inside the APK.  The whole city — all ${CELLS} cells of
+          the pipeline's own output: terrain, ${WORLD_MB} MB of buildings, roads and
+          textures — is published as this repository's \`world-data\` release as a
+          **${PACKED_MB} MB** download (it is ${WORLD_MB} MB once unpacked).  Press **GET CITY** in the app to pull them: the
+          download shows its own progress, survives being killed, verifies every
+          file it writes against the published checksums, and can be paused.
+          There is a deliberate pause: nothing is downloaded until you ask, because
+          it is somebody's data plan.
+
+          This build was compiled against world \`${SHA}\`: the app refuses a published
+          world whose manifest is not that one, before it fetches a byte.
+
+          ## If you are holding an earlier copy of this app
+
+          The very first APK drew only the sky — no world, no panel, no download —
+          and that was the engine preview, not the product.  This build replaces it,
+          and if that older one is installed, installing this over it is enough.
+
+          ## What is not here yet
+
+          Night lighting, wet-asphalt reflections, rain, the ocean's wave detail,
+          anti-aliasing and the traffic simulation are roadmap items, named in
+          \`DOCS/06_ROADMAP.md\` rather than implied.  This release is the pipeline,
+          the streaming world and the renderer's first pass — not the finished
+          picture.
+
+          \`app-release-unsigned.apk\` is the same code without a signature; it needs
+          your own signing key before a phone will accept it.
+
+          Built by GitHub Actions.  The workflow refuses to publish unless the APK
+          contains the engine library and all eleven compiled shader modules.
+          NOTES
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Mumbai 1:1 EXACT — the client (installable build)" \
+              --notes-file /tmp/mumbai-release-notes.md
+          else
             gh release create "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "Mumbai 1:1 EXACT — first APK (first build)" \
+              --title "Mumbai 1:1 EXACT — the client (installable build)" \
               --prerelease \
-              --notes "$(cat <<'NOTES'
-          The first installable build of the Mumbai 1:1 client.
-
-          **Download `app-debug.apk`** and install it on an Android phone
-          (Android 10 or newer, 64-bit ARM).  You may need to allow installing
-          from unknown sources; it is signed with the standard debug key, which
-          is what a first build has.
-
-          What it does: starts the engine on the phone's own Vulkan surface,
-          creates the graphics device and the swapchain, builds its pipelines
-          from the eleven compiled shaders, installs the starter world out of
-          the APK into its own storage on first run, streams the cells around the
-          camera, and draws them with a status panel over the frame — frames per
-          second, chunks resident, position, and what it is doing.  Left half of
-          the screen moves, right half looks, the two buttons at the top right
-          climb and descend.  Everything is logged to logcat
-          (`adb logcat -s mumbai`).
-
-          The starter world is South Bombay: Colaba, the Gateway, the Taj, CSMT,
-          Marine Drive.  The rest of the city (1.3 GB, 899 more cells) is a
-          download, published as this repository's `world-data` release.
-
-          What it does not do yet: load the whole city, light it at night, soften
-          the water and the glass, or anti-alias the image — those are the
-          renderer's next pieces (clustered lights, WBOIT, TAA), and they are
-          named in the roadmap rather than implied.
-
-          `app-release-unsigned.apk` is the same code without a signature; it
-          needs your own signing key before a phone will accept it.
-
-          Built by GitHub Actions; the workflow refuses to publish unless the APK
-          contains the engine library and all eleven compiled shader modules.
-          NOTES
-          )"
+              --notes-file /tmp/mumbai-release-notes.md
           fi
           gh release upload "$TAG" android/app/build/outputs/apk/debug/app-debug.apk --clobber
           gh release upload "$TAG" android/app/build/outputs/apk/release/app-release-unsigned.apk --clobber
           gh release view "$TAG" --json assets \
             --jq '.assets[] | "\(.name)  \(.size) B  \(.url)"'
+          echo "::notice::APK ${APK_BYTES} bytes for world ${SHA}; release notes rewritten"
 
       - name: Publish the whole city as a release asset
         # The APK carries South Bombay; the other 899 cells are a download, and a
@@ -421,28 +488,15 @@ jobs:
               exit 0
             fi
           fi
-          # THE ARCHIVE IS PACKED BY A TOOL, NOT BY A LINE OF SHELL, because the
-          # shape it has to have is specific: a plain tar whose *members* are
-          # gzipped.  The container stays a stream the client can resume inside -
-          # every file boundary is still a byte offset it can come back to - while
-          # the payload travels at about an eighth of the size the pipeline wrote,
-          # and that is the difference between a 1.4 GB upload (which had already
-          # failed on this step) and a small one (D-049, D-050).
-          #
-          # `--verify` re-reads the archive it just wrote, inflates every member and
-          # compares it with the pipeline's own file: a publish that cannot be read
-          # back is worse than no publish, because the client would spend somebody's
-          # data plan discovering it.  The checksum list the client verifies against
-          # is written in the same pass, over the *archive's* names.
-          mkdir -p release
-          df -h / /tmp | sed 's/^/    /'
-          python3 tools/pack_world.py --processed data/processed --out release --verify \
-            2>&1 | tee /tmp/world-publish.log
-          ls -l release | sed 's/^/    /'
-          cp data/processed/world_manifest.json release/world_manifest.json
+          # THE ARCHIVE WAS PACKED EARLIER IN THIS JOB and verified there; this step
+          # only moves it, so its whole job is to be sure the thing the phone will
+          # fetch is the thing that was built.  `ASSET` and `SUMS` carry the
+          # manifest's sha256, which is why a re-run of an unchanged world finds the
+          # asset already there and skips the upload entirely (D-048/D-051).
+          test -s "release/$ASSET" || { echo "::error::no archive at release/$ASSET"; exit 1; }
           test -s "release/$SUMS" || { echo "::error::no checksum list was written"; exit 1; }
           grep -c "world_manifest.json" "release/$SUMS" | sed 's/^/    manifest entries in the list: /'
-          df -h / | sed 's/^/    /'
+          ls -l "release/$ASSET" "release/$SUMS" | sed 's/^/    /'
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --title "Mumbai 1:1 EXACT — the world data" --prerelease \

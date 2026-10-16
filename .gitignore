@@ -12,6 +12,14 @@ node_modules/
 npm-debug.log*
 .viewer-cache/
 
+# ---- Python bytecode ----
+# A committed .pyc is a machine-specific artifact that also *masks* a source change:
+# the interpreter loads the stale bytecode and the tool keeps behaving like its old
+# self.  One got swept into a commit by `git add -A`; the pattern is here so the
+# next `git add -A` cannot do it again.
+__pycache__/
+*.pyc
+
 # ---- Editor / OS ----
 .vscode/
 .idea/
