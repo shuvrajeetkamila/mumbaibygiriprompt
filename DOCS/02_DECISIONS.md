@@ -2913,3 +2913,74 @@ either an older build installed over this one (the first APK drew only the sky, 
 neither panel nor downloader) or a defect this build is now equipped to report.  Both
 possibilities are answerable with the log file; the app version in it is how the first
 one is ruled out.
+
+### D-055: the main loop waited for ever, so nothing after the poll ever ran
+
+**The report**: a Galaxy A17 5G (SM-A176B, Mali-G68 MP2, Android 15) showed a black
+screen, **no progress bar at any moment**, and no other sign the app was doing
+anything — for a minute and beyond.  A GPU that supports Vulkan 1.1 rules the
+hardware out (D-054), and a build that writes its own log rules out "which build is
+it", so the client itself had to be read line by line.  It was.
+
+**The bug**: the main loop drained the event queue with a *negative* poll timeout.
+
+```cpp
+const int timeout = client.ready ? 0 : -1;          // -1 "wait for ever"
+while (ALooper_pollOnce(timeout, ...) >= 0) { ... }  // condition never false
+```
+
+`ALooper_pollOnce` returns a source identifier when an event is pending and a
+negative code (`ALOOPER_POLL_WAKE/CALLBACK/TIMEOUT/ERROR`) otherwise.  With a
+timeout of -1 it never returns *any* negative code, so the inner `while` never exits
+— and every line after it is unreachable on a device:
+
+* `updateLogFile` — so no `mumbai-log.txt` was ever written;
+* `updateFallbackScreen` — so the screen that exists to explain a black screen was
+  itself never painted;
+* `startRenderer` — so the renderer was never started and `client.ready` never
+  became true, which kept the timeout at -1 on every later pass: a closed loop that
+  is impossible to leave;
+* the entire frame loop, so the world, the panel and the installer's progress bar
+  never happened.
+
+The client was therefore *running* — the process was alive, the looper was healthy —
+and the window kept showing the black background of
+`Theme.Black.NoTitleBar.Fullscreen`.  "Black screen, nothing else, ever" is exactly
+what that code prints, and the fact that start-up traffic (window created, focus
+gained, config settled) is consumed before the block is why even a tap changes
+nothing: the tap is delivered, processed by the glue's own callback, and the loop
+goes back to waiting for ever.
+
+**Why no test could have caught it**: nothing on a host has a looper, and the file is
+compiled — not run — by `make android-check`.  The failure lived in the one line of
+the client that no local gate executes.  `client.ready` was doing duty as "the
+renderer is up", which is a *consequence* of a line that the loop could never reach.
+
+**The fix**, in two parts:
+
+1. `engine/app/poll_policy.h` (new, Android-free, host-testable): `pollTimeoutMs(
+   ready)` is **0** with frames to draw and **kIdlePollMs** (16 ms, one frame at
+   60 Hz) while there are not — never negative, with `static_assert`s saying why.
+   The loop now uses it, and treats *every* negative result as "the queue is empty,
+   go and draw" (`pollHasData`), instead of relying on an exit condition that a
+   negative timeout makes unreachable.
+2. `updateLogFile` is called once **before** the loop, so the file that names the
+   device and the renderer's state exists within milliseconds of launch, rather than
+   depending on any later line being reached.
+
+The not-ready state is now what it always should have been: a 16 ms sleep, then paint
+the fallback screen, then try the renderer again — 62 wake-ups a second, which is the
+same order as the frame loop's own cost once it is running.
+
+**Test**: `tests/test_app_loop.cpp` — the not-ready timeout is positive and bounded,
+never negative; the ready timeout is zero; all four negative poll results are "no
+data" and the two `LOOPER_ID_*` values are data.  Two cases; the suite went from 107
+cases / 472,184 checks to **109 cases / 472,196 checks, 0 failing**.
+
+**Status**: the cause is now named and the offending line is gone, but **no phone
+here has run it**.  This is the only candidate that explains *all* of the report —
+black, no text ever, no progress bar ever, no crash dialog — and it explains the
+first black-screen report too (the same loop was in that build).  The build that
+carries the fix also carries the two things that make the next report decisive: the
+fallback screen paints within 16 ms of launch even with no Vulkan device at all, and
+`Downloads/mumbai-log.txt` is written before the loop starts.

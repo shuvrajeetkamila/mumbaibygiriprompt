@@ -39,6 +39,7 @@
 #include "engine/core/core.h"
 #include "engine/app/android_http.h"
 #include "engine/app/fallback_screen.h"
+#include "engine/app/poll_policy.h"
 #include "engine/core/geo.h"     // MACRO_CELL_SIZE: the floating origin of section 4A
 #include "engine/render/hud.h"
 #include "engine/render/dynamic_resolution.h"
@@ -1086,14 +1087,27 @@ void android_main(android_app* app) {
         client.downloadNote = "city download: no published world for this build";
     }
 
+    // THE LOG FILE EXISTS BEFORE THIS LOOP DOES.  It is written here once, so that a
+    // phone whose client stops making progress for any reason at all still has a file
+    // naming the device, the surface and the last error — rather than the report
+    // depending on a line further down being reached (D-054).
+    updateLogFile(app, &client, nowMillis());
+
     while (true) {
         int events = 0;
         android_poll_source* source = nullptr;
-        // Block while there is nothing to draw; with a surface, poll with a zero
-        // timeout so the loop runs at the display's rate instead of being woken by
-        // input.
-        const int timeout = client.ready ? 0 : -1;
-        while (ALooper_pollOnce(timeout, nullptr, &events, reinterpret_cast<void**>(&source)) >= 0) {
+
+        // THE EVENT QUEUE IS DRAINED, AND THAT IS ALL — see engine/app/poll_policy.h.
+        // `ALooper_pollOnce` returns a negative code only on timeout, wake, callback
+        // or error, so a timeout of -1 ("wait for ever") makes this loop's exit
+        // condition unreachable and kills every line after it: no first frame, no
+        // fallback screen, no renderer retry, no log file.  On a phone that is a black
+        // window for ever, which is what was reported (D-055).  The timeout is
+        // therefore always bounded: zero once there are frames to draw, kIdlePollMs
+        // while there are not.
+        while (true) {
+            const int result = ALooper_pollOnce(app::pollTimeoutMs(client.ready), nullptr, &events,
+                                                reinterpret_cast<void**>(&source));
             if (source) source->process(app, source);
             if (app->destroyRequested) {
                 stopRenderer(&client);
@@ -1105,6 +1119,7 @@ void android_main(android_app* app) {
                 appLog("%llu frames rendered", static_cast<unsigned long long>(client.frames));
                 return;
             }
+            if (!app::pollHasData(result)) break;   // nothing pending: go and draw
         }
 
         // THE DEVICE, ASKED ONCE.  Java's answer, because the native side cannot

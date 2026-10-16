@@ -62,7 +62,7 @@ APKs; a phone is the only thing that can run them.
 |---|---|---|
 | D1 | 30 FPS worst case on Adreno 730 / Mali-G710 | no GPU; `mumbai_sim` measures CPU cost only (p99 0.18 ms) |
 | D2 | zero rendering artifacts, TAA/WBOIT behaviour | needs the renderer of A1 |
-| D5 | *why* a phone shows a black screen | no device here runs the app: the build now reports the device's own Vulkan verdict and writes `Downloads/mumbai-log.txt` (D-054), so the answer travels back in a file instead of a guess |
+| D5 | *why* a phone shows a black screen | **answered, subject to the phone confirming it**: the main loop polled the event queue with a timeout of -1, which can never expire, so the renderer was never started, the fallback screen was never painted and the log file was never written — black, for ever (D-055). The reported device (Galaxy A17 5G, Mali-G68 MP2) supports Vulkan 1.1, so the GPU was never the reason. The fix ships with a bounded poll, a log written before the loop and a fallback screen that paints within 16 ms |
 | D3 | ≤160 GB installed | the current tier is 686 MB; the figure only becomes meaningful once B1 and A8 are at production density |
 | D4 | the visual standard — motorcycle on the coastal highway at golden hour, wet asphalt reflecting the sky | the preview approximates it in a browser; the specification's answer is the renderer of A1 |
 
