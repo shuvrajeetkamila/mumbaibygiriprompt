@@ -143,6 +143,11 @@ jobs:
             echo "::notice::no vulkan.pc: the renderer compiles CPU-only"
           fi
           make -j4 2>&1 | tee build.log
+          # The JNI bridge is spelled in two languages, and neither compiler checks
+          # the other one: a renamed Java method or a mistyped signature is a runtime
+          # failure on a phone in the middle of a download.  This compares the two
+          # files by name, in the same step that compiles them.
+          python3 tools/verify_java_bridge.py
 
       - name: Build the world
         # 924 cells, 1.27 GiB: the same `make world` any machine runs.  Its own

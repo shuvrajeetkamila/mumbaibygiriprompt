@@ -308,6 +308,7 @@ all-checks: test simulate physics audio host-check android-check
 	@node tests/verify_viewer_shaders.mjs
 	@node tests/verify_viewer_orientation.mjs
 	@python3 tools/verify_shader_layout.py
+	@python3 tools/verify_java_bridge.py
 	@bash tools/verify_artifacts.sh
 	@bash tools/fetch_data.sh --verify-only
 	@echo "== all checks complete =="
