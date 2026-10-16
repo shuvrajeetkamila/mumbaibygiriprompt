@@ -303,7 +303,7 @@ physics: $(PHYS_BIN)
 # Independent verification of the published artifacts: the unit suite, the
 # runtime validation run, the viewer payload re-derived from its own offsets by
 # the Node verifier, and the integrity of the raw source data.
-all-checks: test simulate physics audio android-check
+all-checks: test simulate physics audio host-check android-check
 	@node tests/verify_export.mjs
 	@node tests/verify_viewer_shaders.mjs
 	@node tests/verify_viewer_orientation.mjs

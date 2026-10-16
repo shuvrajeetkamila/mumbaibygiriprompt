@@ -65,6 +65,15 @@ using namespace mumbai;
 #include <time.h>
 #endif
 
+// THE NAMESPACE OPENS INSIDE THE ANDROID BRANCH, and the braces are why.  It used to
+// open before it, with the closing brace at the end of the client body — which is
+// inside `#if defined(__ANDROID__)`.  A host compile (no NDK, no `-D__ANDROID__`)
+// therefore had an anonymous namespace that never closed, and the `#else` branch's
+// own main() was unreachable: "expected '}' at end of input".  Nothing caught it
+// because the Makefile's app check compiles this file *with* `__ANDROID__`; the
+// CMake host check, which compiles every source the APK compiles, found it.
+#if defined(__ANDROID__)
+
 namespace {
 
 // The engine's own logging goes to stdout/stderr, which Android discards for an
@@ -83,8 +92,6 @@ void appLog(const char* fmt, ...) {
     std::printf("[mumbai] %s\n", buffer);
 #endif
 }
-
-#if defined(__ANDROID__)
 
 // -----------------------------------------------------------------------------
 //  Where the camera starts: the Gateway of India, looking north up the harbour.

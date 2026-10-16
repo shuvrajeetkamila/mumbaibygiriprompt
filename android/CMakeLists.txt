@@ -45,16 +45,19 @@ file(GLOB MUMBAI_RENDER_SRC ${MUMBAI_ROOT}/engine/render/*.cpp)
 set(MUMBAI_SOURCES ${MUMBAI_CORE_SRC} ${MUMBAI_WORLD_SRC} ${MUMBAI_SIM_SRC} ${MUMBAI_AUDIO_SRC}
                    ${MUMBAI_RENDER_SRC})
 
-# The app's own sources, as a list rather than two hand-written filenames.
-# `fallback_screen.cpp` and `android_http.cpp` compile in the Makefile's host check
-# and are therefore easy to believe are in the APK; they were not, and a client whose
-# fallback screen never painted would have failed to link in CI instead.  The one
-# file that is a host program and not part of the library is removed by name.
+# The client's own sources: everything in engine/app/ except the programs, each of
+# which defines main() for a host tool.  A glob, filtered by name, rather than a
+# hand-written list — listing them by hand is how `fallback_screen.cpp` and
+# `android_http.cpp` came to be compiled by the Makefile's host check and missing
+# from this build, which is a link error in CI and a screen that never paints on a
+# phone.  The count is asserted so a rename cannot quietly empty the library.
 file(GLOB MUMBAI_APP_SRC ${MUMBAI_ROOT}/engine/app/*.cpp)
-list(REMOVE_ITEM MUMBAI_APP_SRC ${MUMBAI_ROOT}/engine/app/host_check.cpp)
+foreach(mumbai_program host_check audio_main phys_main render_main sim_main)
+    list(REMOVE_ITEM MUMBAI_APP_SRC ${MUMBAI_ROOT}/engine/app/${mumbai_program}.cpp)
+endforeach()
 list(LENGTH MUMBAI_APP_SRC MUMBAI_APP_SRC_COUNT)
 if(MUMBAI_APP_SRC_COUNT LESS 3)
-    message(FATAL_ERROR "engine/app/*.cpp found ${MUMBAI_APP_SRC_COUNT} sources; expected at least 3")
+    message(FATAL_ERROR "engine/app/*.cpp yielded only ${MUMBAI_APP_SRC_COUNT} client sources")
 endif()
 
 if(MUMBAI_PHYSICS)
@@ -117,8 +120,13 @@ if(ANDROID)
         ${MUMBAI_SHADER_HEADER}
         ${MUMBAI_SOURCES})
 
+    # third_party is where Jolt lives, and Jolt's headers are included as
+    # <Jolt/Jolt.h>.  This directory was missing here and the omission was invisible
+    # until CI first got past the host build: the Makefile passes -Ithird_party, so
+    # the physics engine only ever compiled on the machine that has no NDK.
     target_include_directories(mumbai PRIVATE
         ${MUMBAI_ROOT}
+        ${MUMBAI_ROOT}/third_party
         ${MUMBAI_ROOT}/third_party/vulkan/include
         ${CMAKE_BINARY_DIR})
 
@@ -150,10 +158,38 @@ if(ANDROID)
         LINK_FLAGS "-u ANativeActivity_onCreate")
 else()
     message(STATUS "Not an Android build: verifying the source lists and shaders only.")
+    # EVERY source the APK compiles, plus the renderer, minus the programs that have
+    # their own main().  This target is the only place a machine without the NDK can
+    # find out that, say, Jolt's include path is missing from the Android build — it
+    # was, and it cost a CI round trip — because the APK's own compile only happens
+    # on a runner.  `MUMBAI_NO_VULKAN` is what the Makefile's own renderer build
+    # uses: the renderer then compiles its Vulkan-free halves and says so.
+    # The renderer is left out on purpose: its sources call the Vulkan API directly
+    # (the vendored headers are on the include path, the loader is not linked here),
+    # which is why the Makefile has its own renderer compile check ("make render").
+    # Everything else the APK compiles is in this list, including Jolt.
+    foreach(render_src ${MUMBAI_RENDER_SRC})
+        list(REMOVE_ITEM MUMBAI_SOURCES ${render_src})
+    endforeach()
+    # And android_main.cpp: it is the Android entry point, and its non-Android branch
+    # is a main() of its own, which would collide with this program's.  The Makefile's
+    # `android-check` is what compiles that file, with __ANDROID__ defined.
+    list(REMOVE_ITEM MUMBAI_APP_SRC ${MUMBAI_ROOT}/engine/app/android_main.cpp)
     add_executable(mumbai_cmake_hostcheck
         ${MUMBAI_ROOT}/engine/app/host_check.cpp
-        ${MUMBAI_CORE_SRC} ${MUMBAI_WORLD_SRC} ${MUMBAI_SIM_SRC} ${MUMBAI_AUDIO_SRC})
-    target_include_directories(mumbai_cmake_hostcheck PRIVATE ${MUMBAI_ROOT} ${CMAKE_BINARY_DIR})
+        ${MUMBAI_SOURCES} ${MUMBAI_APP_SRC})
+    target_include_directories(mumbai_cmake_hostcheck PRIVATE
+        ${MUMBAI_ROOT}
+        ${MUMBAI_ROOT}/third_party
+        ${MUMBAI_ROOT}/third_party/vulkan/include
+        ${CMAKE_BINARY_DIR})
+    target_compile_definitions(mumbai_cmake_hostcheck PRIVATE MUMBAI_NO_VULKAN)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+        # The same Jolt feature set the Makefile's own build uses, so a scene baked
+        # on one machine behaves the same on the other.
+        target_compile_options(mumbai_cmake_hostcheck PRIVATE -msse4.2 -mpopcnt)
+        target_compile_definitions(mumbai_cmake_hostcheck PRIVATE JPH_USE_SSE4_1 JPH_USE_SSE4_2)
+    endif()
     target_link_libraries(mumbai_cmake_hostcheck PRIVATE pthread)
     add_dependencies(mumbai_cmake_hostcheck mumbai_shaders)
 endif()
