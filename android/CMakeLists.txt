@@ -26,7 +26,11 @@
 #  not broken and that every source it names exists and links.
 # =============================================================================
 cmake_minimum_required(VERSION 3.22)
-project(mumbai CXX)
+# C as well as CXX: the NDK's native_app_glue is a C file, and a project that
+# enables only C++ cannot determine a linker language for it ("CMake Error: CMake
+# can not determine linker language for target: native_app_glue" — which is
+# exactly how the first Android build failed).
+project(mumbai C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
