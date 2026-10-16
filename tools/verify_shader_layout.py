@@ -221,26 +221,42 @@ def format_matches(shader_type, vulkan_format):
         return True
     s_bytes, s_count, s_comp = shape
     f_bytes, f_count, f_comp = fmt
-    if s_bytes != f_bytes:
-        return False
     if s_comp != f_comp:
         return False
     # A scalar attribute may read several packed components (the u8 packing idiom);
     # a vector attribute must match component for component.
     if s_count > 1 and s_count != f_count:
         return False
-    return True
+    if s_bytes == f_bytes:
+        return True
+    # A *packed* format is a legal source for a float attribute: the hardware
+    # expands the components before the shader sees them, so R8G8B8A8_UNORM feeds
+    # a vec4 as long as the arity agrees.  The panel's colour is four bytes per
+    # vertex rather than sixteen and this is the check that has to know it — while
+    # still refusing a format that is *wider* than the attribute, or one whose
+    # components are integers.
+    return s_comp == 'float' and f_bytes < s_bytes
+
+
+# Which C++ file declares a shader's vertex input, and which structs belong to it.
+# The panel's attributes live in hud_gpu.cpp because its pipeline is built there:
+# a panel that shares the world's pipeline layout would break when the material
+# array changes size, which is the one moment it is most needed (D-047).
+ATTRIBUTE_SOURCES = {
+    'world.vert': ('engine/render/pipeline.cpp', ('MeshVertex',)),
+    'traffic.vert': ('engine/render/pipeline.cpp', ('Vertex3_3_3', 'InstanceVertex')),
+    'hud.vert': ('engine/render/hud_gpu.cpp', ('HudVertex',)),
+}
 
 
 def cpp_attr_descriptions(shader_name):
     """The {location, binding, format, offsetof(X, field)} entries for a shader."""
-    text = (ROOT / 'engine/render/pipeline.cpp').read_text()
+    source, anchors = ATTRIBUTE_SOURCES[shader_name]
+    text = (ROOT / source).read_text()
     # Attribute entries may wrap across lines (the traffic colour attribute does),
     # so the whole file is scanned rather than each line.
     # world.vert reads MeshVertex; traffic.vert reads a mesh binding plus the
     # per-instance binding, so both struct names count as 'this shader's attributes'.
-    anchors = (('MeshVertex',) if shader_name == 'world.vert'
-               else ('Vertex3_3_3', 'InstanceVertex'))
     out = []
     pattern = (r'\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(VK_FORMAT_\w+)\s*,\s*'
                r'(?:static_cast<\w+>\()?\s*offsetof\(\s*(\w+)\s*,\s*(\w+)\s*\)')
@@ -250,8 +266,59 @@ def cpp_attr_descriptions(shader_name):
     return out
 
 
+def verify_hud_push_constants():
+    """The panel's push constant block, GLSL against C++.
+
+    A push constant block whose size disagrees with the layout the pipeline
+    declares is a validation error at best and a garbled panel at worst, and
+    neither shows up until the device runs it.
+    """
+    text = (ROOT / 'engine/render/shaders/hud.vert').read_text()
+    block = re.search(r'layout\(push_constant\)\s+uniform\s+(\w+)\s*\{(.*?)\}\s*\w+\s*;',
+                      text, re.S)
+    check(block is not None, 'hud.vert: no push_constant block found')
+    if not block:
+        return
+    members = re.findall(r'\b(vec2|vec3|vec4|float|uint|int|mat4)\s+(\w+)\s*;', block.group(2))
+    check(len(members) == 3, f'hud.vert: {len(members)} push constant members, expected 3 '
+                              f'(a vec2 and two floats: 16 bytes)')
+
+    # The GLSL block must agree, member for member, with HudPush in
+    # renderer_impl.h — the C++ side is what the pipeline layout declares.
+    cpp = (ROOT / 'engine/render/renderer_impl.h').read_text()
+    push = re.search(r'struct HudPush\s*\{(.*?)\}\s*;', cpp, re.S)
+    check(push is not None, 'renderer_impl.h: no HudPush struct found')
+    if not push:
+        return
+    # Fields may share one declaration (`f32 viewportW, viewportH;`), so the
+    # declarator list is split rather than the statement.
+    cpp_fields = []
+    for decl in re.findall(r'\bf32\s+([^;]+);', push.group(1)):
+        cpp_fields += [n.strip() for n in decl.split(',') if n.strip()]
+    # Compared by *size*, not by member count: the GLSL block is a vec2 and two
+    # floats, the C++ struct is four floats, and both are 16 bytes.  A count
+    # comparison would call that a mismatch and a size comparison is what the
+    # driver actually cares about.
+    glsl_bytes = sum({'vec2': 8, 'vec3': 12, 'vec4': 16, 'float': 4, 'uint': 4, 'int': 4,
+                      'mat4': 64}.get(gtype, 0) for gtype, _ in members)
+    glsl_bytes = max(glsl_bytes, 16) if members and members[0][0] == 'vec2' else glsl_bytes
+    cpp_bytes = 4 * len(cpp_fields)
+    check(glsl_bytes == cpp_bytes,
+          f'HudPush is {cpp_bytes} bytes of C++ but hud.vert declares {glsl_bytes} bytes')
+    declared = re.search(r'static_assert\(sizeof\(HudPush\)\s*==\s*(\d+)', cpp)
+    check(declared is not None, 'renderer_impl.h: HudPush has no size static_assert')
+    if declared:
+        check(glsl_bytes == int(declared.group(1)),
+              f'hud.vert declares {glsl_bytes} bytes of push constants, C++ asserts '
+              f'{declared.group(1)}')
+        check(int(declared.group(1)) == 16,
+              'the panel push constant block must stay 16 bytes (two vec4-shaped halves)')
+    print(f'  push constant: hud.vert {len(members)} members, {declared.group(1)} bytes, '
+          f'matched to renderer_impl.h')
+
+
 def verify_vertex_attributes():
-    for shader, prefix in (('world.vert', 'in'), ('traffic.vert', 'i')):
+    for shader, prefix in (('world.vert', 'in'), ('traffic.vert', 'i'), ('hud.vert', 'in')):
         text = (ROOT / 'engine/render/shaders' / shader).read_text()
         glsl = [(int(m.group(1)), m.group(2), m.group(3))
                 for m in re.finditer(r'layout\(location\s*=\s*(\d+)\)\s+in\s+([\w]+)\s+(\w+)\s*;', text)]
@@ -264,8 +331,8 @@ def verify_vertex_attributes():
             check(format_matches(gtype, cformat),
                   f'{shader}: attribute {gname} ({gtype}) is fed by {cformat}, '
                   f'which does not have that shape')
-        print(f'  vertex input:  {shader}, {len(glsl)} attributes matched to pipeline.cpp '
-              f'(locations, formats)')
+        print(f'  vertex input:  {shader}, {len(glsl)} attributes matched to '
+              f'{ATTRIBUTE_SOURCES[shader][0].split("/")[-1]} (locations, formats)')
 
     # The instance buffers share one buffer with two bindings; binding 1 must exist
     # and must be the stride of InstanceVertex in the GLSL, or every vehicle reads
@@ -281,6 +348,7 @@ def main():
     print('=' * 71)
     verify_uniform_block()
     verify_vertex_attributes()
+    verify_hud_push_constants()
     print('-' * 71)
     if FAILURES:
         for f in FAILURES:
