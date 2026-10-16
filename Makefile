@@ -352,13 +352,19 @@ host-check:
 # same file compiles here with __ANDROID__ defined.  This is a compile check, not a
 # run: the stubs have no implementation, which is exactly right for one.
 ANDROID_STUBS    := engine/app/android_stubs
-ANDROID_APP_SRC  := engine/app/android_main.cpp engine/app/fallback_screen.cpp
+# android_http.cpp is the JNI bridge, and it is in this list on purpose: it is
+# compiled here against engine/app/android_stubs/jni.h, so a wrong method name or a
+# wrong argument type costs a compile on a machine with no NDK rather than a runtime
+# failure on a phone.
+ANDROID_APP_SRC  := engine/app/android_main.cpp engine/app/fallback_screen.cpp \
+                    engine/app/android_http.cpp
 ANDROID_APP_OBJ  := $(patsubst engine/app/%.cpp,$(OBJ)/engine/app/%.hostcheck.o,$(ANDROID_APP_SRC))
 android-check: $(ANDROID_APP_OBJ)
 	@echo "== android_main.cpp compiles with __ANDROID__ against the host stubs =="
 
 $(OBJ)/engine/app/%.hostcheck.o: engine/app/%.cpp $(wildcard $(ANDROID_STUBS)/*.h $(ANDROID_STUBS)/android/*.h) \
-        engine/render/hud.h engine/render/renderer.h engine/render/world_index.h
+        engine/render/hud.h engine/render/renderer.h engine/render/world_index.h \
+        engine/world/world_download.h engine/world/world_release.h
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -D__ANDROID__ -isystem $(ANDROID_STUBS) -c $< -o $@
 

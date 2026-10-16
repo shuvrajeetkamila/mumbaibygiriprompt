@@ -3,10 +3,11 @@
 //
 //  The APK's contents, and the reason for each non-obvious line:
 //
-//    * **No Java, no Kotlin, no AndroidX.**  The manifest launches
-//      android.app.NativeActivity with `android:hasCode="false"`; the app is
-//      libmumbai.so and nothing else.  `android.useAndroidX=false` is honest
-//      rather than hopeful.
+//    * **One Java class, no Kotlin, no AndroidX.**  The manifest launches
+//      android.app.NativeActivity, and the app is libmumbai.so plus
+//      com.mumbai.exact.WorldFetch — the transport for the city download, which
+//      exists because HTTPS on Android lives in Java (D-048).  `android.useAndroidX
+//      =false` is honest rather than hopeful; the dex this produces is one class.
 //    * **c++_static.**  The NDK's C++ runtime is linked into libmumbai.so, so the
 //      APK carries one .so instead of two and there is no runtime library to get
 //      out of step with the engine.

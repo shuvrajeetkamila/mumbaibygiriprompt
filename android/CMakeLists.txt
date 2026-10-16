@@ -45,6 +45,18 @@ file(GLOB MUMBAI_RENDER_SRC ${MUMBAI_ROOT}/engine/render/*.cpp)
 set(MUMBAI_SOURCES ${MUMBAI_CORE_SRC} ${MUMBAI_WORLD_SRC} ${MUMBAI_SIM_SRC} ${MUMBAI_AUDIO_SRC}
                    ${MUMBAI_RENDER_SRC})
 
+# The app's own sources, as a list rather than two hand-written filenames.
+# `fallback_screen.cpp` and `android_http.cpp` compile in the Makefile's host check
+# and are therefore easy to believe are in the APK; they were not, and a client whose
+# fallback screen never painted would have failed to link in CI instead.  The one
+# file that is a host program and not part of the library is removed by name.
+file(GLOB MUMBAI_APP_SRC ${MUMBAI_ROOT}/engine/app/*.cpp)
+list(REMOVE_ITEM MUMBAI_APP_SRC ${MUMBAI_ROOT}/engine/app/host_check.cpp)
+list(LENGTH MUMBAI_APP_SRC MUMBAI_APP_SRC_COUNT)
+if(MUMBAI_APP_SRC_COUNT LESS 3)
+    message(FATAL_ERROR "engine/app/*.cpp found ${MUMBAI_APP_SRC_COUNT} sources; expected at least 3")
+endif()
+
 if(MUMBAI_PHYSICS)
     file(GLOB MUMBAI_PHYSICS_SRC ${MUMBAI_ROOT}/engine/physics/*.cpp)
     # Jolt's list, from the hand-written build of D-033: read the `JOLT_SRC :=`
@@ -99,8 +111,9 @@ add_custom_target(mumbai_shaders DEPENDS ${MUMBAI_SHADER_HEADER})
 
 # --- the client --------------------------------------------------------------
 if(ANDROID)
+    message(STATUS "app sources: ${MUMBAI_APP_SRC}")
     add_library(mumbai SHARED
-        ${MUMBAI_ROOT}/engine/app/android_main.cpp
+        ${MUMBAI_APP_SRC}
         ${MUMBAI_SHADER_HEADER}
         ${MUMBAI_SOURCES})
 

@@ -2393,3 +2393,105 @@ client), walking on the ground (the camera flies: there is no terrain-height que
 in the client yet, so the two altitude buttons are honest and a "walk" mode would
 not be), night lighting, water and glass transparency, anti-aliasing, and the
 audio device path.  Each is in the roadmap.
+
+## D-048 — The rest of the city: a download that can be stopped, resumed, and refused
+
+**The problem.** A fresh install carries South Bombay inside the APK (D-047) and
+none of the other 899 cells: 1.27 GiB is not something to put in a package, and it
+is not something to start pulling over somebody's mobile data because they opened
+an app.  So the city is a download the person asks for, which means it has to
+survive the three things that happen to every phone download: the app goes to the
+background, the app is killed, and the connection dies in the middle of a file.
+
+**Decision 1 — the archive is read as a stream, and the parser is the only thing
+that knows where it is.**  `world_archive.{h,cpp}` holds a tar reader that consumes
+bytes and reports the byte offset of every *entry boundary* — the position after a
+file's padding, which is the only position that is both a boundary between files
+and a place the parser can restart from.  It refuses absolute paths, `..`,
+symlinks, devices and anything the checksum list does not name; each file is written
+as `<name>.part`, hashed while it is written, and renamed only when its SHA-256
+matches the published one.  A kill therefore leaves a whole file or none, and never
+a half-written cell that the world reader would happily mmap.
+
+**Decision 2 — resume has two levels, and the first design had only one, which
+would never have finished.**  A step is bounded so the download cannot own the
+frame, and a `.mumbai_chunk` is tens of megabytes, so a step almost always ends
+*inside* a file.  The obvious design — remember the last boundary and re-fetch from
+there on the next step — re-fetches the same prefix on every step, for ever: with a
+512 KiB budget against a 57 MiB chunk, the download would move 512 KiB per frame
+and never complete.  So:
+
+* **in-process (warm):** the parser and the sink keep the state of the stream, and
+  the next step asks the transport for the very byte after the last one and carries
+  on in the middle of the entry.  A 57 MiB chunk costs 57 MiB of transfer no matter
+  how small the per-step budget is.
+* **cold start (a process that died):** the parser cannot restart inside a file, so
+  the resume point is the last entry boundary, written to `<worldDir>/.download`
+  only when a file completes.  The cost is at most one entry re-fetched, and
+  `removePartialFiles` on the way in deletes whatever a dead process left, because
+  a fragment of an entry nobody is fetching any more is megabytes of somebody's
+  data plan sitting on their phone for ever.
+
+The tests pin both levels with a paused-and-resumed download, a *kill* simulated by
+a second downloader on the same directory, a dropped connection, and a `.part`
+planted by hand: 87 checks over four cases, including "the whole archive arrived
+exactly once" for the paced in-process case and "every byte after the boundary was
+fetched again" for the cold one.
+
+**Decision 3 — the transport is an interface, and HTTPS lives in Java.**  The
+engine has no TLS stack, no certificate store, and no business growing either;
+Android ships both.  So `Fetcher` is an interface (`get(url, offset, onData,
+totalBytes, error)`), the state machine knows nothing about sockets, and the Android
+implementation is a JNI call into **one** Java class
+(`android/app/src/main/java/com/mumbai/exact/WorldFetch.java`, 100 lines: a
+byte-range GET that hands 64 KiB chunks to the native callback).  The app's manifest
+accordingly gains `INTERNET` and stops claiming `hasCode="false"`, and the build
+grows a dex with one class in it — the honest price of not vendoring TLS.  A
+transport that also decides what is *authentic* would be a transport that can be
+trusted to lie, so it verifies nothing: every byte is checked by the engine against
+the published list.
+
+**Decision 4 — a step is bounded, and a step that does no work is a livelock.**  The
+callback pauses *between* transport chunks and never before the first one: a step
+that accepted nothing would leave the download exactly where it was, and every later
+step would repeat it.  The budget is 512 KiB per frame, read and connect timeouts
+are 10 s and 15 s, and the whole download runs on the app's own thread — a
+background thread would need a queue, a lock and a shutdown path for a download that
+happens once, and this is not the place to introduce that class of bug.
+
+**Decision 5 — provenance is checked before the first byte of the archive.**  Every
+build knows the sha256 of the world manifest it was made for; the workflow publishes
+`sha256sums-<manifest sha256:16>.txt` beside the archive, and that list names the
+manifest too.  If the release has moved on to a different world, the downloader
+says so *before* it asks for the archive, instead of after 1.27 GiB has been written
+into the install directory.  The same four strings — repository, asset, checksum
+list, manifest hash — are written into `engine/world/world_release.generated.h` by
+the workflow once `make world` has run; every other build sees empty strings, which
+is the client's "this build knows of no published world" case rather than a URL it
+invented.  `configForRelease` is the one place that turns those strings into a
+`DownloadConfig`, and it is unit-tested.
+
+**Measured here.**  `make -j2`; `build/bin/mumbai_tests` **4 cases / 87 checks** for
+the downloader alone and the whole suite green; `make android-check` compiles
+`android_main.cpp`, `fallback_screen.cpp` **and** `android_http.cpp` against the host
+shims (`engine/app/android_stubs/`, now including a `jni.h`) with `-Wall -Wextra` —
+which is how the JNI bridge's own typo (`ANativeActivity` used incomplete) was found
+before CI.  **What only a phone can confirm:** that Android's HTTP stack answers the
+range request, that the download survives a real app switch, and that the tap that
+starts it is where a thumb expects it.  And the one thing this environment cannot
+compile at all is the Java file: there is no JDK here, so `WorldFetch.java` is
+checked by CI's Gradle and by reading it, and that is said plainly rather than
+implied.
+
+**Decision 6 — the button is the consent.**  The download starts when a person taps
+`GET CITY` (bottom left), never by itself: `downloadWanted` is the flag, the same
+tap stops it again, and a tap after a failure is a retry that keeps everything
+already on disk.  `world_release.h`'s `known()` is what decides whether the button
+is offered at all.
+
+**Two smaller defects fixed on the way, both in the panel.**  `installer.bytesTotal`
+was `max(bytesTotal, bytesDone)`, i.e. 100% from the first frame — the total is
+measured now, one `AAsset_getLength` per listed file.  And the three panel buttons
+were pixel literals written out twice, in the input handler and in the HUD; they are
+shared `Rect` definitions now, because the city button would have been the fourth
+copy of that hazard.

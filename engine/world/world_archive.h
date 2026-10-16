@@ -126,6 +126,12 @@ class ExtractingSink : public TarSink {
     std::string error() const override { return m_error; }
     void setError(const std::string& text) { m_error = text; }
 
+    // Abandons the file being written and removes its part file.  A download that
+    // pauses mid-entry resumes from the previous entry boundary, so the bytes of
+    // the abandoned entry are fetched again; leaving them on disk would make the
+    // next attempt's checksum cover two different downloads.
+    void abortCurrent();
+
     // The paths a caller needs without knowing the archive's layout.
     static constexpr const char* kManifestName = "world_manifest.json";
 
@@ -148,6 +154,14 @@ class ExtractingSink : public TarSink {
     u64 m_bytesWritten = 0;
     u64 m_rejected = 0;
 };
+
+// Removes every `<name>.part` file under `root` and returns how many went away.  A
+// part file is an entry that never finished, so it is never data worth keeping.  The
+// sink truncates the part it opens, so this is not a correctness requirement of the
+// download — it is storage hygiene: a process the OS killed leaves fragments behind,
+// and a fragment of an entry nobody is fetching any more is megabytes of somebody's
+// data plan sitting on their phone for ever.
+u64 removePartialFiles(const std::string& root);
 
 // Directory helper the sink needs and the client reuses: creates every missing
 // component of `path`.  Returns false only when a component exists and is not a

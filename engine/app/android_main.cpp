@@ -37,15 +37,19 @@
 //  found only by a CI run.
 // =============================================================================
 #include "engine/core/core.h"
+#include "engine/app/android_http.h"
 #include "engine/app/fallback_screen.h"
 #include "engine/core/geo.h"     // MACRO_CELL_SIZE: the floating origin of section 4A
 #include "engine/render/hud.h"
 #include "engine/render/renderer.h"
 #include "engine/render/world_index.h"
+#include "engine/world/world_download.h"
+#include "engine/world/world_release.h"
 
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -96,6 +100,11 @@ constexpr f32 kStreamRadius = 3000.0f;    // metres of world kept resident
 constexpr u32 kStreamPerCall = 3;         // cells per streaming tick
 constexpr u64 kStreamIntervalMs = 500;
 constexpr u64 kInstallBytesPerTick = 4u << 20;
+// The city download's per-frame budget.  A step fetches until the budget is spent
+// and then stops, so this is what keeps the download from being the frame loop:
+// half a megabyte is a fraction of a second on a phone's network, and the state
+// machine continues mid-file on the next frame (world_download.h).
+constexpr u64 kDownloadBytesPerTick = 512u << 10;
 
 // -----------------------------------------------------------------------------
 //  Input
@@ -114,6 +123,26 @@ struct Input {
     u64 buttonTapMs = 0;
     i32 buttonPointer = -1;
 };
+
+// The panel's buttons, in the same pixel space the HUD draws in.  One definition,
+// read by both the input handler and the HUD: a button whose hit test and whose
+// drawing are written out twice is a button that stops working the day one of them
+// is edited (the two altitude buttons and the mode button used to be literals in
+// two places; the city button is what made that worth fixing).
+struct Rect {
+    f32 x = 0, y = 0, w = 0, h = 0;
+    bool has(f32 px, f32 py) const {
+        return px > x && px < x + w && py > y && py < y + h;
+    }
+};
+
+Rect flyButton(f32 width) { return {width - 260.0f, 20.0f, 240.0f, 70.0f}; }
+Rect upButton(f32 width) { return {width - 260.0f, 110.0f, 110.0f, 70.0f}; }
+Rect downButton(f32 width) { return {width - 140.0f, 110.0f, 120.0f, 70.0f}; }
+Rect cityButton(f32 width, f32 height) {
+    (void)width;
+    return {20.0f, height - 90.0f, 210.0f, 70.0f};
+}
 
 struct Client {
     render::Renderer renderer;
@@ -149,6 +178,19 @@ struct Client {
     render::WorldLoadStats lastLoad;
     u32 resident = 0;
     f32 fps = 0.0f;
+
+    // THE REST OF THE CITY, ON REQUEST (D-048).  The APK carries South Bombay; the
+    // other 899 cells are a 1.3 GB download, and nothing starts it except a person
+    // tapping the button, because it is somebody's data plan.  `downloadNote` is the
+    // sentence the panel prints when there is nothing to offer: a build with no
+    // published world says so, rather than reporting a network error that means
+    // nothing.
+    world::Fetcher* fetcher = nullptr;
+    world::DownloadConfig downloadConfig;
+    std::unique_ptr<world::WorldDownload> download;
+    bool downloadWanted = false;
+    bool downloadApplied = false;
+    std::string downloadNote;
 };
 
 u64 nowMillis() {
@@ -186,6 +228,11 @@ bool makeDirsFor(const std::string& filePath) {
 // The index is a list of files to copy, written by the packaging tool.  Its first
 // line is a version token: when it changes, the installed copy is refreshed, which
 // is what makes this survive an app update that ships a newer slice.
+//
+// The total is measured here, not accumulated as the copy runs.  It used to be
+// `bytesTotal = max(bytesTotal, bytesDone)`, which reads 100% from the first frame:
+// a progress bar that is full before any work has happened is worse than none,
+// because it says the install is finished while it has not started.
 bool beginInstall(AAssetManager* manager, Client* client) {
     std::string index;
     if (!readAsset(manager, "world/INDEX.txt", &index)) {
@@ -212,6 +259,15 @@ bool beginInstall(AAssetManager* manager, Client* client) {
         inst.files.push_back(line);
     }
     if (inst.files.empty()) return false;
+
+    // One open per listed file, to measure what the slice weighs.  A slice is a few
+    // dozen files, and this runs once, on the frame the client starts.
+    for (const std::string& rel : inst.files) {
+        AAsset* asset = AAssetManager_open(manager, ("world/" + rel).c_str(), AASSET_MODE_BUFFER);
+        if (!asset) continue;
+        inst.bytesTotal += static_cast<u64>(AAsset_getLength(asset));
+        AAsset_close(asset);
+    }
 
     const std::string markerPath = client->dataDir + "/installed.txt";
     std::string marker;
@@ -281,7 +337,10 @@ u32 installStep(AAssetManager* manager, Client* client) {
         }
         copied += static_cast<u64>(size);
         inst.bytesDone += static_cast<u64>(size);
-        inst.bytesTotal = inst.bytesTotal > inst.bytesDone ? inst.bytesTotal : inst.bytesDone;
+        // The measured total is a floor, not a promise: if a file in the APK is
+        // larger than the measurement saw, progress stays at 100% instead of
+        // reporting more than everything.
+        if (inst.bytesDone > inst.bytesTotal) inst.bytesTotal = inst.bytesDone;
         ++inst.next;
         ++files;
     }
@@ -363,15 +422,18 @@ i32 onInput(android_app* app, AInputEvent* event) {
     const f32 h = static_cast<f32>(client->height);
     Input& input = client->input;
 
-    // The panel's three buttons, in the same pixel space the HUD draws in.
-    const bool inModeButton = x > w - 260.0f && x < w - 20.0f && y > 20.0f && y < 90.0f;
-    const bool inUpButton = x > w - 260.0f && x < w - 150.0f && y > 110.0f && y < 180.0f;
-    const bool inDownButton = x > w - 140.0f && x < w - 20.0f && y > 110.0f && y < 180.0f;
+    // The panel's buttons, in the same pixel space the HUD draws in: the rectangles
+    // come from the shared definitions above, so a button cannot be drawn in one
+    // place and hit-tested in another.
+    const bool inFlyButton = flyButton(w).has(x, y);
+    const bool inUpButton = upButton(w).has(x, y);
+    const bool inDownButton = downButton(w).has(x, y);
+    const bool inCityButton = cityButton(w, h).has(x, y);
 
     switch (action) {
         case AMOTION_EVENT_ACTION_DOWN:
         case AMOTION_EVENT_ACTION_POINTER_DOWN:
-            if (inModeButton) {
+            if (inFlyButton) {
                 client->altitude = client->altitude < 5.0f ? 60.0f : -client->altitude;
                 // A negative altitude is a dive: the app has no ground query yet, so
                 // the two altitude buttons are the honest way to go up and down.
@@ -380,6 +442,11 @@ i32 onInput(android_app* app, AInputEvent* event) {
                 input.ascend = true;
             } else if (inDownButton) {
                 input.descend = true;
+            } else if (inCityButton) {
+                // The one thing in this app that costs somebody money, so it takes a
+                // deliberate tap in both directions: the same button stops it again.
+                if (client->download) client->downloadWanted = !client->downloadWanted;
+                appLog("city download %s", client->downloadWanted ? "started" : "paused");
             } else if (x < w * 0.5f) {
                 input.stickActive = true;
                 input.stickPointer = id;
@@ -540,6 +607,11 @@ std::vector<std::string> statusLines(Client* client) {
                                client->renderer.chunkCount(), load.failed));
         if (!load.firstError.empty()) lines.push_back("chunk: " + load.firstError.substr(0, 42));
     }
+    if (client->download) {
+        lines.push_back(client->download->status());
+    } else if (!client->downloadNote.empty()) {
+        lines.push_back(client->downloadNote);
+    }
     lines.push_back("left half: move    right half: look");
     return lines;
 }
@@ -559,19 +631,37 @@ void updateHud(Client* client) {
                            static_cast<f32>(lines.size()) * render::hudLineHeight(scale) + 20.0f,
                            render::kHudPanel});
     for (const std::string& text : lines) {
-        const u32 colour = text.rfind("FAIL", 0) == 0 ? render::kHudRed : render::kHudWhite;
+        const bool bad = text.rfind("FAIL", 0) == 0 || text.find("failed") != std::string::npos ||
+                         text.rfind("!!", 0) == 0;
+        const u32 colour = bad ? render::kHudRed : render::kHudWhite;
         frame.lines.push_back({20.0f, y, scale, colour, text});
         y += render::hudLineHeight(scale);
     }
 
-    // The two altitude buttons and the mode button, drawn where the input handler
-    // expects them (they must agree; both read the same constants).
-    frame.rects.push_back({w - 260.0f, 20.0f, 240.0f, 70.0f, render::kHudPanel});
-    frame.lines.push_back({w - 250.0f, 34.0f, scale, render::kHudGreen, "FLY"});
-    frame.rects.push_back({w - 260.0f, 110.0f, 110.0f, 70.0f, render::kHudPanel});
-    frame.lines.push_back({w - 250.0f, 124.0f, scale, render::kHudWhite, "UP"});
-    frame.rects.push_back({w - 140.0f, 110.0f, 120.0f, 70.0f, render::kHudPanel});
-    frame.lines.push_back({w - 130.0f, 124.0f, scale, render::kHudWhite, "DOWN"});
+    // The buttons, drawn where the input handler looks for them: the same rectangles.
+    const f32 h = static_cast<f32>(client->height);
+    const Rect fly = flyButton(w);
+    const Rect up = upButton(w);
+    const Rect down = downButton(w);
+    const Rect city = cityButton(w, h);
+    frame.rects.push_back({fly.x, fly.y, fly.w, fly.h, render::kHudPanel});
+    frame.lines.push_back({fly.x + 10.0f, fly.y + 14.0f, scale, render::kHudGreen, "FLY"});
+    frame.rects.push_back({up.x, up.y, up.w, up.h, render::kHudPanel});
+    frame.lines.push_back({up.x + 10.0f, up.y + 14.0f, scale, render::kHudWhite, "UP"});
+    frame.rects.push_back({down.x, down.y, down.w, down.h, render::kHudPanel});
+    frame.lines.push_back({down.x + 10.0f, down.y + 14.0f, scale, render::kHudWhite, "DOWN"});
+    // The city button, which is only a button when there is a city to fetch.
+    frame.rects.push_back({city.x, city.y, city.w, city.h,
+                           client->download && client->downloadWanted ? render::kHudGreen
+                                                                     : render::kHudPanel});
+    const u32 cityColour = client->download ? render::kHudWhite : render::kHudPanel;
+    const char* cityLabel = "GET CITY";
+    if (client->download) {
+        const world::WorldDownload::State state = client->download->state();
+        if (state == world::WorldDownload::State::Done) cityLabel = "CITY OK";
+        else if (client->downloadWanted) cityLabel = "PAUSE CITY";
+    }
+    frame.lines.push_back({city.x + 10.0f, city.y + 14.0f, scale, cityColour, cityLabel});
 
     // The stick, drawn where the finger is: a HUD that hides the control teaches
     // nothing about which half of the screen does what.
@@ -667,6 +757,43 @@ void renderFrame(android_app* app, Client* client, f32 dt) {
 }
 
 // -----------------------------------------------------------------------------
+//  The city download: one bounded step per frame, and only while it is wanted
+// -----------------------------------------------------------------------------
+// The state machine is engine/world/world_download.cpp; this is the frame loop's
+// half of it.  Two things matter here.  One: a step is bounded, so a download that
+// is running never owns the frame.  Two: a finished download changes what is on
+// disk, so the world index is opened again — the manifest the archive carried lists
+// every cell of the city, and until it is re-read the client would keep streaming
+// only the cells it knew about at startup.
+void stepDownload(Client* client) {
+    if (!client->download || !client->downloadWanted) return;
+    using State = world::WorldDownload::State;
+    if (client->download->state() == State::Failed) {
+        // A tap after a failure is a retry, not a restart: the part of the world
+        // that arrived before the failure is on disk and verified, and the boundary
+        // file remembers where the archive had got to.
+        appLog("city download failed (%s); trying again", client->download->error().c_str());
+        client->download.reset(new (std::nothrow)
+                                   world::WorldDownload(client->fetcher, client->downloadConfig));
+        if (!client->download) return;
+    }
+    const State before = client->download->state();
+    client->download->step(kDownloadBytesPerTick);
+    const State after = client->download->state();
+    if (after != before) {
+        appLog("city download: %s", client->download->status().c_str());
+    }
+    if (after == State::Done && !client->downloadApplied) {
+        client->downloadApplied = true;
+        client->downloadWanted = false;
+        std::string error;
+        client->haveWorld = client->renderer.openWorld(client->dataDir, &error);
+        appLog("city download complete: %u cells indexed%s%s", client->renderer.worldCellCount(),
+               client->haveWorld ? "" : " (world not opened: ", client->haveWorld ? "" : error.c_str());
+    }
+}
+
+// -----------------------------------------------------------------------------
 //  Streaming: the nearest cells that are not resident yet, a few per tick
 // -----------------------------------------------------------------------------
 void streamWorld(Client* client, u64 now) {
@@ -700,12 +827,33 @@ void android_main(android_app* app) {
     appLog("world data dir: %s", client.dataDir.c_str());
 
     // The slice that travels inside the APK is copied into the app's own storage
-    // once; the full city is a download and is not this build's business yet.
+    // once, so that a fresh install shows Mumbai rather than an explanation.
     AAssetManager* assets = app->activity ? app->activity->assetManager : nullptr;
     if (assets) {
         beginInstall(assets, &client);
     }
     client.haveWorld = false;
+
+    // THE REST OF THE CITY IS A DOWNLOAD, AND IT IS NOT STARTED HERE.  What is set
+    // up here is the ability to fetch it: a transport, and a state machine pointed at
+    // the release this build was compiled against (engine/world/world_release.h, which
+    // is empty for a build with no published world).  A person starts it by tapping
+    // the button, because 1.3 GB over somebody's mobile data is their decision.
+    const world::WorldRelease release = world::publishedWorldRelease();
+    if (release.known()) {
+        client.fetcher = app::createAndroidFetcher(app->activity);
+        if (client.fetcher) {
+            client.downloadConfig = world::configForRelease(release, client.dataDir);
+            client.download.reset(
+                new (std::nothrow) world::WorldDownload(client.fetcher, client.downloadConfig));
+            appLog("the city download is ready: %s", client.downloadConfig.archiveUrl.c_str());
+        } else {
+            client.downloadNote = "city download: no transport in this build";
+            appLog("no HTTP transport: the city download is unavailable");
+        }
+    } else {
+        client.downloadNote = "city download: no published world for this build";
+    }
 
     while (true) {
         int events = 0;
@@ -718,6 +866,11 @@ void android_main(android_app* app) {
             if (source) source->process(app, source);
             if (app->destroyRequested) {
                 stopRenderer(&client);
+                // The downloader is destroyed before its transport, because it holds
+                // a reference to it and deletes the part files it was writing.
+                client.download.reset();
+                app::destroyAndroidFetcher(client.fetcher);
+                client.fetcher = nullptr;
                 appLog("%llu frames rendered", static_cast<unsigned long long>(client.frames));
                 return;
             }
@@ -757,6 +910,7 @@ void android_main(android_app* app) {
             if (!client.haveWorld) appLog("world index: %s", error.c_str());
         }
 
+        stepDownload(&client);
         updateCamera(&client, dt);
         streamWorld(&client, now);
         renderFrame(app, &client, dt);

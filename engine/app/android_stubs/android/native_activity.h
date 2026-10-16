@@ -32,7 +32,9 @@ struct ANativeActivity {
     struct ANativeActivityCallbacks* callbacks;
 
     // JavaVM*, JNIEnv*, jobject in the NDK; void* here only to keep <jni.h> out of
-    // a host compile.  Nothing in the client reads them.
+    // a host compile.  The client reads `vm` — that is how engine/app/android_http.cpp
+    // reaches the platform's HTTP stack — and a `static_cast` from void* is what
+    // makes the same line compile under both headers.
     void* vm;
     void* env;
     void* clazz;

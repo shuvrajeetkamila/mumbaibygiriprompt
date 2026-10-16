@@ -81,6 +81,24 @@ bool pathIsSafe(const std::string& path) {
 
 }  // namespace
 
+u64 removePartialFiles(const std::string& root) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return 0;
+    u64 removed = 0;
+    for (fs::recursive_directory_iterator it(root, ec), end; it != end && !ec; it.increment(ec)) {
+        const fs::directory_entry& entry = *it;
+        std::error_code statEc;
+        if (!entry.is_regular_file(statEc)) continue;
+        const std::string name = entry.path().filename().string();
+        if (name.size() > 5 && name.compare(name.size() - 5, 5, ".part") == 0) {
+            std::error_code removeEc;
+            if (fs::remove(entry.path(), removeEc)) removed += 1;
+        }
+    }
+    return removed;
+}
+
 bool makeDirectories(const std::string& path) {
     if (path.empty()) return false;
     std::error_code ec;
@@ -296,6 +314,19 @@ ExtractingSink::~ExtractingSink() {
         std::error_code ec;
         std::filesystem::remove(m_partPath, ec);
     }
+}
+
+void ExtractingSink::abortCurrent() {
+    if (m_file) {
+        std::fclose(m_file);
+        m_file = nullptr;
+    }
+    if (!m_partPath.empty()) {
+        std::error_code ec;
+        std::filesystem::remove(m_partPath, ec);
+    }
+    m_seenBytes = 0;
+    m_hash.reset();
 }
 
 bool ExtractingSink::begin(const TarEntry& entry) {
