@@ -2886,3 +2886,30 @@ known ways to happen: no Vulkan 1.1; a graphics device that refuses to initialis
 swapchain that never arrives; and the app dying before its first frame — and this app
 has never yet been run on a phone by anyone who could read a log.  The build that
 carries this decision is the first one where a person can tell us which.
+
+### D-054, extended: the build names itself, because one download link served them all
+
+The `first-build` release's assets are clobbered in place on every push, so "which
+build is on your phone?" has no answer from the phone: `app-debug.apk` has been a
+2.3 MB engine preview, then 102,384,400 B, then 102,412,496 B, then 102,414,176 B, then
+102,416,432 B, then 102,425,296 B — all from the same URL, and all of them called
+`0.1.0-first-build`.  A black-screen report therefore cannot be told apart from a
+report about a build from three days ago, which is exactly the confusion this project
+has already spent a turn on.
+
+So CI passes `-PmumbaiStamp=${{ github.sha }}` and `-PmumbaiVersionCode=${{ github.run_number }}`
+to Gradle, `versionName` becomes `0.1.0-<short sha>` (and `local` for a build made
+anywhere else), and `WorldFetch.systemInfo` appends `app 0.1.0-<sha>` to the device
+line — which appears on the panel, on the fallback screen and at the top of
+`Downloads/mumbai-log.txt`.  One screenshot or one log file now says which of the six
+builds it is.  The `versionCode` is the run number, so an update is always an update
+rather than a re-install of "the same version".
+
+**What the reported device is, checked rather than assumed.**  The phone that showed
+the black screen is a Samsung Galaxy A17 5G (SM-A176B/DS): Exynos 1330 with a
+**Mali-G68 MP2**, Android 15, 64-bit, 6/8 GB, 2340x1080.  That GPU supports Vulkan 1.1
+— the renderer's floor — so the phone is *not* the explanation, and the black screen is
+either an older build installed over this one (the first APK drew only the sky, and had
+neither panel nor downloader) or a defect this build is now equipped to report.  Both
+possibilities are answerable with the log file; the app version in it is how the first
+one is ruled out.

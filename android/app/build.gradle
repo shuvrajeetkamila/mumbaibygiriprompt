@@ -34,8 +34,14 @@ android {
         applicationId 'com.mumbai.exact'
         minSdk 29
         targetSdk 34
-        versionCode 1
-        versionName '0.1.0-first-build'
+        // THE APK SAYS WHICH BUILD IT IS, because "which one do you have?" was a
+        // question nobody could answer from a phone: the release asset is clobbered
+        // in place on every push, so several different builds have shared one
+        // download link, and a screenshot of a black screen names none of them.
+        // CI passes the commit's short sha and the run number; a build anywhere else
+        // gets a stamp that says so out loud.
+        versionCode(Integer.parseInt(project.findProperty('mumbaiVersionCode') ?: '1'))
+        versionName "0.1.0-" + (project.findProperty('mumbaiStamp') ?: 'local')
 
         ndk {
             abiFilters 'arm64-v8a'

@@ -86,6 +86,15 @@ public final class WorldFetch {
             out.append("device info unavailable: ").append(failure);
         }
         try {
+            // Which build is this?  The release download link is the same for every
+            // build, so this string is the only thing on a phone that can say which
+            // one it is running (see build.gradle).
+            out.append(" / app ").append(context.getPackageManager()
+                    .getPackageInfo(context.getPackageName(), 0).versionName);
+        } catch (Throwable failure) {
+            out.append(" / app unknown");
+        }
+        try {
             final android.content.pm.PackageManager manager = context.getPackageManager();
             final boolean vulkan11 = manager.hasSystemFeature(
                     android.content.pm.PackageManager.FEATURE_VULKAN_HARDWARE_VERSION, 0x00401000);

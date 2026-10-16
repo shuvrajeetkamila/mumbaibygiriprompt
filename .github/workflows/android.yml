@@ -230,6 +230,8 @@ jobs:
           set -o pipefail
           gradle --no-daemon --stacktrace \
             -PmumbaiPhysics=${{ github.event.inputs.physics == 'false' && 'OFF' || 'ON' }} \
+            -PmumbaiStamp=${{ github.sha }} \
+            -PmumbaiVersionCode=${{ github.run_number }} \
             assembleDebug assembleRelease 2>&1 | tee gradle-build.log
           exit ${PIPESTATUS[0]}
 
