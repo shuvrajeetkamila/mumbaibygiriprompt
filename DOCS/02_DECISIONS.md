@@ -2489,6 +2489,15 @@ tap stops it again, and a tap after a failure is a retry that keeps everything
 already on disk.  `world_release.h`'s `known()` is what decides whether the button
 is offered at all.
 
+**Decision 7 — the city supersedes the slice, and a file says so.**  The APK packs
+South Bombay so a fresh install shows something; the slice carries its own 25-cell
+manifest.  Without a marker, the next app update (whose slice token has changed)
+would copy that manifest back over the downloaded 924-cell one and hide 899 cells
+that are already on the disk — and 96 MiB of slice over the city for no reason.  So
+the downloader writes `city_complete.txt` when it finishes and `beginInstall`
+returns early when it sees it.  A partial download leaves no marker, so the slice is
+installed exactly as before.
+
 **Two smaller defects fixed on the way, both in the panel.**  `installer.bytesTotal`
 was `max(bytesTotal, bytesDone)`, i.e. 100% from the first frame — the total is
 measured now, one `AAsset_getLength` per listed file.  And the three panel buttons

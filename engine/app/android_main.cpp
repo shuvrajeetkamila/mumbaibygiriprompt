@@ -225,6 +225,31 @@ bool makeDirsFor(const std::string& filePath) {
     return true;
 }
 
+// THE CITY SUPERSEDES THE SLICE, and this is the file that says so.  The APK packs
+// South Bombay so that a fresh install shows something (D-047); a person who has
+// downloaded the whole city does not want an app update to copy 96 MiB of the slice
+// back over it, and — worse — the slice carries its own 25-cell
+// `world_manifest.json`, which would replace the full one and hide 899 cells that
+// are sitting on the disk.  The downloader writes this marker when it finishes, and
+// the installer defers to it.  A partial download leaves no marker, so the slice is
+// still installed exactly as before.
+constexpr const char* kCityCompleteMarker = "city_complete.txt";
+
+bool cityIsComplete(const std::string& dataDir) {
+    std::FILE* file = std::fopen((dataDir + "/" + kCityCompleteMarker).c_str(), "rb");
+    if (!file) return false;
+    std::fclose(file);
+    return true;
+}
+
+bool markCityComplete(const std::string& dataDir, const std::string& note) {
+    std::FILE* file = std::fopen((dataDir + "/" + kCityCompleteMarker).c_str(), "wb");
+    if (!file) return false;
+    const int written = std::fprintf(file, "%s\n", note.c_str());
+    std::fclose(file);
+    return written > 0;
+}
+
 // The index is a list of files to copy, written by the packaging tool.  Its first
 // line is a version token: when it changes, the installed copy is refreshed, which
 // is what makes this survive an app update that ships a newer slice.
@@ -234,6 +259,11 @@ bool makeDirsFor(const std::string& filePath) {
 // a progress bar that is full before any work has happened is worse than none,
 // because it says the install is finished while it has not started.
 bool beginInstall(AAssetManager* manager, Client* client) {
+    if (cityIsComplete(client->dataDir)) {
+        client->installer.done = true;
+        appLog("the whole city is installed; the APK's own slice is not copied over it");
+        return true;
+    }
     std::string index;
     if (!readAsset(manager, "world/INDEX.txt", &index)) {
         return false;   // no slice in this build: the renderer draws sky and says so
@@ -786,6 +816,10 @@ void stepDownload(Client* client) {
     if (after == State::Done && !client->downloadApplied) {
         client->downloadApplied = true;
         client->downloadWanted = false;
+        // From here the client's own slice is history: the marker keeps an app
+        // update from copying it back over the city (see kCityCompleteMarker).
+        markCityComplete(client->dataDir,
+                         std::to_string(client->download->filesWritten()) + " files, verified");
         std::string error;
         client->haveWorld = client->renderer.openWorld(client->dataDir, &error);
         appLog("city download complete: %u cells indexed%s%s", client->renderer.worldCellCount(),
