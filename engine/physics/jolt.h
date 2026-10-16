@@ -13,8 +13,21 @@
 // =============================================================================
 #pragma once
 
-#if !defined(JPH_USE_SSE4_1) || !defined(JPH_USE_SSE4_2)
-#error "engine/physics must be compiled with the same instruction-set defines as the vendored Jolt objects (see JOLT_FLAGS in the Makefile)."
+// Which defines "the same" means depends on the architecture, and the guard has
+// to say so: requiring JPH_USE_SSE4_1 on an arm64 device made the Android build
+// fail with this very message, which is the guard doing its job on a contract
+// that was only ever written for x86.  Jolt's own Core.h defines JPH_USE_NEON
+// for aarch64 and nothing for x86 (the SSE defines come from the build), so:
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__arm__) || defined(_M_ARM)
+  #if !defined(JPH_USE_NEON)
+  #error "engine/physics must be compiled with JPH_USE_NEON on ARM, the define the vendored Jolt objects use (see MUMBAI_JOLT_DEFINES in android/CMakeLists.txt)."
+  #endif
+#elif defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+  #if !defined(JPH_USE_SSE4_1) || !defined(JPH_USE_SSE4_2)
+  #error "engine/physics must be compiled with the same instruction-set defines as the vendored Jolt objects (see JOLT_FLAGS in the Makefile)."
+  #endif
+#else
+  #error "unknown CPU architecture: Jolt's instruction-set defines have not been decided for it."
 #endif
 
 #include <Jolt/Jolt.h>
