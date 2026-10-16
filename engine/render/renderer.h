@@ -43,6 +43,7 @@
 #pragma once
 #include "engine/core/core.h"
 #include "engine/core/math.h"
+#include "engine/render/hud.h"
 
 #include <string>
 #include <vector>
@@ -102,6 +103,17 @@ struct TrafficInstance {
     u32 kind = 0;              // sim::Archetype
 };
 
+// What one incremental chunk-streaming call did.  The client calls this every
+// second, not every frame: a cell is 1.4 MB of geometry and loading it inside a
+// frame is a hitch, which is a thing the acceptance criteria explicitly forbid.
+struct WorldLoadStats {
+    u32 considered = 0;      // cells inside the radius
+    u32 loaded = 0;          // cells added to the scene this call
+    u32 failed = 0;          // cells that opened but did not verify
+    u32 alreadyResident = 0; // cells counted again
+    std::string firstError;
+};
+
 struct FrameStats {
     u32 chunksResident = 0;
     u32 drawCalls = 0;
@@ -150,6 +162,24 @@ public:
 
     // --- frame -----------------------------------------------------------------
     void setCamera(const Camera& camera) { m_camera = camera; }
+
+    // --- the world index ------------------------------------------------------
+    // `openWorld` reads world_manifest.json and remembers where every cell is;
+    // `loadWorldNear` then streams in the nearest cells that are not resident yet,
+    // bounded by both a radius and a per-call count so the caller stays in control
+    // of how long it is willing to spend.  Both are safe to call with no world at
+    // all: the index is simply empty and the sky is what gets drawn.
+    bool openWorld(const std::string& dataDir, std::string* error = nullptr);
+    void closeWorld();
+    u32 worldCellCount() const;
+    u32 worldCellsInRadius(Vec3 focusWorld, f32 radiusMetres) const;
+    WorldLoadStats loadWorldNear(Vec3 focusWorld, f32 radiusMetres, u32 maxCellsPerCall);
+
+    // --- the on-screen panel --------------------------------------------------
+    // Copied, not referenced: the client rebuilds its lines once a second and must
+    // not have to keep the strings alive.  Drawn last, over the tonemapped frame,
+    // with no depth test — it is an interface, not a surface in the world.
+    void setHud(const HudFrame& frame);
     // The environment carries the render scale, so a change to it rebuilds the
     // offscreen targets — which is exactly what dynamic resolution has to do,
     // and it happens between frames, never inside one.

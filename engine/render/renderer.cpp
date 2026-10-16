@@ -326,6 +326,10 @@ bool Renderer::init(void* window, u32 width, u32 height, const std::string& data
     // reference them, and the framebuffers before the pipelines that must name a
     // compatible pass.
     if (!d.buildPasses(error)) return false;
+    // The panel is built once the passes exist (its pipeline targets the post
+    // pass) and before the first frame, because a status line that may or may not
+    // be there is not a status line.
+    if (!d.buildHud(error)) return false;
     if (!d.buildOffscreen(error)) return false;
     d.writeHdrDescriptor();
     if (!d.buildPipelines(error)) return false;
@@ -346,6 +350,7 @@ void Renderer::shutdown() {
     }
     vkDeviceWaitIdle(d.device);
 
+    m_impl->destroyHud();
     m_impl->clearSceneResources();
 
     for (u32 i = 0; i < kFramesInFlight; ++i) {
@@ -403,6 +408,12 @@ void Renderer::setEnvironment(const Environment& env) {
         std::string err;
         if (!d.buildOffscreen(&err)) MLOG_ERR("render: %s", err.c_str());
     }
+}
+
+void Renderer::setHud(const HudFrame& frame) {
+    Impl& d = *m_impl;
+    d.hud = frame;
+    d.hudDirty = true;
 }
 
 void Renderer::resize(u32 width, u32 height) {

@@ -35,7 +35,13 @@ int main(int argc, char** argv) {
         {"post.frag", kPostFragSpv, kPostFragSpvWords},
         {"traffic.vert", kTrafficVertSpv, kTrafficVertSpvWords},
         {"traffic.frag", kTrafficFragSpv, kTrafficFragSpvWords},
+        {"hud.vert", kHudVertSpv, kHudVertSpvWords},
+        {"hud.frag", kHudFragSpv, kHudFragSpvWords},
     };
+    // Eleven, not nine: the panel's two modules were added with the client's own
+    // status display (D-047), and a count here is a count of what the build
+    // embeds — the check that a shader step silently did nothing.
+    constexpr size_t kExpectedModules = 11;
     size_t words = 0, missing = 0, badMagic = 0;
     for (auto& s : shaders) {
         words += s.words;
@@ -48,6 +54,11 @@ int main(int argc, char** argv) {
         std::printf("  shaders: %zu missing, %zu not SPIR-V — the build did not compile them\n",
                     missing, badMagic);
         return missing ? 2 : 3;
+    }
+    if (std::size(shaders) != kExpectedModules) {
+        std::printf("  shaders: %zu modules in the inventory, expected %zu\n", std::size(shaders),
+                    kExpectedModules);
+        return 4;
     }
 
     // 2. The world reader links and works against whatever world is on this

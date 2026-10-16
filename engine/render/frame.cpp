@@ -209,6 +209,25 @@ void Renderer::Impl::recordPost(VkCommandBuffer cb, VkFramebuffer target) {
                                 &sets[frame], 0, nullptr);
         vkCmdDraw(cb, 3, 1, 0, 0);
     }
+    // The panel goes on last, in the same pass, after the tonemap.  It is drawn
+    // in swapchain pixels and is deliberately outside the exposure: text that dims
+    // as the sun sets is text that cannot be read exactly when it is needed.
+    if (hudPipeline != VK_NULL_HANDLE) {
+        uploadHudVertices();
+        if (hudVertexCount > 0) {
+            HudPush push{};
+            push.viewportW = static_cast<f32>(swapExtent.width);
+            push.viewportH = static_cast<f32>(swapExtent.height);
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hudPipeline);
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, hudLayout, 0, 1, &hudSet, 0,
+                                    nullptr);
+            vkCmdPushConstants(cb, hudLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+            const VkDeviceSize zero = 0;
+            vkCmdBindVertexBuffers(cb, 0, 1, &hudBuffer, &zero);
+            vkCmdDraw(cb, hudVertexCount, 1, 0, 0);
+            ++frameDraws;
+        }
+    }
     vkCmdEndRenderPass(cb);
 }
 

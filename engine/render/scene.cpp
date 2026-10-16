@@ -22,8 +22,12 @@
 // =============================================================================
 #include "engine/render/renderer_impl.h"
 
+#include "engine/core/json.h"
+
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <fstream>
 
 namespace mumbai::render {
 namespace {
@@ -400,8 +404,28 @@ bool uploadTexArray(VkDevice device, VkPhysicalDeviceMemoryProperties memProps, 
 
 }  // namespace
 
+// A hard failure here used to be the whole story: no texture arrays, no renderer,
+// and on a phone that is a black screen with a log line nobody sees.  The arrays
+// ship with the world, and a client that has not downloaded the world yet has no
+// arrays — so the absence is now a *known state* rather than an error, and it is
+// answered with generated ones (D-047).  A build with the real arrays behaves
+// exactly as before.
+namespace {
+
+bool pathExists(const std::string& p) {
+    std::ifstream f(p, std::ios::binary);
+    return f.good();
+}
+
+}  // namespace
+
 bool Renderer::Impl::buildTextures(std::string* err) {
     const std::string dir = dataDir;
+    if (!pathExists(dir + "/textures/materials_basecolor.mumbaitex")) {
+        MLOG_WARN("no material textures under %s: the world's atlas has not been downloaded, so "
+                  "the renderer generates its own (D-047)", dir.c_str());
+        return buildFallbackTextures(err);
+    }
     if (!uploadTexArray(device, memProps, dir.c_str(), "materials_basecolor.mumbaitex",
                         albedoImage, albedoMemory, albedoView, true, materialLayers, err))
         return false;
@@ -753,5 +777,291 @@ void Renderer::Impl::clearSceneResources() {
     }
     chunks.clear();
 }
+
+
+// =============================================================================
+//  The procedural atlas
+//
+//  Written as three arrays (albedo, normal, ORM) at 256x256 with no mips: the
+//  surfaces here are noise, and mips of noise are noise.  The world's own atlas
+//  has nine, which is why the real one is 100 MB and this one is 1.5 MB.
+// =============================================================================
+bool Renderer::Impl::buildFallbackTextures(std::string* err) {
+    const u32 size = 256;
+    std::vector<u8> albedo, normal, orm;
+    buildFallbackAtlasPixels(size, albedo, normal, orm);
+
+    auto make = [&](const std::vector<u8>& data, bool srgb, VkImage& image, VkDeviceMemory& memory,
+                    VkImageView& view, const char* what) {
+        VkImageCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        ci.extent = {size, size, 1};
+        ci.mipLevels = 1;
+        ci.arrayLayers = kFallbackLayers;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(device, &ci, nullptr, &image) != VK_SUCCESS) {
+            if (err) *err = std::string("fallback ") + what + ": vkCreateImage failed";
+            return false;
+        }
+        VkMemoryRequirements req{};
+        vkGetImageMemoryRequirements(device, image, &req);
+        u32 type = UINT32_MAX;
+        for (u32 i = 0; i < memProps.memoryTypeCount; ++i) {
+            if ((req.memoryTypeBits & (1u << i)) &&
+                (memProps.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+                type = i;
+                break;
+            }
+        }
+        if (type == UINT32_MAX) {
+            if (err) *err = std::string("fallback ") + what + ": no device-local memory";
+            return false;
+        }
+        VkMemoryAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize = req.size;
+        ai.memoryTypeIndex = type;
+        if (vkAllocateMemory(device, &ai, nullptr, &memory) != VK_SUCCESS ||
+            vkBindImageMemory(device, image, memory, 0) != VK_SUCCESS) {
+            if (err) *err = std::string("fallback ") + what + ": memory failed";
+            return false;
+        }
+        VkImageViewCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image = image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        vi.format = ci.format;
+        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kFallbackLayers};
+        if (vkCreateImageView(device, &vi, nullptr, &view) != VK_SUCCESS) {
+            if (err) *err = std::string("fallback ") + what + ": view failed";
+            return false;
+        }
+
+        // Upload through one staging buffer, one submit, one wait: 1.5 MB, once,
+        // at startup.  (The real atlas uses 30 MB staging and the same shape.)
+        const u64 bytes = data.size();
+        VkBuffer sb = VK_NULL_HANDLE;
+        VkDeviceMemory sm = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        VkBufferCreateInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bi.size = bytes;
+        bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (vkCreateBuffer(device, &bi, nullptr, &sb) != VK_SUCCESS) return false;
+        VkMemoryRequirements sr{};
+        vkGetBufferMemoryRequirements(device, sb, &sr);
+        VkMemoryAllocateInfo sa{};
+        sa.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        sa.allocationSize = sr.size;
+        sa.memoryTypeIndex = UINT32_MAX;
+        for (u32 i = 0; i < memProps.memoryTypeCount; ++i) {
+            if ((sr.memoryTypeBits & (1u << i)) &&
+                (memProps.memoryTypes[i].propertyFlags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                    (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                sa.memoryTypeIndex = i;
+                break;
+            }
+        }
+        if (sa.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(device, &sa, nullptr, &sm) != VK_SUCCESS ||
+            vkBindBufferMemory(device, sb, sm, 0) != VK_SUCCESS ||
+            vkMapMemory(device, sm, 0, bytes, 0, &mapped) != VK_SUCCESS) {
+            if (err) *err = std::string("fallback ") + what + ": staging failed";
+            return false;
+        }
+        std::memcpy(mapped, data.data(), static_cast<size_t>(bytes));
+        vkUnmapMemory(device, sm);
+
+        VkCommandPool pool = VK_NULL_HANDLE;
+        VkCommandPoolCreateInfo pci{};
+        pci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pci.queueFamilyIndex = queueFamily;
+        bool ok = vkCreateCommandPool(device, &pci, nullptr, &pool) == VK_SUCCESS;
+        VkCommandBuffer cb = VK_NULL_HANDLE;
+        if (ok) {
+            VkCommandBufferAllocateInfo cbi{};
+            cbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+            cbi.commandPool = pool;
+            cbi.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            cbi.commandBufferCount = 1;
+            ok = vkAllocateCommandBuffers(device, &cbi, &cb) == VK_SUCCESS;
+        }
+        if (ok) {
+            VkCommandBufferBeginInfo bbi{};
+            bbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            bbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            ok = vkBeginCommandBuffer(cb, &bbi) == VK_SUCCESS;
+        }
+        if (ok) {
+            VkImageMemoryBarrier b{};
+            b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            b.image = image;
+            b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, kFallbackLayers};
+            b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                 0, nullptr, 0, nullptr, 1, &b);
+            std::vector<VkBufferImageCopy> regions(kFallbackLayers);
+            for (u32 layer = 0; layer < kFallbackLayers; ++layer) {
+                regions[layer].bufferOffset = static_cast<VkDeviceSize>(layer) * size * size * 4;
+                regions[layer].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
+                regions[layer].imageExtent = {size, size, 1};
+            }
+            vkCmdCopyBufferToImage(cb, sb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, kFallbackLayers,
+                                   regions.data());
+            b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                 0, 0, nullptr, 0, nullptr, 1, &b);
+            ok = vkEndCommandBuffer(cb) == VK_SUCCESS;
+        }
+        if (ok) {
+            VkSubmitInfo si{};
+            si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            si.commandBufferCount = 1;
+            si.pCommandBuffers = &cb;
+            ok = vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS &&
+                 vkQueueWaitIdle(queue) == VK_SUCCESS;
+        }
+        if (pool) vkDestroyCommandPool(device, pool, nullptr);
+        vkDestroyBuffer(device, sb, nullptr);
+        vkFreeMemory(device, sm, nullptr);
+        if (!ok && err) *err = std::string("fallback ") + what + ": upload failed";
+        return ok;
+    };
+
+    if (!make(albedo, true, albedoImage, albedoMemory, albedoView, "albedo")) return false;
+    if (!make(normal, false, normalImage, normalMemory, normalView, "normal")) return false;
+    if (!make(orm, false, ormImage, ormMemory, ormView, "orm")) return false;
+    materialLayers = kFallbackLayers;
+    MLOG_INFO("render: %u generated material layers (no world atlas present)", materialLayers);
+    return true;
+}
+
+// =============================================================================
+//  The world index
+//
+//  Reading a manifest is not loading a world: this parses 358 KB of JSON once and
+//  remembers where the cells are, so the streaming call that follows can be a
+//  distance sort rather than a file parse.  A client with no world gets an empty
+//  index and a sky, which is a state it can report instead of a failure it cannot.
+// =============================================================================
+bool Renderer::openWorld(const std::string& dataDir, std::string* error) {
+    Impl& d = *m_impl;
+    d.worldCells.clear();
+    d.worldDir = dataDir;
+    const std::string path = dataDir + "/world_manifest.json";
+    const std::string text = readFileToString(path);
+    if (text.empty()) {
+        if (error) *error = "no world manifest at " + path;
+        return false;
+    }
+    Json manifest;
+    std::string parseError;
+    if (!Json::parse(text, manifest, &parseError)) {
+        if (error) *error = "world manifest: " + parseError;
+        return false;
+    }
+    for (const Json& c : manifest["cells"].items()) {
+        WorldCellEntry e;
+        e.cellX = c["x"].asInt(0);
+        e.cellZ = c["z"].asInt(0);
+        e.bytes = static_cast<u32>(c["bytes"].asInt(0));
+        e.file = c["file"].asString();
+        if (e.file.empty()) continue;
+        d.worldCells.push_back(std::move(e));
+    }
+    MLOG_INFO("world: %zu cells indexed from %s", d.worldCells.size(), path.c_str());
+    return !d.worldCells.empty();
+}
+
+void Renderer::closeWorld() {
+    Impl& d = *m_impl;
+    d.worldCells.clear();
+    d.worldDir.clear();
+    clearScene();
+}
+
+u32 Renderer::worldCellCount() const {
+    return static_cast<u32>(m_impl->worldCells.size());
+}
+
+u32 Renderer::worldCellsInRadius(Vec3 focusWorld, f32 radiusMetres) const {
+    const Impl& d = *m_impl;
+    u32 n = 0;
+    const f32 r2 = radiusMetres * radiusMetres;
+    for (const WorldCellEntry& c : d.worldCells) {
+        const f32 cx = static_cast<f32>(c.cellX) * MACRO_CELL_SIZE + MACRO_CELL_SIZE * 0.5f;
+        const f32 cz = static_cast<f32>(c.cellZ) * MACRO_CELL_SIZE + MACRO_CELL_SIZE * 0.5f;
+        const f32 dx = cx - focusWorld.x;
+        const f32 dz = cz - focusWorld.z;
+        if (dx * dx + dz * dz <= r2) ++n;
+    }
+    return n;
+}
+
+WorldLoadStats Renderer::loadWorldNear(Vec3 focusWorld, f32 radiusMetres, u32 maxCellsPerCall) {
+    WorldLoadStats stats;
+    Impl& d = *m_impl;
+    if (!d.device || d.worldCells.empty() || maxCellsPerCall == 0) return stats;
+
+    struct Candidate {
+        f32 dist2;
+        u32 index;
+    };
+    // One vector, reserved once: this runs at 1 Hz for hours and an allocation per
+    // call is an allocation per call.
+    static thread_local std::vector<Candidate> candidates;
+    candidates.clear();
+    const f32 r2 = radiusMetres * radiusMetres;
+    for (u32 i = 0; i < d.worldCells.size(); ++i) {
+        const WorldCellEntry& c = d.worldCells[i];
+        const f32 cx = static_cast<f32>(c.cellX) * MACRO_CELL_SIZE + MACRO_CELL_SIZE * 0.5f;
+        const f32 cz = static_cast<f32>(c.cellZ) * MACRO_CELL_SIZE + MACRO_CELL_SIZE * 0.5f;
+        const f32 dx = cx - focusWorld.x;
+        const f32 dz = cz - focusWorld.z;
+        const f32 dist2 = dx * dx + dz * dz;
+        if (dist2 > r2) continue;
+        candidates.push_back({dist2, i});
+    }
+    stats.considered = static_cast<u32>(candidates.size());
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& a, const Candidate& b) { return a.dist2 < b.dist2; });
+
+    for (const Candidate& cand : candidates) {
+        if (stats.loaded >= maxCellsPerCall) break;
+        const WorldCellEntry& c = d.worldCells[cand.index];
+        if (d.chunks.count(c.file)) {
+            ++stats.alreadyResident;
+            continue;
+        }
+        ChunkReader reader;
+        std::string err;
+        const std::string path = d.worldDir + "/cells/" + c.file;
+        if (!reader.open(path, &err)) {
+            ++stats.failed;
+            if (stats.firstError.empty()) stats.firstError = err;
+            continue;
+        }
+        if (!addChunk(reader, c.file, &err)) {
+            ++stats.failed;
+            if (stats.firstError.empty()) stats.firstError = err;
+            continue;
+        }
+        ++stats.loaded;
+    }
+    return stats;
+}
+
 
 }  // namespace mumbai::render

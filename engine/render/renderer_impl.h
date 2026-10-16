@@ -19,6 +19,7 @@
 #pragma once
 #include <vulkan/vulkan.h>
 
+#include "engine/render/fallback_atlas.h"
 #include "engine/render/renderer.h"
 #include "engine/world/chunk.h"
 #include "engine/world/texture.h"
@@ -31,6 +32,9 @@ namespace mumbai::render {
 
 inline constexpr u32 kFramesInFlight = 2;
 inline constexpr u32 kMaterialArrayLayers = 256;   // the descriptor's array size
+// The generated layer count (kFallbackLayers) lives in fallback_atlas.h with the
+// pixels it describes.  A material table that references more layers than that
+// simply repeats them, which is a wrong surface and never a wrong byte.
 inline constexpr u32 kVertexArenaBytes = 256u << 20;
 inline constexpr u32 kIndexArenaBytes = 128u << 20;
 
@@ -120,6 +124,22 @@ struct PushConstants {
     f32 originDelta[4];      // xyz = cellOrigin - renderOrigin, w = flags
 };
 static_assert(sizeof(PushConstants) == 16, "push constants are one vec4");
+
+// The HUD's push constant block: the viewport in pixels, then two floats that a
+// single-atlas HUD does not use yet but that keep the block 16-byte aligned, which
+// is what std430 wants a push constant block to be on every driver.
+struct HudPush {
+    f32 viewportW, viewportH;
+    f32 reserved0, reserved1;
+};
+static_assert(sizeof(HudPush) == 16, "the HUD push constant block is 16 bytes");
+
+// One line of the world index: where a cell is, and how big it is.
+struct WorldCellEntry {
+    i64 cellX = 0, cellZ = 0;
+    u32 bytes = 0;
+    std::string file;
+};
 
 // A vehicle's instance data: its own transform, packed small.
 struct InstanceVertex {
@@ -221,6 +241,33 @@ struct Renderer::Impl {
     MeshRange trafficMeshes[8]{};
     u32 trafficMeshCount = 0;
 
+    // --- the on-screen panel -------------------------------------------------
+    // Its own tiny pipeline and its own descriptor set: one 96x48 single-channel
+    // image, one sampler, no uniforms.  It shares nothing with the world's
+    // pipeline layout on purpose — a panel that could break when the material
+    // array changes size would be a panel that breaks exactly when something has
+    // already gone wrong.
+    VkPipeline hudPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout hudLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout hudSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSet hudSet = VK_NULL_HANDLE;
+    VkDescriptorPool hudPool = VK_NULL_HANDLE;
+    VkImage fontImage = VK_NULL_HANDLE;
+    VkDeviceMemory fontMemory = VK_NULL_HANDLE;
+    VkImageView fontView = VK_NULL_HANDLE;
+    VkBuffer hudBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory hudMemory = VK_NULL_HANDLE;
+    void* hudMapped = nullptr;
+    u64 hudCapacity = 0;
+    u32 hudVertexCount = 0;
+    HudFrame hud;
+    std::vector<HudVertex> hudVertices;   // rebuilt from `hud` when it changes
+    bool hudDirty = true;
+
+    // --- the world index (filled by openWorld) -------------------------------
+    std::vector<WorldCellEntry> worldCells;
+    std::string worldDir;
+
     // --- textures -----------------------------------------------------------
     VkImage albedoImage = VK_NULL_HANDLE, normalImage = VK_NULL_HANDLE, ormImage = VK_NULL_HANDLE;
     VkDeviceMemory albedoMemory = VK_NULL_HANDLE, normalMemory = VK_NULL_HANDLE, ormMemory = VK_NULL_HANDLE;
@@ -264,6 +311,10 @@ struct Renderer::Impl {
     void writeHdrDescriptor();
     bool buildUniforms(std::string* err);
     bool buildTextures(std::string* err);
+    bool buildFallbackTextures(std::string* err);
+    bool buildHud(std::string* err);
+    void destroyHud();
+    void uploadHudVertices();
     bool buildTrafficMesh(std::string* err);
     void recordPrepass(VkCommandBuffer cb);
     void recordForward(VkCommandBuffer cb);

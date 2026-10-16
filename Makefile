@@ -80,7 +80,8 @@ RENDER_FLAGS := $(CXXFLAGS) -Ithird_party/vulkan/include -I$(OBJ)
 # harness can link it.  (Defined here, above every rule that uses it: a variable
 # assigned below its first use expands to nothing, and the linker then reports a
 # missing symbol in a file that is sitting right there on disk.)
-RENDER_CPU_OBJ := $(OBJ)/engine/render/camera.o
+RENDER_CPU_OBJ := $(OBJ)/engine/render/camera.o $(OBJ)/engine/render/hud.o \
+                  $(OBJ)/engine/render/fallback_atlas.o $(OBJ)/engine/render/world_index.o
 
 # The Vulkan *loader* is a runtime dependency, not a build one.  When it is not
 # installed the renderer's sources are still compiled — which is the part of A1 a
@@ -304,6 +305,13 @@ all-checks: test simulate physics audio
 	@bash tools/verify_artifacts.sh
 	@bash tools/fetch_data.sh --verify-only
 	@echo "== all checks complete =="
+
+# The slice of the city that travels inside the APK: South Bombay, 25 cells and
+# the albedo array today, packed by the tool the CI workflow also runs.  It is a
+# separate target because it needs a built world and nothing else.
+starter-world:
+	@python3 tools/make_starter_world.py --manifest data/processed/world_manifest.json \
+	     --out android/app/src/main/assets/world --region south-bombay --textures albedo
 
 stats: $(PIPELINE_BIN)
 	@$(PIPELINE_BIN) --report data/processed/world_manifest.json

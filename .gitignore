@@ -25,3 +25,10 @@ android/.gradle/
 android/app/build/
 android/app/.cxx/
 android/build/
+*.apk
+*.aab
+
+# The starter world is packed by tools/make_starter_world.py from `make world`'s
+# output, so it is derived data and does not belong in the repository: 96 MiB of
+# chunks and a texture array that the pipeline regenerates byte-identically.
+android/app/src/main/assets/world/

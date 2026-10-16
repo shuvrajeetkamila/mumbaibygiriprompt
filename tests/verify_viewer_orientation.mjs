@@ -85,6 +85,30 @@ check(Math.sign(mirroredWinding) !== Math.sign(plainWinding),
   'the mirror reverses screen winding, so back-face culling would hide half the city '
   + '(every material is DoubleSide for this reason)');
 
+// --- 4. the viewer still applies the mirror everywhere it must ---------------
+// `updateProjectionMatrix()` rebuilds the projection unmirrored, so every call
+// site has to be followed by the mirror.  The resize path lost it once (D-046),
+// and that is the version of this bug a person actually sees: the city flips the
+// first time the phone is turned.
+{
+  const fs = await import('node:fs');
+  const source = fs.readFileSync(new URL('../viewer/index.html', import.meta.url), 'utf8');
+  const mirrors = source.match(/applyMirror\(\)/g) || [];
+  check(mirrors.length >= 2,
+    `index.html applies the mirror at startup and on resize (${mirrors.length} call sites)`);
+
+  const lines = source.split('\n');
+  let unguarded = 0;
+  lines.forEach((line, i) => {
+    if (!line.includes('updateProjectionMatrix()')) return;
+    if (!lines.slice(i, i + 3).join('\n').includes('applyMirror()')) ++unguarded;
+  });
+  check(unguarded === 0, `${unguarded} updateProjectionMatrix() call(s) are not followed by applyMirror()`);
+
+  check(/uncullForMirror/.test(source) && /THREE\.DoubleSide/.test(source),
+    'index.html unculls the mirror (DoubleSide on every material), which section 3 proves is required');
+}
+
 console.log('-----------------------------------------------------------------------');
 if (failures) {
   console.log(` ${checks} checks, ${failures} failures — FAIL`);

@@ -8,6 +8,12 @@ shaders, whatever the APK's asset layout turns out to be.
 import os
 import sys
 
+# The table is the interface between the shader directory and the renderer's C++
+# symbols: a shader that is compiled but not named here is a shader that is not in
+# the binary, and the failure is a runtime "shader missing" for a module that is
+# sitting in the build directory.  Adding a shader means adding a line here, and
+# `host_check` counts them so that the omission is caught by a check and not by a
+# device.
 NAMES = {
     "world.vert": "kWorldVertSpv",
     "world.frag": "kWorldFragSpv",
@@ -18,6 +24,8 @@ NAMES = {
     "post.frag": "kPostFragSpv",
     "traffic.vert": "kTrafficVertSpv",
     "traffic.frag": "kTrafficFragSpv",
+    "hud.vert": "kHudVertSpv",
+    "hud.frag": "kHudFragSpv",
 }
 
 

@@ -2288,3 +2288,108 @@ does not.  "Fixing" either one to match the other puts the sky underground.
 * **LOD0 terrain budget.** The specification's per-cell budget is met by
   construction, but the underwater half of many cells is tessellated at LOD0;
   a seabed-aware LOD split is planned.
+
+## D-047 — The client that shows something: a slice in the package, a panel on the screen, and a renderer that starts without a world
+
+**The report that started this.** The first APK was real — 2.22 MiB, arm64, built
+by run 38872333894 — and on a real phone it drew a black screen.  The log said
+why; the screen did not.  Three things were wrong at once, and only one of them
+was a bug in the usual sense:
+
+1. `Renderer::init` **failed when the world's material arrays were absent**.
+   `buildTextures` returned false, `init` returned false, the client retried once
+   a second, forever.  Nothing was drawn — not even the sky — because there was no
+   renderer to draw it.  This was the actual cause of the black screen.
+2. The APK carried **no world at all**, by design: 1.3 GB of chunks is a
+   download.  The design was right and the first-run experience was not: a person
+   who installs this app should see Mumbai, or at least see the app telling them
+   what it is doing.
+3. There was **no way for the phone to report itself**: an app with
+   `hasCode="false"` and no serial console has logcat and nothing else, and the
+   person holding it has neither.
+
+**Decision 1 — the absence of a world is a state, not an error.**  The renderer
+now generates a material atlas when the world's is missing: eight surfaces (the
+eight a first-person view actually shows — asphalt, pavement, wall, roof,
+vegetation, water, sand, metal) at 256², tileable value noise, deterministic, with
+flat normal maps and occlusion/roughness/metal in the ORM array.  The pixel
+generator is CPU-only (`engine/render/fallback_atlas.h`) precisely so the path
+that only a phone exercises is the path that is tested hardest here.  The city
+then looks like an untextured mock-up rather than a photograph — a thing a person
+can recognise, report and understand, which a black screen is not.
+
+**Decision 2 — the panel comes before the city.**  A 5×7 bitmap font, 95 glyphs,
+a 96×48 single-channel atlas, every lit pixel a quad, its own pipeline, its own
+descriptor set and a 256 KiB vertex buffer rewritten only when the text changes
+(`engine/render/hud.h`, `hud_gpu.cpp`, `shaders/hud.{vert,frag}`).  It draws over
+the tonemapped frame, outside the exposure, and shows: frames per second, draw
+calls, triangles, chunks resident, GPU bytes, the camera's world position, what the
+world index and the streaming are doing, and the last error in words.  It is the
+client's only real diagnostic channel, and it cost 680 words of SPIR-V.
+*Why its own pipeline rather than the world's:* a panel that can break when the
+material array changes size breaks exactly when something else has already gone
+wrong.  *Why one atlas cell is filled solid:* a rectangle is then two triangles
+sampling that cell, so panels, the stick and the buttons need no second shader.
+*Why the font is hand-written rather than loaded:* it has to work on a machine with
+no font, no library and no network, and a test can then assert that every glyph has
+ink — a blank glyph is a silently missing character in the middle of a status line.
+
+**Decision 3 — a slice of the city travels inside the APK.**  South Bombay:
+Colaba, the Gateway, the Taj, CSMT, Marine Drive.  `tools/make_starter_world.py`
+packs **25 cells (57.3 MiB of chunks)** plus the albedo texture array (39.0 MiB),
+**96.3 MiB in total**, with a subset `world_manifest.json` and an `INDEX.txt`
+whose first line is a version token (a sha256 over the file list and contents).
+The client installs it out of its own package on first run, **a few megabytes per
+frame**, so the first frames are on screen while it copies and the panel reports
+progress; the version token means a new APK with a new slice refreshes it and one
+with the same slice does not touch it.  The other 899 cells stay a download, and
+the workflow publishes them as the **`world-data` release asset** — a tar.zst named
+for the manifest's own sha256, re-uploaded only when the world actually changes.
+
+*Why South Bombay and not everything:* it is the region the landmark list, the
+acceptance shot and the recognisability criterion live in.  *Why albedo only:* the
+three arrays are ~100 MiB together; albedo is what makes the city look like Mumbai,
+and a generated flat normal map is honestly *no* normal map rather than a wrong
+one.  `--textures none|albedo|all` chooses, and the workflow exposes it.
+
+**Decision 4 — the client indexes the world and streams it, and the indexing is
+tested without a GPU.**  `engine/render/world_index.{h,cpp}` reads the manifest,
+counts cells by radius and chooses the next cells to load: nearest first,
+deterministic tie-break, resident cells skipped, bounded by both a radius (3 km)
+and a per-call budget (3 cells every 500 ms).  A call that loads 924 cells blocks
+a phone for seconds; the hitch-free requirement is met by never doing that.  The
+policy is Vulkan-free and unit-tested; the renderer keeps only the half that turns
+a chosen cell into buffers.  `Renderer::openWorld`/`loadWorldNear` wrap it, and
+`setHud` takes a copy of the frame so the client can rebuild its lines every second
+without keeping strings alive.
+
+**Decision 5 — the Android build configures on a machine without Android.**
+`android/CMakeLists.txt` builds `libmumbai.so` for the NDK and builds a host
+executable when there is no NDK, so the source lists, the shader compilation and
+the embedding step are all exercised here rather than discovered by a runner.
+Jolt's translation units are parsed out of `third_party/jolt_sources.mk`
+(**121 units**; globbing Jolt's own tree would compile the debug renderer and the
+compute backends that list deliberately excludes, and the count is asserted to be
+over 100 so a broken parse fails loudly).  The shader step is the project's own
+`tools/compile_shaders.py`, which finds `glslc` or `glslangValidator`, checks the
+SPIR-V magic word, and **cross-links every vertex/fragment pair** — the interfaces
+between stages are where a mismatch is silent on the device.
+
+**Measured here, on a machine with no Android and no GPU.**
+`make -j2` clean; `build/bin/mumbai_tests` **83 cases, 471,894 checks, 0 failing**
+(the new cases cover the font atlas, the HUD vertex stream, the generated atlas
+and the world index); `mumbai_render --check` OK; `tools/verify_shader_layout.py`
+47 checks / 0; `tests/verify_viewer_orientation.mjs` 11 checks / 0;
+**11 shader modules, 11,949 words (46.7 KiB) of real SPIR-V, five vertex/fragment
+pairs linked**; `cmake -S android -B …` configures and `mumbai_cmake_hostcheck`
+reports "11 modules, 11949 words" and the world manifest; `tools/make_starter_world.py`
+packs 25 cells / 96.3 MiB.  What only a phone can confirm: that the frame is on
+its screen, that Vulkan comes up on its driver, and that the panel is legible at
+its density.
+
+**What this build still does not do**, said here rather than implied by a
+screenshot: the rest of the city (a download, published but not yet fetched by the
+client), walking on the ground (the camera flies: there is no terrain-height query
+in the client yet, so the two altitude buttons are honest and a "walk" mode would
+not be), night lighting, water and glass transparency, anti-aliasing, and the
+audio device path.  Each is in the roadmap.

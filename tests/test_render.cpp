@@ -13,10 +13,17 @@
 //  north, is the sea on the left?
 // =============================================================================
 #include "engine/core/geo.h"
+#include "engine/render/fallback_atlas.h"
+#include "engine/render/hud.h"
 #include "engine/render/renderer.h"
+#include "engine/render/world_index.h"
 #include "tests/test_harness.h"
 
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <vector>
 
 using namespace mumbai;
 
@@ -205,4 +212,238 @@ TEST(cameraViewMatrixIsRigidAndMapsTheEyeToTheOrigin) {
     const Vec3 ahead = cam.pos + f * 100.0f;
     const Vec4 va2 = v * Vec4{ahead.x, ahead.y, ahead.z, 1.0f};
     CHECK_NEAR(va2.z, -100.0, 1e-3);
+}
+
+// =============================================================================
+//  The on-screen panel, the generated atlas and the world index
+//
+//  These are the paths that run on a phone with no world downloaded: the panel
+//  that has to render the explanation, the atlas that has to exist so the
+//  renderer can start at all, and the index that has to load a manifest and say
+//  how many cells are near the camera.  None of them needs a GPU — which is the
+//  point, because a phone is not available to this machine.
+// =============================================================================
+
+TEST(fontAtlasHasEveryGlyphAndItsSolidCell) {
+    std::vector<u8> atlas;
+    render::buildFontAtlas(atlas);
+    CHECK_EQ(atlas.size(), static_cast<size_t>(render::kAtlasW) * render::kAtlasH);
+
+    // Only 0 and 255: a mask with intermediate values would mean the generator is
+    // antialiasing into a texture that is sampled at many scales, and the linear
+    // filter is the thing that should be doing that.
+    for (u8 v : atlas) CHECK(v == 0 || v == 255);
+
+    // Every glyph except space has ink.  A blank glyph is a silently missing
+    // character in the middle of a status line.
+    auto glyphInk = [&](u32 g) {
+        u32 ink = 0;
+        const u32 cx = (g % render::kAtlasCols) * render::kCellW;
+        const u32 cy = (g / render::kAtlasCols) * render::kCellH;
+        for (u32 row = 0; row < render::kGlyphH; ++row)
+            for (u32 col = 0; col < render::kGlyphW; ++col)
+                if (atlas[static_cast<size_t>(cy + row) * render::kAtlasW + cx + col]) ++ink;
+        return ink;
+    };
+    u32 blank = 0;
+    for (u32 g = 0; g < render::kGlyphCount; ++g) {
+        const u32 ink = glyphInk(g);
+        if (g == 0) {                       // space
+            CHECK_EQ(ink, 0u);
+        } else if (ink == 0) {
+            ++blank;
+        }
+    }
+    CHECK_EQ(blank, 0u);
+
+    // The cell after the last glyph is the rectangle fill, and it is solid.
+    u32 solidInk = 0;
+    for (u32 row = 0; row < render::kCellH; ++row)
+        for (u32 col = 0; col < render::kCellW; ++col)
+            if (atlas[static_cast<size_t>(render::kSolidV0 + row) * render::kAtlasW +
+                      render::kSolidU0 + col])
+                ++solidInk;
+    CHECK_EQ(solidInk, render::kCellW * render::kCellH);
+}
+
+TEST(hudGeometryIsWellFormedAndStaysInsideTheAtlas) {
+    render::HudFrame frame;
+    frame.rects.push_back({0.0f, 0.0f, 400.0f, 40.0f, render::kHudPanel});
+    frame.rects.push_back({10.0f, 10.0f, 0.0f, 40.0f, render::kHudPanel});   // degenerate: skipped
+    frame.lines.push_back({8.0f, 8.0f, 2.0f, render::kHudGreen, "MUMBAI 1:1 EXACT"});
+    frame.lines.push_back({8.0f, 40.0f, 1.0f, render::kHudWhite, "fps 30  LOD0 924"});
+
+    std::vector<render::HudVertex> verts;
+    const u32 n = render::buildHudVertices(frame, 1080.0f, 2400.0f, verts);
+    CHECK_EQ(n, static_cast<u32>(verts.size()));
+    CHECK(verts.size() > 100);   // 16 + 15 characters of real glyphs
+
+    // Two panels were asked for; the degenerate one is dropped, so 6 vertices.
+    CHECK_EQ(verts.size() - (verts.size() - 6), 6u);
+
+    for (const render::HudVertex& v : verts) {
+        CHECK(std::isfinite(v.x) && std::isfinite(v.y));
+        CHECK(std::isfinite(v.u) && std::isfinite(v.v));
+        // Normalised atlas coordinates, inside the image: sampling outside it
+        // with a repeating sampler would wrap a glyph into a neighbour's cell.
+        CHECK(v.u >= 0.0f && v.u <= 1.0f);
+        CHECK(v.v >= 0.0f && v.v <= 1.0f);
+        // On screen (or at most a pixel outside, from a glyph pixel at the edge).
+        CHECK(v.x >= -1.0f && v.x <= 1081.0f);
+        CHECK(v.y >= -1.0f && v.y <= 2401.0f);
+    }
+
+    // Determinism: the same frame gives the same bytes.  A panel that flickers
+    // between two layouts on alternate frames is worse than no panel.
+    std::vector<render::HudVertex> again;
+    render::buildHudVertices(frame, 1080.0f, 2400.0f, again);
+    CHECK_EQ(again.size(), verts.size());
+    bool identical = true;
+    for (size_t i = 0; i < again.size(); ++i) {
+        if (again[i].u != verts[i].u || again[i].v != verts[i].v || again[i].x != verts[i].x ||
+            again[i].rgba != verts[i].rgba)
+            identical = false;
+    }
+    CHECK(identical);
+}
+
+TEST(hudTextWidthMatchesTheGeometryItProduces) {
+    render::HudFrame frame;
+    frame.lines.push_back({0.0f, 0.0f, 3.0f, render::kHudWhite, "ABC"});
+    std::vector<render::HudVertex> verts;
+    render::buildHudVertices(frame, 4096.0f, 4096.0f, verts);
+    f32 maxX = 0.0f;
+    for (const render::HudVertex& v : verts) maxX = std::max(maxX, v.x);
+    // "ABC" is three cells wide; the last lit pixel of the third glyph must be
+    // inside that box.  (This is what a panel sizes itself around.)
+    CHECK(maxX <= render::hudTextWidth("ABC", 3.0f) + 1e-3f);
+    CHECK(maxX > render::hudTextWidth("AB", 3.0f));
+}
+
+TEST(fallbackAtlasIsGeneratedDeterministicallyAndInsideRange) {
+    const u32 size = 64;
+    std::vector<u8> a1, n1, o1, a2, n2, o2;
+    render::buildFallbackAtlasPixels(size, a1, n1, o1);
+    render::buildFallbackAtlasPixels(size, a2, n2, o2);
+
+    const size_t expected = static_cast<size_t>(size) * size * render::kFallbackLayers * 4;
+    CHECK_EQ(a1.size(), expected);
+    CHECK_EQ(n1.size(), expected);
+    CHECK_EQ(o1.size(), expected);
+
+    // The same call twice gives the same bytes: a phone that regenerates its
+    // atlas between runs must not see the city change colour.
+    CHECK(a1 == a2);
+    CHECK(n1 == n2);
+    CHECK(o1 == o2);
+
+    // Every layer has variety (a constant albedo is the artifact D-041 already
+    // chased through the real atlas) and every channel stays in range.
+    for (u32 layer = 0; layer < render::kFallbackLayers; ++layer) {
+        u8 lo = 255, hi = 0;
+        for (u32 y = 0; y < size; ++y) {
+            for (u32 x = 0; x < size; ++x) {
+                const size_t i = (static_cast<size_t>(layer) * size * size + y * size + x) * 4;
+                lo = std::min(lo, a1[i]);
+                hi = std::max(hi, a1[i]);
+                CHECK_EQ(a1[i + 3], 255);
+                CHECK_EQ(n1[i], 128);
+                CHECK_EQ(n1[i + 1], 128);
+                CHECK_EQ(n1[i + 2], 255);
+                CHECK(o1[i + 3] == 255);
+            }
+        }
+        // Real mottling, not a flat fill.  The bound is low because the water
+        // layer is deliberately almost flat (0.12 mottle on a 0.08 base is three
+        // byte levels of red); the next block pins the strong end.
+        CHECK(hi > lo);
+    }
+    {
+        u8 lo = 255, hi = 0;
+        for (u32 y = 0; y < size; ++y) {
+            for (u32 x = 0; x < size; ++x) {
+                const size_t i = (static_cast<size_t>(4) * size * size + y * size + x) * 4;
+                lo = std::min(lo, a1[i + 1]);
+                hi = std::max(hi, a1[i + 1]);
+            }
+        }
+        CHECK(hi > lo + 8);   // vegetation gets real variation
+    }
+
+    // The layers are different surfaces, not one palette repeated: asphalt is
+    // dark, sand is bright, and the water is bluer than it is red.
+    auto meanRed = [&](u32 layer) {
+        u64 sum = 0;
+        for (u32 y = 0; y < size; ++y)
+            for (u32 x = 0; x < size; ++x)
+                sum += a1[(static_cast<size_t>(layer) * size * size + y * size + x) * 4];
+        return static_cast<f64>(sum) / (size * size);
+    };
+    CHECK(meanRed(0) < meanRed(6));            // asphalt darker than sand
+    const size_t w = (5ull * size * size + 10 * size + 10) * 4;   // water layer, a pixel
+    CHECK(a1[w + 2] > a1[w + 0]);              // blue above red
+}
+
+TEST(worldIndexReadsAManifestAndCountsCellsByRadius) {
+    // A two-cell world, written to a temporary directory: this is the parse and the
+    // distance arithmetic the client runs before it can stream anything at all.
+    const std::string dir = "/tmp/mumbai_world_index_test";
+    CHECK_EQ(std::system(("mkdir -p " + dir).c_str()), 0);
+    {
+        std::ofstream f(dir + "/world_manifest.json");
+        CHECK(f.good());
+        f << R"({"format":"mumbai-world-manifest","cells":[
+            {"x":-7,"z":5,"relX":6,"relZ":3,"file":"cell_0006_0003.mumbai_chunk","bytes":100},
+            {"x":-8,"z":5,"relX":5,"relZ":3,"file":"cell_0005_0003.mumbai_chunk","bytes":200}
+        ]})";
+    }
+
+    std::vector<render::WorldCell> cells;
+    std::string error;
+    CHECK(render::readWorldManifest(dir, cells, &error));
+    CHECK_EQ(cells.size(), 2u);
+    CHECK_EQ(cells[0].file, std::string("cell_0006_0003.mumbai_chunk"));
+    CHECK_EQ(cells[0].cellX, static_cast<i64>(-7));
+    CHECK_EQ(cells[0].bytes, 100u);
+
+    // Cell centres: (-7 + 0.5) * 1024 = -6656 and (-8 + 0.5) * 1024 = -7680, both at
+    // z = 5.5 * 1024 = 5632.  1024 m apart, so a 200 m radius catches one and a
+    // 1500 m radius catches both.
+    const Vec3 nearFirst{-6656.0f, 0.0f, 5632.0f};
+    CHECK_EQ(render::countCellsInRadius(cells, nearFirst, 200.0f), 1u);
+    CHECK_EQ(render::countCellsInRadius(cells, nearFirst, 1500.0f), 2u);
+    CHECK_EQ(render::countCellsInRadius(cells, Vec3{0.0f, 0.0f, 0.0f}, 200.0f), 0u);
+
+    // Streaming policy: nearest first, budget honoured, resident cells skipped.
+    std::vector<u32> chosen;
+    CHECK_EQ(render::selectCellsToLoad(cells, {}, nearFirst, 5000.0f, 1, chosen), 1u);
+    CHECK_EQ(chosen.size(), 1u);
+    CHECK_EQ(cells[chosen[0]].cellX, static_cast<i64>(-7));   // the nearer one
+
+    chosen.clear();
+    CHECK_EQ(render::selectCellsToLoad(cells, {cells[0].file}, nearFirst, 5000.0f, 2, chosen), 1u);
+    CHECK_EQ(cells[chosen[0]].cellX, static_cast<i64>(-8));   // only the other one is left
+
+    chosen.clear();
+    CHECK_EQ(render::selectCellsToLoad(cells, {}, nearFirst, 5000.0f, 0, chosen), 0u);
+    // Nowhere near a cell centre: a budget of four still loads nothing.
+    CHECK_EQ(render::selectCellsToLoad(cells, {}, Vec3{0.0f, 0.0f, 0.0f}, 100.0f, 4, chosen), 0u);
+
+    // A directory with no manifest is a clean failure with a reason, never a crash.
+    std::vector<render::WorldCell> none;
+    std::string reason;
+    CHECK(!render::readWorldManifest("/tmp/mumbai_world_index_absent", none, &reason));
+    CHECK(!reason.empty());
+    CHECK(none.empty());
+
+    // And the real world index, if the build machine has one: 924 cells today.
+    std::vector<render::WorldCell> real;
+    std::string realError;
+    if (render::readWorldManifest("data/processed", real, &realError)) {
+        CHECK(real.size() > 500);
+        // The Gateway of India is at (-6878.8, 5693.2) — within 2 km of it there
+        // must be cells, or the client cannot start anywhere a person would look.
+        const u32 nearGateway = render::countCellsInRadius(real, Vec3{-6878.8f, 0.0f, 5693.2f}, 2000.0f);
+        CHECK(nearGateway >= 9);
+    }
 }

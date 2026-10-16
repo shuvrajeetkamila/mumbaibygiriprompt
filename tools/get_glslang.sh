@@ -2,7 +2,7 @@
 # =============================================================================
 #  tools/get_glslang.sh — a GLSL compiler for machines that have none
 #
-#  The build wants to compile the nine shaders in engine/render/shaders.  glslc
+#  The build wants to compile the eleven shaders in engine/render/shaders.  glslc
 #  ships with the Vulkan SDK; Ubuntu has glslangValidator in `glslang-tools`; a
 #  machine with neither would otherwise never compile a shader until CI did.
 #
