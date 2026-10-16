@@ -512,13 +512,13 @@ TEST(worldReleaseDescribesAWholeDownload) {
 
     // A release composes the URLs the workflow publishes.
     const world::WorldRelease fabricated{"owner/repo", "world-data",
-                                         "mumbai-world-0123456789abcdef.tar.zst",
+                                         "mumbai-world-0123456789abcdef.tar",
                                          "sha256sums-0123456789abcdef.txt", "0123456789abcdef"};
     CHECK(fabricated.known());
     const world::DownloadConfig config = world::configForRelease(fabricated, "/tmp/world");
     CHECK_EQ(config.archiveUrl,
              std::string("https://github.com/owner/repo/releases/download/world-data/"
-                         "mumbai-world-0123456789abcdef.tar.zst"));
+                         "mumbai-world-0123456789abcdef.tar"));
     CHECK_EQ(config.checksumsUrl,
              std::string("https://github.com/owner/repo/releases/download/world-data/"
                          "sha256sums-0123456789abcdef.txt"));

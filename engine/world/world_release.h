@@ -12,6 +12,11 @@
 //  `world_release.generated.h` beside this file, after the world is built and
 //  before Gradle is invoked, and this header is what every other build sees.
 //
+//  THE ARCHIVE IS AN UNCOMPRESSED TAR (D-049).  The client streams it and resumes
+//  inside it, and a pause can only be remembered at a tar entry boundary: in a
+//  compressed stream the byte after that boundary is somewhere inside a frame, and
+//  finding it would mean decompressing from zero on every resume.
+//
 //  THE FALLBACK IS EMPTY STRINGS, ON PURPOSE.  A bare `make`, a test run, a
 //  checkout with no world: `known()` is false, and the client says on its panel
 //  that this build does not know of a published world — instead of inventing a URL
@@ -40,7 +45,7 @@
 #ifndef MUMBAI_WORLD_TAG
 #define MUMBAI_WORLD_TAG "world-data"
 #endif
-// `mumbai-world-<manifest sha256:16>.tar.zst`
+// `mumbai-world-<manifest sha256:16>.tar`
 #ifndef MUMBAI_WORLD_ASSET
 #define MUMBAI_WORLD_ASSET ""
 #endif

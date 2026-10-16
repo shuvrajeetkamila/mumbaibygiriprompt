@@ -2343,8 +2343,10 @@ The client installs it out of its own package on first run, **a few megabytes pe
 frame**, so the first frames are on screen while it copies and the panel reports
 progress; the version token means a new APK with a new slice refreshes it and one
 with the same slice does not touch it.  The other 899 cells stay a download, and
-the workflow publishes them as the **`world-data` release asset** — a tar.zst named
-for the manifest's own sha256, re-uploaded only when the world actually changes.
+the workflow publishes them as the **`world-data` release asset** — a tar named for
+the manifest's own sha256, re-uploaded only when the world actually changes (an
+uncompressed tar as of D-049: the client resumes at tar boundaries, which a
+compressed stream does not have).
 
 *Why South Bombay and not everything:* it is the region the landmark list, the
 acceptance shot and the recognisability criterion live in.  *Why albedo only:* the
