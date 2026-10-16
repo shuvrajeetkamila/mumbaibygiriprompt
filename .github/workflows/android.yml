@@ -45,6 +45,11 @@ jobs:
     name: build APK
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    # Only for publishing the APK as a release asset: an artifact needs a GitHub
+    # login to download, and a release asset is a plain link anyone can open.  The
+    # repository is public, so that link works on a phone with no GitHub session.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout
@@ -224,6 +229,58 @@ jobs:
           PYTHON
 
           echo "::notice::APK $(basename "$APK") $(stat -c%s "$APK") bytes, libmumbai.so $SIZE bytes"
+
+      - name: Publish the APK as a release
+        # A direct download link, which is the whole point: release assets are
+        # fetchable without a session, Actions artifacts are not.
+        if: github.event_name == 'push' && success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG="first-build"
+          # --repo and --target spelled out: gh would otherwise guess a remote, and
+          # the tag would land on the default branch rather than on the commit
+          # that actually produced this APK.
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Mumbai 1:1 EXACT — first APK (first build)" \
+              --prerelease \
+              --notes "$(cat <<'NOTES'
+          The first installable build of the Mumbai 1:1 client.
+
+          **Download `app-debug.apk`** and install it on an Android phone
+          (Android 10 or newer, 64-bit ARM).  You may need to allow installing
+          from unknown sources; it is signed with the standard debug key, which
+          is what a first build has.
+
+          What it does: starts the engine on the phone's own Vulkan surface,
+          creates the graphics device and the swapchain, builds its pipelines
+          from the nine compiled shaders, and draws the sky and the tonemapped
+          frame at the display's refresh rate, logging to logcat
+          (`adb logcat -s mumbai`).
+
+          What it does not do yet: show Mumbai.  The city is 1.3 GB of map data
+          which is meant to be downloaded to the phone on first run, and that
+          downloader is not written yet, so the app draws the sky and says on its
+          log where the world belongs.  Touch controls, the world download and
+          the renderer's clustered lights, soft transparency and anti-aliasing
+          are the next pieces.
+
+          `app-release-unsigned.apk` is the same code without a signature; it
+          needs your own signing key before a phone will accept it.
+
+          Built by GitHub Actions; the workflow refuses to publish unless the APK
+          contains the engine library and all nine compiled shader modules.
+          NOTES
+          )"
+          fi
+          gh release upload "$TAG" android/app/build/outputs/apk/debug/app-debug.apk --clobber
+          gh release upload "$TAG" android/app/build/outputs/apk/release/app-release-unsigned.apk --clobber
+          gh release view "$TAG" --json assets \
+            --jq '.assets[] | "\(.name)  \(.size) B  \(.url)"'
 
       - name: Upload the debug APK
         uses: actions/upload-artifact@v4
