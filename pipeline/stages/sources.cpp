@@ -227,6 +227,14 @@ void QaReport::add(const std::string& name, f64 value, u32 severity) {
     c.severity = severity;
     counters.push_back(c);
 }
+void QaReport::addTiming(const std::string& name, f64 seconds) {
+    QaCounter c{};
+    std::snprintf(c.name, sizeof(c.name), "%s", name.c_str());
+    c.value = seconds;
+    c.severity = 0;
+    timings.push_back(c);
+}
+
 bool QaReport::has(const std::string& name) const {
     for (const auto& c : counters)
         if (name == c.name) return true;
@@ -245,6 +253,11 @@ void QaReport::logSummary() const {
     for (const auto& c : counters)
         MLOG_INFO("  %-40s %14.3f%s", c.name, c.value,
                   c.severity == 2 ? "  [FAIL]" : (c.severity == 1 ? "  [warn]" : ""));
+    // Printed, and said out loud to be the clock rather than the city, so nobody
+    // goes looking for them in the manifest (D-051).
+    MLOG_INFO("this run (not part of the world, never serialised): %zu stage timings",
+              timings.size());
+    for (const auto& t : timings) MLOG_INFO("  %-40s %14.3f s", t.name, t.value);
 }
 
 // -----------------------------------------------------------------------------

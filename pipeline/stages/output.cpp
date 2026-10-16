@@ -641,6 +641,15 @@ void printReport(const Context& ctx) {
     std::printf(" QA: %zu counters, %zu warnings, %zu failures — %s\n",
                 ctx.qa.counters.size(), ctx.qa.warnings.size(), ctx.qa.failures.size(),
                 ctx.qa.ok() ? "PASS" : "FAIL");
+    // The clock, not the city: printed here because a build's duration is worth
+    // reading, and kept out of the manifest and the cells because the manifest's
+    // hash is the identity of the world (D-051).
+    if (!ctx.qa.timings.empty()) {
+        f64 total = 0;
+        for (const auto& t : ctx.qa.timings) total += t.value;
+        std::printf(" (plus %zu stage timings, %.1f s in total, not part of the world)\n",
+                    ctx.qa.timings.size(), total);
+    }
     for (const auto& w : ctx.qa.warnings) std::printf("   [warn]  %s\n", w.c_str());
     for (const auto& f : ctx.qa.failures) std::printf("   [FAIL]  %s\n", f.c_str());
     std::printf("=======================================================================\n\n");

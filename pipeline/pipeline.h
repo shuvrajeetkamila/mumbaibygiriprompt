@@ -230,10 +230,21 @@ struct CellData {
 // -----------------------------------------------------------------------------
 struct QaReport {
     std::vector<QaCounter> counters;
+    // MEASUREMENTS OF THE RUN, NOT OF THE WORLD: how long a stage took on this
+    // machine.  They are printed, they are read by a human, and they are kept out
+    // of `counters` on purpose — every cell carries the QA report in its
+    // `QAReport` section and the manifest carries it in `quality`, and the
+    // manifest's sha256 is the identity of the world.  A build whose identity
+    // changes because the disk was busy is not an identity; the first version of
+    // this file put them in `counters`, and two runs of the same pipeline differed
+    // in 13 counters and 80 bytes of every cell (D-051).
+    std::vector<QaCounter> timings;
     std::vector<std::string> warnings;
     std::vector<std::string> failures;
 
     void add(const std::string& name, f64 value, u32 severity = 0);
+    // Seconds spent, recorded beside the report rather than in it.
+    void addTiming(const std::string& name, f64 seconds);
     // Look up a counter published earlier in this build (0 when absent).  Lets a
     // later measurement be expressed against an earlier one — a budget against
     // the asset count it belongs to — instead of re-deriving it.

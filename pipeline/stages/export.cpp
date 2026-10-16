@@ -597,7 +597,7 @@ bool exportViewer(Context& ctx) {
 // both JSON files are re-opened, their QA blocks are replaced with the finished
 // report, and the final count now agrees everywhere.
 bool finaliseQa(Context& ctx, f64 stageStart) {
-    ctx.qa.add("stage.finaliseQa.seconds", ScopedTimer::now() - stageStart);
+    ctx.qa.addTiming("stage.finaliseQa.seconds", ScopedTimer::now() - stageStart);
 
     const Json full = qaReportJson(ctx.qa);
     Json summary = Json::object();

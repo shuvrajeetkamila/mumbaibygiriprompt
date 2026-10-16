@@ -259,7 +259,7 @@ bool buildTextures(Context& ctx) {
     ctx.qa.add("textures.flatAlbedoRepairs", static_cast<f64>(tex::flatAlbedoRepairs()));
     MLOG_INFO("textures: %u of %zu layers needed the flat-albedo repair",
               tex::flatAlbedoRepairs(), baseColorLayers.size());
-    ctx.qa.add("textures.buildSeconds", ScopedTimer::now() - t0);
+    ctx.qa.addTiming("textures.buildSeconds", ScopedTimer::now() - t0);
     if (meanError > 0.02)
         ctx.qa.fail("texture mean albedo deviates from the material by more than 2 %");
 

@@ -128,7 +128,8 @@ int main(int argc, char** argv) {
         }
         const f64 dt = ScopedTimer::now() - t0;
         std::printf("  [%-20s] %7.2f s\n", s.name, dt);
-        ctx.qa.add(std::string("stage.") + s.name + ".seconds", dt);
+        // A timing, not a fact: see QaReport::timings (D-051).
+        ctx.qa.addTiming(std::string("stage.") + s.name + ".seconds", dt);
     }
 
     {

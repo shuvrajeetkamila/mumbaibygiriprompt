@@ -2628,3 +2628,57 @@ pipeline is untouched; and the world's identity is still the manifest's sha256, 
 is why this format change did not need a version number — no archive of the old shape
 was ever published (the release does not exist yet, which is the failure this
 supersedes).
+
+## D-051 — The world is byte-reproducible again: the run's own clock is not part of the city
+
+**What was wrong.**  "The identity of a world is the sha256 of its manifest" (D-048) and
+"the manifest names the published archive" (D-051's namesake release step) are both true
+only if two builds of the same data produce the same manifest.  They did not.  Every
+stage's wall-clock duration was written into `ctx.qa.counters` — `stage.buildRoads.seconds`,
+`stage.buildBuildings.seconds`, `textures.buildSeconds`, thirteen of them — and that
+report is serialised **twice**: into the manifest's `quality` section, and into the
+`QAReport` section of every one of the 924 cells.  So each build of an unchanged world
+produced a different manifest sha, a different content hash in every cell header, and a
+different asset name — which is why `world-data` had accumulated two 1.44 GB archives
+for one city, and why the release step's "already published, skip the upload" logic could
+never fire.
+
+The evidence, from two builds of this checkout, comparing one cell section by section:
+`TerrainHeight`, `TerrainMesh`, `WaterMesh`, `TerrainCollision`, `MaterialRegions`,
+`MaterialTable` and `ChunkInfo` were **byte-identical**; `QAReport` differed in **80 bytes
+of 9216**, exactly the thirteen `*.seconds` counters, e.g.
+`stage.buildRoads.seconds 9.005 → 7.188`, `stage.buildBuildings.seconds 15.591 → 12.785`.
+The world data was deterministic all along; only the measurement of the build leaked into
+it.
+
+**The fix.**  `QaReport` gained a second list, `timings`, and `addTiming()`.  The three
+call sites that recorded durations (`pipeline/main.cpp`'s per-stage loop, `textures.cpp`,
+`export.cpp`) now write there.  Timings are still printed — the console report and the
+log both end with them, labelled "not part of the world" — they are simply never
+serialised, because a duration is a fact about the machine and not about Mumbai.
+
+**The proof.**  Two consecutive `make world` runs of this checkout, after the change:
+
+| | run 1 | run 2 |
+|---|---|---|
+| `world_manifest.json` sha256 | `ee7c68d1…0ca90` | `ee7c68d1…0ca90` |
+| all 924 cells + the texture array (`md5sum data/processed/cells/* \| md5sum`) | `c36a2eb307ad4a56580b2015c96609a3` | `c36a2eb307ad4a56580b2015c96609a3` |
+
+Before the change the same comparison differed in the manifest and in every cell.
+
+**What this buys.**  One published archive per world instead of one per push; an asset
+name that means something; a client that can trust the manifest hash it was compiled
+with; `verify_artifacts.sh` no longer claims a reproducibility the pipeline did not have
+— and now *checks* the claim: it fails if any counter in the shipped manifest ends in
+`seconds`.
+
+**Left alone, and recorded.**  `QaCounter::name` is 32 bytes, so long names arrive
+truncated in the manifest and in cells (`stage.buildRailAndLanduse.seconds` is stored as
+`stage.buildRailAndLanduse.secon`).  Widening it changes the on-disk chunk format and
+would need `buildSchema` bumped and every cell rebuilt, so it is a note rather than a
+change: the truncation is stable, and no code looks a timing up by name.
+
+**Not deleted yet, on purpose.**  The two superseded 1.44 GB archives stay in
+`world-data` until the next APK replaces the builds that name them, because an installed
+client can still ask for the world it was built against; they are pruned once nothing can
+name them any more.
