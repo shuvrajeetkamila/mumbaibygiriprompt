@@ -2506,3 +2506,51 @@ measured now, one `AAsset_getLength` per listed file.  And the three panel butto
 were pixel literals written out twice, in the input handler and in the HUD; they are
 shared `Rect` definitions now, because the city button would have been the fourth
 copy of that hazard.
+
+## D-049 — The city travels as a plain tar, and what that costs
+
+**What changed and why.**  The published world archive was
+`mumbai-world-<manifest sha256:16>.tar.zst`, produced by
+`tar --use-compress-program='zstd -3 -T4'`.  The client's download resumes at a *tar
+entry boundary*: it remembers the byte offset after a file's padding and asks the
+server for the bytes that follow (D-048).  In a compressed stream that offset does
+not exist — the byte after the boundary is somewhere inside a frame — so a resumed
+download would have to decompress from zero on every resume, which is the whole
+thing the boundary rule exists to avoid.  The workflow therefore publishes an
+uncompressed tar, and its name, the generated header, the release notes and the
+client all say `.tar`.
+
+**What that costs, measured rather than assumed.**  The old comment in the workflow
+said "a world that is already binary compresses by about a third"; it is much better
+than that, which makes this decision expensive:
+
+| what | raw | gzip -6 | ratio |
+|---|---|---|---|
+| 6 chunk files (`cells/*.mumbai_chunk`) | 706,656 B | 80,792 B | 11.4 % |
+| 2 texture arrays (`textures/*.mumbaitex`) | 71,575,107 B | 14,052,309 B | 19.6 % |
+| `world_manifest.json` | 358,123 B | 38,589 B | 10.8 % |
+
+The whole world is 1,328,994,192 B, so the same content would travel as roughly
+180–250 MB compressed against 1.27 GB as a tar.  **This revision pays that price for
+a correct resumable stream**, and says so here rather than in a footnote.
+
+**The two ways to get it back, both specified, neither built.**  Either keeps the
+resume rule intact:
+
+1. **Per-member frames.**  A tar whose file payloads are each a self-terminating
+   zstd (or deflate) frame: the headers stay uncompressed, so a boundary is still a
+   boundary, and the client — which counts the compressed bytes it receives — records
+   the compressed offset of the last *completed* member.  On resume it asks for that
+   offset, which is a header start, and nothing is decompressed twice.  The cost is a
+   decompressor on the phone (one vendored file, not a TLS-sized dependency) and the
+   loss of *streaming* verification for the member being read, which is re-fetched
+   anyway.
+2. **Bundles.**  Twenty or so compressed archives of ~50 cells each: a resume
+   re-fetches one bundle (~10 MB) instead of 1.27 GB, per-cell verification still
+   comes from the checksum list, and the client's file-by-file loop replaces the tar
+   reader entirely.  The cost is that the world is no longer one file for a human to
+   fetch by hand.
+
+Both are safe to adopt later precisely because the *identity* of a world is not its
+container: it is the sha256 of its manifest, carried in the asset name, listed in the
+checksum list, and verified file by file after every transfer (D-048).
